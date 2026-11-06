@@ -372,7 +372,7 @@ T.test("relay: прежний действующий сертификат ост
 	local originalFire, originalRenew = c.B.Fire, c.V.ns.Config.AUTH_RENEW
 	c.B.Fire = function(self, event, ...)
 		if event == "CHAT_MSG_ADDON" or event == "CHAT_MSG_ADDON_LOGGED" then
-			local _, msg, dist, sender = ...
+			local dist, sender = select(3, ...)
 			if dist == "GUILD" and self.ns.Util.Key(sender) == self.ns.Util.Key(c.V:Name()) then return end
 		end
 		return originalFire(self, event, ...)
@@ -447,7 +447,9 @@ T.test("relay: смена репортёра — чат гильдии не те
 	T.ok(held[alla], "аренда перешла к Алле")
 	T.eq(held[vera], nil, "у Веры аренды больше нет")
 	for i, text in ipairs(lines) do
-		for _, cl in ipairs({ c.B, c.V, Al }) do T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз") end
+		for _, cl in ipairs({ c.B, c.V }) do T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз") end
+		-- Новый клиент принимает RG после получения корней и сертификата репортёра.
+		if i >= 3 then T.eq(Al:Saw(text), 1, "Алла видит строку " .. i .. " один раз") end
 	end
 	-- После передачи рядовой тоже не перехватывает аренду Аллы.
 	for _, r in ipairs(relays) do
