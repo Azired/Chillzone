@@ -1,0 +1,102 @@
+name: CurseForge
+
+# Опубликованный релиз → тот же Chillzone-X.Y.Z.zip на CurseForge, описание релиза — как changelog.
+# Нужны переменная репозитория CURSEFORGE_PROJECT_ID (Project ID со страницы проекта) и секрет
+# CURSEFORGE_API_TOKEN (https://authors.curseforge.com/#/settings/api-tokens). Без переменной
+# workflow пропускается.
+#
+# Версии игры берутся из «## Interface» в toc архива: 11509 → 1.15.9, 20507 → 2.5.7. Если нужных
+# имён на CurseForge нет, их можно задать переменной CURSEFORGE_GAME_VERSIONS: «1.15.8,2.5.5».
+# Уже опубликованный релиз загружается вручную: Actions → CurseForge → Run workflow, тег.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег релиза, например v0.4.1"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: curseforge-${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  upload:
+    name: Upload to CurseForge
+    if: ${{ vars.CURSEFORGE_PROJECT_ID != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      CF_API: https://wow.curseforge.com/api
+      CF_PROJECT: ${{ vars.CURSEFORGE_PROJECT_ID }}
+      CF_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
+      CF_VERSIONS: ${{ vars.CURSEFORGE_GAME_VERSIONS }}
+    steps:
+      # Архив прикладывает release.yml. Если релиз опубликовали сразу, не черновиком,
+      # архива может ещё не быть: ждём до 10 минут.
+      - name: Download release zip
+        run: |
+          if [ -z "$CF_TOKEN" ]; then
+            echo "::error::Нет секрета CURSEFORGE_API_TOKEN"
+            exit 1
+          fi
+          version="${TAG#v}"
+          zip="Chillzone-$version.zip"
+          for _ in $(seq 1 20); do
+            gh release download "$TAG" -p "$zip" --clobber && break
+            sleep 30
+          done
+          if [ ! -f "$zip" ]; then
+            echo "::error::В релизе $TAG нет $zip"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+
+      - name: Resolve game versions
+        run: |
+          if [ -n "$CF_VERSIONS" ]; then
+            names=$(printf '%s' "$CF_VERSIONS" | tr -d ' \r\n')
+          else
+            names=$(unzip -p "$ZIP" Chillzone/Chillzone.toc | sed -n 's/^## Interface: *//p' | tr -d ' \r' | tr ',' '\n' \
+              | awk 'length($0) >= 5 { n = length($0); printf "%s%d.%d.%d", sep, substr($0, 1, n - 4), substr($0, n - 3, 2), substr($0, n - 1, 2); sep = "," }')
+          fi
+          if [ -z "$names" ]; then
+            echo "::error file=Chillzone/Chillzone.toc::В toc нет «## Interface», задайте CURSEFORGE_GAME_VERSIONS"
+            exit 1
+          fi
+          curl -sS --fail-with-body -H "X-Api-Token: $CF_TOKEN" -o versions.json "$CF_API/game/versions" || { cat versions.json; exit 1; }
+          want=$(printf '%s' "$names" | jq -Rc 'split(",") | map(select(. != ""))')
+          ids=$(jq -c --argjson want "$want" '[.[] | select(.name | IN($want[])) | .id] | unique' versions.json)
+          missing=$(jq -r --argjson want "$want" '$want - [.[].name] | join(", ")' versions.json)
+          if [ -n "$missing" ]; then
+            echo "::warning::На CurseForge нет версий игры: $missing"
+          fi
+          if [ "$ids" = "[]" ]; then
+            known=$(jq -r '[.[].name | select(startswith("1.") or startswith("2."))] | unique | join(", ")' versions.json)
+            echo "::error::Ни одна из версий $names не найдена на CurseForge. Задайте переменную CURSEFORGE_GAME_VERSIONS из списка: $known"
+            exit 1
+          fi
+          echo "Версии игры: $names → $ids"
+          echo "GAME_VERSIONS=$ids" >> "$GITHUB_ENV"
+
+      - name: Upload
+        run: |
+          gh release view "$TAG" --json body,isPrerelease > release.json
+          jq --arg name "Chillzone $VERSION" --argjson versions "$GAME_VERSIONS" '{
+            changelog: .body,
+            changelogType: "markdown",
+            displayName: $name,
+            gameVersions: $versions,
+            releaseType: (if .isPrerelease then "beta" else "release" end)
+          }' release.json > metadata.json
+          curl -sS --fail-with-body -H "X-Api-Token: $CF_TOKEN" \
+            -F "metadata=<metadata.json" -F "file=@$ZIP" \
+            -o response.json "$CF_API/projects/$CF_PROJECT/upload-file" || { cat response.json; exit 1; }
+          echo "Загружено на CurseForge: $ZIP, файл $(jq -r .id response.json)"

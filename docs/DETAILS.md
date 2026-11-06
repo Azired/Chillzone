@@ -247,7 +247,16 @@ luacheck следит за глобалами: аддон может писат�
 2. Поставить тег и запушить его: `git tag v0.4.1 && git push origin v0.4.1`.
 3. [`.github/workflows/release.yml`](../.github/workflows/release.yml) проверит, что тег совпадает с версией в toc, прогонит тесты и luacheck, соберёт `Chillzone-0.4.1.zip` (в нём одна папка `Chillzone`) и создаст черновик релиза с шаблоном описания.
 4. Дописать в черновике «Что нового» и опубликовать.
+5. После публикации [`.github/workflows/curseforge.yml`](../.github/workflows/curseforge.yml) загрузит тот же архив на CurseForge, а описание релиза станет changelog. Вручную туда ничего загружать не нужно, иначе на CurseForge будет два одинаковых файла.
 
 Можно и наоборот: сначала `gh release create v0.4.1 --notes-file notes.md` с готовым описанием — тогда workflow приложит архив к уже созданному релизу.
+
+Для загрузки на CurseForge в настройках репозитория (Settings → Secrets and variables → Actions) нужны:
+
+- переменная `CURSEFORGE_PROJECT_ID` — Project ID со страницы проекта на CurseForge. Без неё загрузка пропускается;
+- секрет `CURSEFORGE_API_TOKEN` — токен со страницы [API Tokens](https://authors.curseforge.com/#/settings/api-tokens);
+- необязательная переменная `CURSEFORGE_GAME_VERSIONS` — версии игры через запятую (`1.15.8,2.5.5`). По умолчанию они берутся из `## Interface` в toc: `11509` → `1.15.9`. Если CurseForge не знает ни одной из них, workflow упадёт и перечислит версии, которые знает.
+
+Уже опубликованный релиз загружается вручную: Actions → CurseForge → Run workflow, указать тег.
 
 Лицензия — MIT, см. [LICENSE](../LICENSE).

@@ -13,7 +13,7 @@ luacheck .             # линтер, настройки в .luacheckrc
 
 На Windows: `scoop install luajit luacheck`. Чтобы прогнать не всё, задайте `CZ_TEST_FILTER=<часть имени теста>` (сравнивается подстрока имени из `T.test`); `CZ_TEST_PROGRESS=1` печатает каждый пройденный тест. `CZ_SEED=<n>` меняет seed симулятора в `test_relay` и `test_chat`. CI (`.github/workflows/ci.yml`) запускает обе команды на каждый PR и пуш в `main`.
 
-Сборки нет: игра грузит папку `Chillzone/` как есть. Релиз — тег `vX.Y.Z`. Workflow `release.yml` сверяет тег с `## Version` в toc, собирает `Chillzone-X.Y.Z.zip` и создаёт черновик релиза. Версия записана в **двух** местах: `## Version` в `Chillzone/Chillzone.toc` и `C.VERSION` в `Chillzone/Config.lua`. Тест следит, чтобы они совпадали.
+Сборки нет: игра грузит папку `Chillzone/` как есть. Релиз — тег `vX.Y.Z`. Workflow `release.yml` сверяет тег с `## Version` в toc, собирает `Chillzone-X.Y.Z.zip` и создаёт черновик релиза. После публикации релиза `curseforge.yml` загружает тот же архив на CurseForge (настройка — в `docs/DETAILS.md`, «Выпуск версии»). Версия записана в **двух** местах: `## Version` в `Chillzone/Chillzone.toc` и `C.VERSION` в `Chillzone/Config.lua`. Тест следит, чтобы они совпадали.
 
 ## Устройство
 
