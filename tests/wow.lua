@@ -37,6 +37,13 @@ function World:Run(seconds)
 	self.now = stop
 end
 
+function World:Pair(source, receiver)
+	assert(source.ns.Security.Link(receiver:Name()), "officer could not initiate pairing")
+	self:Run(5)
+	assert(receiver.ns.Security.Accept(source:Name()), "receiving officer could not approve pairing")
+	self:Run(10)
+end
+
 ---------------------------------------------------------------------------
 -- Гильдии: участники — клиенты или просто строки ростера (не в игре)
 ---------------------------------------------------------------------------
@@ -182,6 +189,8 @@ local function Env(c)
 	local w = c.world
 	local env = {}
 	env._G = env
+	env.bit = require("bit")
+	env.debugprofilestop = function() return os.clock() * 1000 end
 	env.GetTime = function() return w.now end
 	env.GetServerTime = function() return SERVER0 + math.floor(w.now) + (c.clockSkew or 0) end
 	env.time = env.GetServerTime
@@ -335,9 +344,10 @@ function World:Client(opts)
 		named = {}, hooks = {}, bindings = {},
 	}, Client)
 	c.env = Env(c)
+	c.env.ChillzoneDB = opts.db
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
-		if not f:find("^libs/") then
+		if not f:find("^libs/") or f == "libs/Ed25519.lua" then
 			T.load({ f }, c.env, c.ns)
 			if f == "Config.lua" then
 				c.ns.Config.RELAYS = opts.relays or {}

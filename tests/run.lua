@@ -13,6 +13,8 @@ local SUITES = {
 	"test_data",
 	"test_relay",
 	"test_chat",
+	"test_security",
+	"test_signatures",
 }
 
 for _, name in ipairs(SUITES) do

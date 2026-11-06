@@ -5,3 +5,7 @@ reference/
 *.bak
 .DS_Store
 Thumbs.db
+
+# Dependency candidates downloaded for the signature feasibility investigation.
+/crypto-evaluation/
+/security-review/

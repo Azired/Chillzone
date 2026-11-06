@@ -96,13 +96,14 @@ function Comm.Send(dist, payload, opts)
 		for _, job in ipairs(queue) do
 			if job.key == opts.key and job.i == 1 then
 				job.parts, job.at, job.target, job.done = Codec.Pack(payload, NewId()), now, opts.target, opts.done
+				job.guard = opts.guard
 				return true
 			end
 		end
 	end
 	local job = {
 		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1,
-		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done,
+		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done, guard = opts.guard,
 	}
 	if job.prio then
 		local pos = 1
@@ -121,7 +122,7 @@ function Comm.Send(dist, payload, opts)
 				break
 			end
 		end
-		if not victim then break end
+		if not victim then Finish(job, false, "dropped"); return false end
 		Finish(victim, false, "dropped")
 	end
 	return true
@@ -134,6 +135,7 @@ end
 local function PumpOnce(prioOnly)
 	local job = queue[1]
 	if not job or (prioOnly and not job.prio) then return false end
+	if job.guard and not job.guard() then Finish(job, false, "authority changed"); return true end
 	if job.dist == "GUILD" and not ns.MyGuild() then
 		Finish(job, false, "no guild")
 		return true
@@ -210,7 +212,10 @@ local function OnAddon(prefix, msg, dist, sender)
 	if prefix ~= ns.PREFIX or not ns.me or type(msg) ~= "string" or type(sender) ~= "string" then return end
 	if dist ~= "GUILD" and dist ~= "WHISPER" then return end
 	sender = U.Normal(sender)
+	local realm = sender:match("%-([^%-]+)$")
+	if realm and realm ~= ns.realm and U.GroupOf(realm) ~= ns.group then return end
 	if ns.IsMe(sender) then return end
+	if dist == "GUILD" and (not ns.Roster.Fresh() or ns.Roster.RankOf(sender) == nil) then return end
 	if msg:byte(1) == 67 then -- "C": кусок
 		local a = assemblers[dist]
 		if not a then

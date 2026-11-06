@@ -59,12 +59,12 @@ end
 ---------------------------------------------------------------------------
 -- Я
 ---------------------------------------------------------------------------
--- Откуда известно, офицер ли я: глава, флаг звания или запасное правило OFFICER_RANK.
+-- Officer authority comes from the leader rank or the native officer flag.
 local function OfficerSource(rank)
 	if type(rank) ~= "number" then return "?" end
 	if rank == 0 then return L.DBG_SRC_LEADER end
 	if ns.Roster.RankFlagOfficer(rank) ~= nil then return L.DBG_SRC_FLAG end
-	return L.DBG_SRC_FALLBACK:format(C.OFFICER_RANK)
+	return L.DBG_SRC_UNKNOWN
 end
 
 local function Me(lines)

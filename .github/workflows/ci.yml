@@ -26,13 +26,20 @@ jobs:
       - uses: lunarmodules/luacheck@v1.2.0
 
   test:
-    name: Tests
+    name: Tests (${{ matrix.interpreter }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        interpreter: [lua5.1, luajit]
     steps:
       - uses: actions/checkout@v7
-      - name: Install LuaJIT
+      - name: Install Lua interpreters and the game-compatible bit library
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq --no-install-recommends luajit
-      - name: Run tests
-        run: luajit tests/run.lua
+          sudo apt-get install -yq --no-install-recommends lua5.1 lua-bitop luajit
+      - name: Run functional, cryptographic and adversarial tests
+        env:
+          CZ_TEST_PROGRESS: '1'
+        run: ${{ matrix.interpreter }} tests/run.lua

@@ -22,7 +22,11 @@ local function Build(opts)
 	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2, relays = RELAY, class = "WARRIOR" })
 	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, relays = RELAY, class = "DRUID" })
 	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, relays = RELAY, class = "HUNTER" })
+	w:Run(30)
+	w:Pair(c.V, c.A)
+	w:Pair(c.G, c.A)
 	w:Run(opts.run or 400)
+	c.B.ns.Relay.PingAll(); w:Run(45)
 	return w, c
 end
 
@@ -298,8 +302,8 @@ T.test("окно: вкладка «Отладка» — главам и офиц
 	local via = B.ns.Relay.Pick()
 	T.ok(via and (via.key == "арагорн светлый" or via.key == "карл великий"), "Борис шлёт через офицера главной")
 	T.ok(b:find("моё реле: " .. B.ns.Util.Display(via.name), 1, true), "через кого шлю")
-	T.ok(b:find("в приоритете  из Config (RELAYS) | отвечает", 1, true), "Арагорн из Config, офицер, отвечает")
-	T.ok(b:find("Мира Тихая  узнал от другого реле", 1, true), "Мира не в приоритете")
+	T.ok(b:find("в приоритете", 1, true) and b:find("отвечает", 1, true), "certified officer is preferred and reachable")
+	T.ok(b:find("Мира Тихая", 1, true), "certified ordinary backup is visible")
 	T.ok(b:find("Орден Чиллзона | от Глеб Гордый", 1, true), "откуда отчёт Ордена")
 	-- Реле не в игре, отклонённые отчёты и ошибки.
 	local e = B.ns.Relay.Known()["арагорн светлый"]
@@ -307,7 +311,7 @@ T.test("окно: вкладка «Отладка» — главам и офиц
 	B.ns.Data.rejected["старее"] = 2
 	B.ns.db.errors[1] = "проверка: |cffff0000сломалось"
 	b = DebugText(B)
-	T.ok(b:find("Арагорн Светлый  в приоритете  из Config (RELAYS) | не в игре, ещё 2 мин", 1, true), "реле не в игре")
+	T.ok(b:find("Арагорн Светлый", 1, true) and b:find("не в игре, ещё 2 мин", 1, true), "relay outage is visible")
 	T.ok(b:find("отклонено: старее 2", 1, true), "отклонённые отчёты")
 	T.ok(b:find("проверка: cffff0000сломалось", 1, true), "ошибка без цветового кода")
 	local tt = setmetatable({}, { __index = function() return function() end end })

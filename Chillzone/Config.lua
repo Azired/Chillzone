@@ -4,16 +4,17 @@ local ADDON, ns = ...
 local C = {}
 ns.Config = C
 
-C.VERSION = "0.2.1"
-C.PREFIX = "CHILLZONE" -- префикс аддон-сообщений (до 16 символов)
+C.VERSION = "0.3.0"
+C.PREFIX = "CHZSIGNED1" -- incompatible trust boundary: unsigned older clients cannot join
 
 -- «Своя» гильдия: в названии есть эта подстрока (без учёта регистра, кириллица).
 C.GUILD_TOKEN = "Чиллзон"
 -- Главная гильдия: её глава — Король, главы остальных — Лорды, офицеры — Капитаны.
 C.MAIN_GUILD = "Чиллзон"
 -- Офицеры — звания с игровым флагом «офицер» (галочка в настройках гильдии), как в
--- ChillZoneUnion 0.6. Если игра права званий не отдала — rankIndex от 0 (глава) до
--- OFFICER_RANK включительно.
+-- ChillZoneUnion 0.6.
+-- Live authorization fails closed when the native permission flag is unknown.
+-- OFFICER_RANK is retained only as a default for pure data builders.
 C.OFFICER_RANK = 1
 -- Связные: игровое звание, которому глава гильдии доверяет связь между гильдиями
 -- (как «Ветеран» в ChillZoneUnion). Сравнивается название звания целиком, без учёта
@@ -22,19 +23,13 @@ C.OFFICER_RANK = 1
 -- Остальные участники не пересылают чужие сообщения. Пустая строка — только глава и офицеры.
 -- Действует, только когда TRUST_ANY_MEMBER = false.
 C.RELAY_RANK = "Ветеран"
--- Пока звания не розданы: репортёром своей гильдии может стать любой участник с аддоном,
--- а в главной гильдии любой участник — реле. Пересылки по GUILD (RG) принимаются от любого
--- согильдийца. false — проверка по званию: только глава, офицеры и RELAY_RANK.
+-- Certified members are fallback transports. Native/certified officers have priority.
+-- Forwarded data always requires an end-to-end signature; relay status grants no issuer rights.
+-- false retains the optional officer/veteran transport restriction.
 C.TRUST_ANY_MEMBER = true
 
--- Стартовые ретрансляторы: персонажи, через которых гильдии обмениваются данными.
--- Пишется так, как имя видно в игре: "Имя Фамилия" (без реалма).
--- Участники главной гильдии с аддоном (при TRUST_ANY_MEMBER = false — глава, офицеры и
--- связные) — ретрансляторы и без этого списка.
-C.RELAYS = {
-	-- "Имя Фамилия",
-	"Могаю Прохожих",
-}
+-- Legacy configuration retained for compatibility; it grants no trust in 0.3.
+C.RELAYS = {}
 
 -- Необязательный белый список гильдий. Пустой — подходит любая гильдия с GUILD_TOKEN.
 C.GUILDS = {
@@ -82,3 +77,9 @@ C.CHAT_BURST = 6 -- у получателя: строк сразу от одно
 C.CHAT_REFILL = 1.2 -- и по одной раз в столько секунд
 C.CHAT_TIER_MIN = 60 -- строк в минуту на уровень
 C.CHAT_HISTORY = 100
+
+-- Credentials permit transport for a day; privileged roles require a recent renewal.
+C.AUTH_TTL = 24 * 3600
+C.AUTH_ROLE_TTL = 15 * 60
+C.AUTH_RENEW = 10 * 60
+C.AUTH_ROSTER_TTL = 120

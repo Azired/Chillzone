@@ -58,6 +58,10 @@ function ns.SafeCall(where, fn, ...)
 end
 
 local listeners = {}
+function ns.CaptureError(where, err)
+	ns.SafeCall(where, function() error(tostring(err)) end)
+end
+
 function ns.On(name, fn)
 	listeners[name] = listeners[name] or {}
 	table.insert(listeners[name], fn)

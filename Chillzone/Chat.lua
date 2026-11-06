@@ -65,8 +65,8 @@ function Chat.VerifiedLevel(guild, sender)
 	end
 	if myRank ~= nil then return 0 end -- согильдиец назвался другой гильдией
 	-- В отчёте чужой гильдии есть только глава и офицеры: ранг известен — значит, офицер.
-	local rank = ns.Data.KnownRank(guild, sender)
-	return Chat.LevelOf(guild, rank, rank ~= nil)
+	local c = ns.Security.Member(guild, sender)
+	return c and ns.Security.Level(c) or 0
 end
 
 ---------------------------------------------------------------------------
@@ -200,7 +200,9 @@ local function TierOk(tier, now)
 	return m.n <= C.CHAT_TIER_MIN
 end
 
-function Chat.Receive(msg, sender, dist)
+function Chat.Receive(msg, sender, dist, ctx)
+	if dist ~= "GUILD" and dist ~= "RELAY" then return end
+	if not ctx or not ctx.authenticated then return end
 	local d = Codec.DecodeChat(msg)
 	if not d or ns.IsMe(sender) or not ns.IsMember() then return end
 	if not U.IsMemberGuild(d.guild) then return end
@@ -248,6 +250,7 @@ function Chat.Send(tier, text)
 		ns.Print(L.CHAT_NO_RIGHTS, L["TIER_" .. tier])
 		return false
 	end
+	if not ns.Security.MyCertificate() then ns.Print(L.AUTH_NOT_READY); return false end
 	text = Codec.SanitizeChat(text)
 	if text == "" then
 		ns.Print(L.CHAT_USAGE)
@@ -270,11 +273,14 @@ function Chat.Send(tier, text)
 		nextId = (nextId + 1) % 10000
 		local msg = Codec.EncodeChat(tier, guild, nextId, class, part)
 		if msg then
-			ns.Comm.Send("GUILD", msg, { prio = true, logged = true })
-			ns.Relay.Out("P", msg)
-			seen[ns.myKey .. "#" .. nextId .. "#" .. part] = now
-			Chat.Show(tier, guild, ns.me, class, part)
-			Chat.stats.sent = Chat.stats.sent + 1
+			local id, textPart = nextId, part
+			ns.Security.Seal(msg, function(wire)
+				ns.Comm.Send("GUILD", wire, { prio = true, logged = true })
+				ns.Relay.Out("P", wire)
+				seen[ns.myKey .. "#" .. id .. "#" .. textPart] = now
+				Chat.Show(tier, guild, ns.me, class, textPart)
+				Chat.stats.sent = Chat.stats.sent + 1
+			end)
 		end
 	end
 	ns.Comm.Flush(2)

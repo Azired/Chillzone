@@ -25,13 +25,13 @@ local function Report(ns, guild, st, leader, officers, veterans)
 	return ns.Codec.DecodeReport(raw), raw
 end
 
-T.test("data: отчёт принимается, KnownRank по нему", function()
+T.test("data: census data alone never authorizes a guild role", function()
 	local _, _, ns = Setup()
 	local now = ns.ServerTime()
 	local r, raw = Report(ns, "Чиллзон Север", now)
 	T.ok(ns.Data.Take(r, raw, "Борис Быстрый-CAMWOWUS2Realm7PvE", now), "принят")
-	T.eq(ns.Data.KnownRank("Чиллзон Север", "Вера Верная", now), 0, "глава")
-	T.eq(ns.Data.KnownRank("ЧИЛЛЗОН СЕВЕР", "борис-быстрый", now), 1, "офицер, без учёта регистра и формы имени")
+	T.eq(ns.Data.KnownRank("Чиллзон Север", "Вера Верная", now), nil, "an unverified report grants no leader role")
+	T.eq(ns.Data.KnownRank("ЧИЛЛЗОН СЕВЕР", "борис-быстрый", now), nil, "an unverified report grants no officer role")
 	T.eq(ns.Data.KnownRank("Чиллзон Север", "Кто Угодно", now), nil, "рядовой неизвестен")
 	local again = ns.Data.Take(r, raw, "Борис Быстрый", now)
 	T.no(again, "повтор не меняет")
@@ -117,7 +117,7 @@ T.test("data: сроки FRESH, TOTAL_KEEP, KEEP", function()
 	T.eq(ns.Data.Row("Чиллзон Север"), nil, "удалено после 7 дней")
 end)
 
-T.test("data: главная гильдия решает судьбу выученных реле", function()
+T.test("data: unsigned census and learned names cannot vouch for relays", function()
 	local _, _, ns = Setup()
 	ns.Config.TRUST_ANY_MEMBER = false
 	local now = ns.ServerTime()
@@ -126,17 +126,17 @@ T.test("data: главная гильдия решает судьбу выуче
 		{ { name = "Арагорн Светлый", online = true, days = 0, class = "MAGE", level = 60, rank = 1 } },
 		{ { name = "Вадим Ветров", online = true, days = 0, class = "ROGUE", level = 60, rank = 2 } })
 	T.ok(ns.Data.Take(r, raw, "Арагорн Светлый", now), "отчёт главной")
-	T.ok(ns.Data.IsMainTrusted("Арагорн Светлый", now), "офицер главной")
-	T.ok(ns.Data.IsMainTrusted("Вадим Ветров", now), "связной главной")
-	T.eq(ns.Data.IsMainTrusted("Мира Тихая", now), false, "рядовой")
+	T.eq(ns.Data.IsMainTrusted("Арагорн Светлый", now), nil, "census officer claim is not authority")
+	T.eq(ns.Data.IsMainTrusted("Вадим Ветров", now), nil, "census veteran claim is not authority")
+	T.eq(ns.Data.IsMainTrusted("Мира Тихая", now), nil, "membership is unknown without an approved root")
 	T.eq(ns.Data.KnownRank("Чиллзон", "Вадим Ветров", now), nil, "связной — не офицер для уровней чата")
 	ns.store.relays[ns.Util.Key("Мира Тихая")] = { name = "Мира Тихая", t = now }
 	T.eq(ns.Relay.TrustOf("Мира Тихая"), nil, "выученное реле не из руководства главной — не доверено")
 	ns.store.relays[ns.Util.Key("Арагорн Светлый")] = { name = "Арагорн Светлый", t = now }
-	T.eq(ns.Relay.TrustOf("Арагорн Светлый"), "gossip", "из руководства — доверено")
+	T.eq(ns.Relay.TrustOf("Арагорн Светлый"), nil, "a claimed officer needs a signed credential")
 	ns.store.relays[ns.Util.Key("Вадим Ветров")] = { name = "Вадим Ветров", t = now }
-	T.eq(ns.Relay.TrustOf("Вадим Ветров"), "gossip", "связной главной — доверено")
+	T.eq(ns.Relay.TrustOf("Вадим Ветров"), nil, "a claimed veteran needs a signed credential")
 	-- Без проверки звания реле может быть любой участник: отчёту главной нечем его опровергнуть.
 	ns.Config.TRUST_ANY_MEMBER = true
-	T.eq(ns.Relay.TrustOf("Мира Тихая"), "gossip", "любой участник — доверено")
+	T.eq(ns.Relay.TrustOf("Мира Тихая"), nil, "member fallback never bypasses credential verification")
 end)

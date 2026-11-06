@@ -43,12 +43,17 @@ function Roster.MyRank()
 	return rank
 end
 
+function Roster.Fresh()
+	local guild = ns.MyGuild()
+	return guild ~= nil and Roster.guild == guild and Roster.scannedAt ~= nil
+		and ns.Now() - Roster.scannedAt <= C.AUTH_ROSTER_TTL
+end
+
 ---------------------------------------------------------------------------
 -- Офицерские звания. Как в ChillZoneUnion 0.6: офицер — не ранг 0–1, а звание с игровым
 -- флагом «офицер» (галочка OfficerCheckbox в настройках гильдии, флаг 22 у
 -- C_GuildInfo.GuildControlGetRankFlags; звания там считаются с 1, ранги ростера — с 0).
--- Номер, название и право приглашать роли не решают. Если игра флаги не отдала (нет API,
--- ошибка, пустая таблица, скрытое значение) — по Config.OFFICER_RANK, как раньше.
+-- Unknown permission flags never grant officer access by rank number.
 ---------------------------------------------------------------------------
 local OFFICER_FLAG = 22
 local rankOfficer = {} -- [rankIndex] = true/false, сбрасывается при каждом скане
@@ -80,7 +85,7 @@ function Roster.IsOfficerRank(rank)
 	local v = rankOfficer[rank]
 	if v == nil then
 		v = Roster.RankFlagOfficer(rank)
-		if v == nil then v = rank <= C.OFFICER_RANK end
+		if v == nil then v = false end
 		rankOfficer[rank] = v
 	end
 	return v
@@ -185,6 +190,7 @@ function Roster.Scan()
 		end
 	end
 	Roster.byKey, Roster.rankNames, Roster.members, Roster.guild = byKey, rankNames, rows, guild
+	Roster.scannedAt = ns.Now()
 	local r = Roster.Build(guild, rows, numOnline, ns.faction, ns.ServerTime())
 	if ns.Census then r.users = ns.Census.Users() end
 	Roster.report = r

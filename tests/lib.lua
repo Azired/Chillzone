@@ -73,12 +73,16 @@ end
 
 function T.run()
 	for _, t in ipairs(T.tests) do
+		local filter = os.getenv("CZ_TEST_FILTER")
+		if not filter or t.name:find(filter, 1, true) then
 		local ok, err = xpcall(t.fn, debug.traceback)
 		if ok then
 			T.passed = T.passed + 1
+			if os.getenv("CZ_TEST_PROGRESS") then io.write("PASS ", t.name, "\n"); io.flush() end
 		else
 			T.failed = T.failed + 1
 			io.write("FAIL ", t.name, "\n  ", tostring(err):gsub("\n", "\n  "), "\n")
+		end
 		end
 	end
 	io.write(("%d прошло, %d упало\n"):format(T.passed, T.failed))

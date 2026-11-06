@@ -66,7 +66,7 @@ end
 
 -- Чужой отчёт: r — декодированный, raw — его текст R1, origin — автор (имя, как его
 -- подписал сервер). Возвращает true или false, причина.
-function Data.Take(r, raw, origin, now)
+function Data.Take(r, raw, origin, now, ctx)
 	now = now or ns.ServerTime()
 	if not r or not origin then return Reject("пусто") end
 	if not U.IsMemberGuild(r.guild) then return Reject("чужое название") end
@@ -98,6 +98,7 @@ function Data.Take(r, raw, origin, now)
 		end
 	end
 	row.guild, row.r, row.raw, row.origin, row.st, row.at, row.conflict = r.guild, r, raw, U.Display(origin), st, now, conflict or nil
+	row.signed = ctx and ctx.authenticated and ctx.wire or nil
 	guilds[gk] = row
 	ns.Fire("DATA")
 	return true
@@ -119,18 +120,9 @@ function Data.IsFresh(row, now)
 	return row ~= nil and (now or ns.ServerTime()) - (row.st or 0) <= C.FRESH
 end
 
--- Ранг игрока в чужой гильдии по свежему отчёту без конфликта: 0 — глава, 1.. — офицер,
--- nil — неизвестно (считать рядовым).
+-- Census content never authorizes roles. Only a current guild credential does.
 function Data.KnownRank(guild, name, now)
-	local row = Data.Row(guild)
-	if not row or row.mine or row.conflict or not Data.IsFresh(row, now) then return nil end
-	local key = U.Key(name)
-	if not key then return nil end
-	if U.Key(row.r.leader) == key then return 0 end
-	for _, o in ipairs(row.r.officers or {}) do
-		if U.Key(o.name) == key then return o.rank or 1 end
-	end
-	return nil
+	return ns.Security and ns.Security.KnownRank(guild, name) or nil
 end
 
 -- Отчёт главной гильдии (не старше суток) или nil.
@@ -141,34 +133,19 @@ function Data.Main(now)
 	return nil
 end
 
--- Глава, офицер или связной главной гильдии по её отчёту — те, кто может быть реле:
--- true, false или nil (отчёта нет).
+-- These compatibility helpers use the same credential boundary as the relay.
 function Data.IsMainTrusted(name, now)
-	local row = Data.Main(now)
-	if not row then return nil end
-	local key = U.Key(name)
-	if not key then return false end
-	if U.Key(row.r.leader) == key then return true end
-	for _, list in ipairs({ row.r.officers or {}, row.r.veterans or {} }) do
-		for _, o in ipairs(list) do
-			if U.Key(o.name) == key then return true end
-		end
-	end
-	return false
+	if not ns.Security or not ns.Security.Roots()[U.GuildKey(C.MAIN_GUILD)] then return nil end
+	local c = ns.Security.Member(C.MAIN_GUILD, name)
+	return c ~= nil and (C.TRUST_ANY_MEMBER or c.role ~= "member") or false
 end
 
 -- Глава или офицер главной гильдии по её отчёту (без связных): true, false или nil (отчёта
 -- нет или руководство в отчётах расходится).
 function Data.IsMainOfficer(name, now)
-	local row = Data.Main(now)
-	if not row or row.conflict then return nil end
-	local key = U.Key(name)
-	if not key then return false end
-	if U.Key(row.r.leader) == key then return true end
-	for _, o in ipairs(row.r.officers or {}) do
-		if U.Key(o.name) == key then return true end
-	end
-	return false
+	if not ns.Security or not ns.Security.Roots()[U.GuildKey(C.MAIN_GUILD)] then return nil end
+	local c = ns.Security.Member(C.MAIN_GUILD, name)
+	return c ~= nil and ns.Security.Level(c) > 1
 end
 
 ---------------------------------------------------------------------------
@@ -258,8 +235,8 @@ function Data.Cached(now)
 	now = now or ns.ServerTime()
 	local out = {}
 	for gk, row in pairs(Guilds()) do
-		if not row.mine and row.raw and row.origin and now - (row.st or 0) <= C.TOTAL_KEEP then
-			out[#out + 1] = { key = gk, raw = row.raw, origin = row.origin }
+		if not row.mine and row.signed and row.origin and now - (row.st or 0) <= C.TOTAL_KEEP then
+			out[#out + 1] = { key = gk, raw = row.signed, origin = row.origin }
 		end
 	end
 	return out

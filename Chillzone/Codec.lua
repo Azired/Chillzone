@@ -22,7 +22,7 @@ ns.Codec = Codec
 local floor, concat = math.floor, table.concat
 
 Codec.CHUNK = 220
-Codec.MAX_CHUNKS = 20
+Codec.MAX_CHUNKS = 32 -- signed credential chain plus a full census report; still bounded
 Codec.MAX_MSG = 250 -- длиннее — режется на куски
 Codec.GUILD_CAP = 1000
 local MAX_COUNT = 10000
@@ -291,7 +291,7 @@ end
 -- Конверты реле
 ---------------------------------------------------------------------------
 Codec.RELAY_MODES = { L = true, P = true } -- L: новый заменяет старый того же автора; P: каждое
-Codec.INNER = { R1 = true, M1 = true }
+Codec.INNER = { R1 = true, M1 = true, S1 = true }
 
 function Codec.InnerType(inner)
 	local t = type(inner) == "string" and inner:sub(1, 2)
