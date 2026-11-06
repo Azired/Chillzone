@@ -70,14 +70,9 @@ function Relay.TrustOf(name)
 	return ns.Security.Level(c) > 1 and "officer" or "member"
 end
 
--- Глава или офицер главной гильдии: по моему ростеру, если я в ней, иначе по её отчёту.
--- Такие реле выбираются первыми (Relay.Pick).
+-- Глава или офицер главной гильдии — по свежему сертификату, у всех одинаково: и в главной
+-- гильдии, и в остальных. Такие реле идут первыми (Top).
 function Relay.IsMainOfficer(name)
-	local g = ns.MyGuild()
-	if g and U.IsMainGuild(g) then
-		local role = ns.Roster.TrustOf(name)
-		return role == "leader" or role == "officer"
-	end
 	local c = ns.Security.Member(C.MAIN_GUILD, name)
 	return c ~= nil and ns.Security.Level(c) > 1
 end
@@ -121,20 +116,41 @@ local function Verified(e, now)
 	return e.verified ~= nil and now - e.verified <= C.RELAY_VERIFIED and Usable(e, now)
 end
 
--- Discovery is bounded by guild/active author, never a full-mesh poll of readers.
-local function ProbeCandidates()
-	local list, now = Relay.Candidates(), Now()
+-- Порядок реле: сначала глава и офицеры главной гильдии, потом остальные, внутри — по ключу.
+local function Rank(list)
+	local officer = {}
+	for _, e in ipairs(list) do officer[e.key] = Relay.IsMainOfficer(e.name) end
 	table.sort(list, function(a, b)
-		local ao, bo = Relay.IsMainOfficer(a.name), Relay.IsMainOfficer(b.name)
-		if ao ~= bo then return ao end
+		if officer[a.key] ~= officer[b.key] then return officer[a.key] end
 		return a.key < b.key
 	end)
+	return list
+end
+
+-- Три доступных реле сверху списка: у них регистрируются репортёры, через них идут
+-- сообщения. Я сам стою в общем списке, если я реле, но в ответ не попадаю: так клиенты
+-- главной гильдии и репортёры видят одну и ту же тройку. Опрос ограничен ею, а не всеми.
+local function Top()
+	local now, list = Now(), {}
+	for _, e in ipairs(Relay.Candidates()) do
+		if Usable(e, now) then list[#list + 1] = e end
+	end
+	if Relay.IAmRelay() then list[#list + 1] = { key = ns.myKey, name = ns.me, self = true } end
+	Rank(list)
 	local out = {}
-	for _, e in ipairs(list) do
-		if Usable(e, now) then out[#out + 1] = e end
-		if #out >= 3 then break end
+	for i = 1, math.min(3, #list) do
+		if not list[i].self then out[#out + 1] = list[i] end
 	end
 	return out
+end
+
+-- Я реле и у меня зарегистрирован репортёр чужой гильдии: моё сообщение я разошлю сам.
+function Relay.Serving()
+	local now, mine = Now(), MyGuildKey()
+	for gk, r in pairs(reporters) do
+		if gk ~= mine and now - r.t <= REG_TTL then return true end
+	end
+	return false
 end
 
 ---------------------------------------------------------------------------
@@ -159,6 +175,7 @@ local function Ask(e, payload)
 	local now = Now()
 	if e.asked and now - e.asked < C.RELAY_TIMEOUT then return end
 	e.asked = now
+	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
 	ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key })
 	local asked = now
 	ns.After(C.RELAY_TIMEOUT + 1, "relay timeout", function()
@@ -170,8 +187,8 @@ function Relay.PingAll()
 	local now = Now()
 	local c = ns.Security.MyCertificate()
 	if not c then return end
-	for _, e in ipairs(ProbeCandidates()) do
-		if Usable(e, now) then Ask(e, "RP~" .. ns.Ed25519.ToB64(c.raw)) end
+	for _, e in ipairs(Top()) do
+		if Usable(e, now) then Ask(e, "RP~" .. c.fp) end
 	end
 end
 
@@ -191,12 +208,13 @@ function Relay.Register()
 		reporters[gk], regOf[ns.myKey] = { name = ns.me, key = ns.myKey, t = now }, gk
 		if isNew then
 			for _, c in ipairs(ns.Data.Cached()) do
+				ns.Security.IntroduceWire("GUILD", c.raw)
 				ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = "rg:" .. c.key })
 			end
 		end
 	end
-	for _, e in ipairs(ProbeCandidates()) do
-		if Usable(e, now) then Ask(e, "RR~" .. Codec.Clean(g) .. "~" .. ns.Ed25519.ToB64(credential.raw)) end
+	for _, e in ipairs(Top()) do
+		if Usable(e, now) then Ask(e, "RR~" .. Codec.Clean(g) .. "~" .. credential.fp) end
 	end
 end
 
@@ -210,12 +228,14 @@ end
 local function CatchUp(r, gk)
 	for _, c in ipairs(ns.Data.Cached()) do
 		if c.key ~= gk then
+			ns.Security.IntroduceWire(r.name, c.raw)
 			ns.Comm.Send("WHISPER", Codec.EncodeRM("RM", "L", c.origin, c.raw), { target = r.name, key = "rm:" .. gk .. ":" .. c.key })
 		end
 	end
 	local mine = MyGuildKey()
 	local own = ns.Census.lastRaw
 	if own and mine and mine ~= gk and ns.Census.IsReporter() then
+		ns.Security.IntroduceWire(r.name, own)
 		ns.Comm.Send("WHISPER", Codec.EncodeRM("RM", "L", U.Display(ns.me), own), { target = r.name, key = "rm:" .. gk .. ":" .. mine })
 	end
 end
@@ -255,13 +275,14 @@ local function FlushHold()
 	end
 end
 
--- Реле, через которое пойдёт сообщение моей гильдии сейчас: запись known или nil. Из
--- отвечающих реле первыми идут глава и офицеры главной гильдии, остальные — если ни один из
--- них не отвечает. Внутри группы реле меняется раз в RELAY_WINDOW (по хешу гильдии).
+-- Реле, через которое пойдёт сообщение моей гильдии сейчас: запись known или nil. Только
+-- из тройки Top (у других реле репортёры не зарегистрированы) и только отвечающее; глава и
+-- офицеры главной — первыми, остальные — если ни один из них не отвечает. Внутри группы
+-- реле меняется раз в RELAY_WINDOW (по хешу гильдии).
 function Relay.Pick()
 	local now = Now()
 	local officers, others = {}, {}
-	for _, e in ipairs(Relay.Candidates()) do
+	for _, e in ipairs(Top()) do
 		if Verified(e, now) and Relay.TrustOf(e.name) then
 			local list = Relay.IsMainOfficer(e.name) and officers or others
 			list[#list + 1] = e.key
@@ -272,10 +293,12 @@ function Relay.Pick()
 	return pick and known[pick] or nil
 end
 
--- mode: "L" (отчёт: новый заменяет старый) или "P" (каждое: чат). inner: R1 или M1.
+-- mode: "L" (отчёт: новый заменяет старый) или "P" (каждое: чат). inner: подписанный S1.
+-- Реле главной гильдии рассылает само, только если у него есть чужие репортёры; иначе, как
+-- и все, шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту.
 function Out(mode, inner)
 	if not ns.IsMember() or Codec.InnerType(inner) ~= "S1" then return false end
-	if Relay.IAmRelay() then
+	if Relay.IAmRelay() and Relay.Serving() then
 		Relay.HandleRL(ns.me, mode, inner)
 		return true
 	end
@@ -286,6 +309,7 @@ function Out(mode, inner)
 		return false
 	end
 	local key = mode == "L" and ("rl:" .. Codec.InnerType(inner)) or nil
+	ns.Security.Introduce(e.name)
 	ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name, key = key, prio = mode == "P", logged = Logged(inner) })
 	Remember(e.key, mode, inner)
 	return true
@@ -339,9 +363,11 @@ function Relay.HandleRL(origin, mode, inner)
 			local key = mode == "L" and ("rm:" .. gk .. ":" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 			if r.key == ns.myKey then
 				if gk == mine then
+					ns.Security.Introduce("GUILD", certificate.raw)
 					ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner), { key = key, prio = mode == "P", logged = Logged(inner) })
 				end
 			else
+				ns.Security.Introduce(r.name, certificate.raw)
 				ns.Comm.Send("WHISPER", Codec.EncodeRM("RM", mode, U.Display(origin), inner), { target = r.name, key = key, prio = mode == "P", logged = Logged(inner) })
 			end
 		end
@@ -365,15 +391,16 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	ns.Comm.Inject(clear, certificate.name, ctx)
 	if toGuild and ns.MyGuild() then
 		local key = mode == "L" and ("rg:" .. okey .. ":" .. Codec.InnerType(inner)) or nil
+		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
 	end
-	end)
+	end, ctx.via == "RG")
 end
 
 local function GossipList(exceptKey)
 	local now = Now()
 	local out = {}
-	for _, e in ipairs(Relay.Candidates()) do
+	for _, e in ipairs(Rank(Relay.Candidates())) do
 		if #out >= C.RELAY_GOSSIP then break end
 		if e.key ~= exceptKey and Usable(e, now) then out[#out + 1] = U.Display(e.name) end
 	end
@@ -386,24 +413,21 @@ local function Pong(sender)
 	if lastPong[k] and now - lastPong[k] < 5 then return end
 	lastPong[k] = now
 	ns.Security.SendPolicies(sender)
-	ns.Security.SendCredential(sender)
+	ns.Security.Introduce(sender)
 	ns.Comm.Send("WHISPER", Codec.EncodeRelayList(GossipList(k)), { target = sender, prio = true, key = "ry:" .. k })
 end
 
 ns.Comm.On("RP", function(msg, sender, dist)
 	if dist ~= "WHISPER" or not Relay.IAmRelay() then return end
-	local raw = msg:match("^RP~([%w_-]+)$")
-	raw = raw and ns.Ed25519.FromB64(raw)
-	if raw then ns.Security.CheckCertificate(raw, sender, function() Pong(sender) end) end
+	local fp = msg:match("^RP~([%w_-]+)$")
+	if fp then ns.Security.Resolve(fp, sender, sender, function() Pong(sender) end) end
 end)
 
 ns.Comm.On("RR", function(msg, sender, dist)
 	if dist ~= "WHISPER" or not Relay.IAmRelay() then return end
-	local guild, raw = msg:match("^RR~([^~]+)~([%w_-]+)$")
+	local guild, fp = msg:match("^RR~([^~]+)~([%w_-]+)$")
 	if not guild or not U.IsMemberGuild(guild) or Codec.LongGuild(guild) then return end
-	raw = ns.Ed25519.FromB64(raw)
-	if not raw then return end
-	ns.Security.CheckCertificate(raw, sender, function(certificate)
+	ns.Security.Resolve(fp, sender, sender, function(certificate)
 	if U.GuildKey(certificate.guild) ~= U.GuildKey(guild) then return end
 	local gk, k = U.GuildKey(guild), U.Key(sender)
 	local now = Now()

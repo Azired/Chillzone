@@ -4,7 +4,7 @@ local ADDON, ns = ...
 local C = {}
 ns.Config = C
 
-C.VERSION = "0.3.0"
+C.VERSION = "0.4.0"
 C.PREFIX = "CHZSIGNED1" -- incompatible trust boundary: unsigned older clients cannot join
 
 -- «Своя» гильдия: в названии есть эта подстрока (без учёта регистра, кириллица).
@@ -79,7 +79,17 @@ C.CHAT_TIER_MIN = 60 -- строк в минуту на уровень
 C.CHAT_HISTORY = 100
 
 -- Credentials permit transport for a day; privileged roles require a recent renewal.
-C.AUTH_TTL = 24 * 3600
+-- Срок сертификата, делегирования офицеру и каталога главной гильдии. Корень продлевает
+-- делегирования, пока он в игре: без него гильдия работает столько, сколько этот срок.
+-- Столько же исключённый участник может писать от имени гильдии.
+C.AUTH_TTL = 7 * 24 * 3600
 C.AUTH_ROLE_TTL = 15 * 60
 C.AUTH_RENEW = 10 * 60
 C.AUTH_ROSTER_TTL = 120
+C.AUTH_ANNOUNCE = 10 * 60 -- свой сертификат гильдии: при смене и не чаще раза в столько
+C.AUTH_INTRODUCE = 30 * 60 -- сертификат автора одному получателю перед пакетом S1
+-- Проверок подписи в минуту: пакетов одного автора, пакетов через одного пересылающего
+-- (реле, репортёр) и новых сертификатов от одного отправителя.
+C.AUTH_AUTHOR_PER_MIN = 30
+C.AUTH_HOP_PER_MIN = 120
+C.AUTH_NEW_PER_MIN = 20

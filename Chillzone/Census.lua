@@ -139,6 +139,7 @@ ns.Comm.On("Q1", function(_, sender, dist)
 	lastQ1Answer = now
 	ns.Security.ShareTrust() -- native officer policy and reporter identity precede the cached envelopes
 	for _, c in ipairs(ns.Data.Cached()) do
+		ns.Security.IntroduceWire("GUILD", c.raw, true) -- спросивший мог отбросить прежний KP
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = "q1:" .. c.key })
 	end
 end)
