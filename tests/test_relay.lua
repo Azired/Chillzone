@@ -397,6 +397,10 @@ T.test("relay: прежний действующий сертификат ост
 	local Ya = w:Client({ first = "Яна", surname = "Тихая", guild = guild, rank = 3, db = saved })
 	w:Run(90)
 	local old = assert(c.B.ns.Security.MyCertificate())
+	-- H1 объявляет отпечаток, но больше не запрашивает сертификат ради выборов.
+	-- Получаем прежний сертификат от самого Бориса до проверки его продления.
+	c.B.ns.Security.Introduce(Ya:Name(), old.raw, true)
+	w:Run(10)
 	local first = Ya.ns.Security.Member(guild, c.B:Name())
 	T.ok(first and first.fp == old.fp, "Яна знает первоначальный сертификат Бориса")
 
@@ -473,9 +477,13 @@ T.test("relay: смена репортёра — чат гильдии не те
 	local held = Holders()
 	T.ok(held[alla], "аренда перешла к Алле")
 	T.eq(held[vera], nil, "у Веры аренды больше нет")
+	local firstDebug = " (untrusted=" .. tostring(Al.ns.Relay.stats.untrusted) ..
+		", reporter=" .. tostring(Al.ns.Census.Reporter()) ..
+		", Vera H1=" .. tostring(Al.ns.Census.Peers()[vera] and Al.ns.Census.Peers()[vera].fp) .. ")"
 	for i, text in ipairs(lines) do
 		for _, cl in ipairs({ c.B, c.V, Al }) do
-			T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз")
+			T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз" ..
+				(cl == Al and i == 1 and firstDebug or ""))
 		end
 	end
 	-- После передачи рядовой тоже не перехватывает аренду Аллы.

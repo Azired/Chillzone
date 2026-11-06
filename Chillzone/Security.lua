@@ -173,6 +173,17 @@ end
 -- Сертификата с этим отпечатком нет: подождать и, если он ещё не проверяется, попросить
 -- его у того, кто прислал пакет (KQ). Тот только что сам проверял пакет — сертификат у него есть.
 -- Пакет пришёл по GUILD — и просьба по GUILD: так всей гильдии хватает одного ответа.
+local function AskCertificate(fp, sender, viaGuild, retry)
+    if not sender or inflight[fp] or ns.IsMe(sender) then return end
+    local key, now = (viaGuild and "GUILD" or Peer(sender)) .. "|" .. fp, ns.Now()
+    if not retry and asked[key] and now - asked[key] < 10 then return end
+    asked[key] = now
+    if viaGuild then
+        ns.Comm.Send("GUILD", "KQ~" .. fp, { prio = true, key = "kq:" .. key })
+    else
+        ns.Comm.Send("WHISPER", "KQ~" .. fp, { target = sender, prio = true, key = "kq:" .. key })
+    end
+end
 local function Await(fp, sender, fn, viaGuild)
     local list = waiting[fp]
     if not list then
@@ -183,17 +194,20 @@ local function Await(fp, sender, fn, viaGuild)
     end
     if #list >= 8 then return false end
     list[#list + 1] = fn
-    local key, now = (viaGuild and "GUILD" or Peer(sender)) .. "|" .. fp, ns.Now()
-    if sender and not inflight[fp] and not ns.IsMe(sender) and (not asked[key] or now - asked[key] >= 10) then
-        asked[key] = now
-        if viaGuild then
-            ns.Comm.Send("GUILD", "KQ~" .. fp, { prio = true, key = "kq:" .. key })
-        else
-            ns.Comm.Send("WHISPER", "KQ~" .. fp, { target = sender, prio = true, key = "kq:" .. key })
-        end
-    end
+    list.sender, list.viaGuild = sender, viaGuild
+    AskCertificate(fp, sender, viaGuild)
     return true
 end
+-- Если первый KP пришёл раньше корня KT, его проверка не начнётся. Повторяем KQ
+-- для уже ожидающих пакетов после получения корня, пока запрос ещё актуален.
+ns.On("AUTH_ROOT", function(guild)
+    if not Root(guild) then return end
+    local now = ns.Now()
+    for fp, list in pairs(waiting) do
+        local sender, viaGuild = list.sender, list.viaGuild
+        if now - list.at <= 30 and not byFp[fp] then AskCertificate(fp, sender, viaGuild, true) end
+    end
+end)
 local function Keep(c)
     if not c.approvedRoot or not Current(c) then return end
     Wake(c)
