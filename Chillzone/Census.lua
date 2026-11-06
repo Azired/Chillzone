@@ -47,15 +47,15 @@ end
 function Census.Reporter(withoutMe)
 	if not ns.myKey then return nil end
 	local now = ns.Now()
-	local live, guild = Live(now), ns.MyGuild()
-	local mine = not withoutMe and ns.Security.MyCertificate()
+	local live = Live(now)
+	local mine = not withoutMe and ns.Security.MyCertificate() ~= nil
 	local function ready(key)
 		if not Trusted(key) then return false end
-		if key == ns.myKey then return mine ~= nil end
+		if key == ns.myKey then return mine end
 		local p = live[key]
-		if not p or not guild then return false end
-		if p.fp then return ns.Security.MemberByFingerprint(guild, p.name, p.fp) ~= nil end
-		return p.legacy and ns.Security.Member(guild, p.name) ~= nil
+		-- Чужой сертификат проверяется при чтении S1. Выборы зависят от объявления H1,
+		-- а не от локального кэша: иначе новый клиент отбрасывает ранние RG.
+		return p ~= nil and (p.fp ~= nil or p.legacy == true)
 	end
 	local officers = not withoutMe and ready(ns.myKey) and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
 	for key in pairs(live) do
@@ -68,54 +68,10 @@ function Census.Reporter(withoutMe)
 	return Codec.PickReporter(me, ns.char and ns.char.shareZones or false, live, now, C.PEER_WINDOW, eligible)
 end
 
--- Сравнение для выборов: офицеры, согласие делиться зонами, затем ключ игрока.
-local function Better(key, peer, otherKey, other)
-	if not otherKey then return true end
-	local officer = ns.Roster.IsOfficerRank(ns.Roster.byKey[key])
-	local otherOfficer
-	if otherKey == ns.myKey then
-		otherOfficer = ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
-	else
-		otherOfficer = ns.Roster.IsOfficerRank(ns.Roster.byKey[otherKey])
-	end
-	if officer ~= otherOfficer then return officer end
-	local zones = otherKey == ns.myKey and ns.char and ns.char.shareZones or other and other.z
-	zones = not not zones
-	if peer.z ~= zones then return peer.z end
-	return key < otherKey
-end
-
--- Запрашиваем сертификат лишь у кандидата, который может сменить уже подтверждённого
--- репортёра. Иначе каждый читатель запрашивал бы сертификаты у всех согильдийцев.
-local function CouldReplace(key, peer)
-	local electedKey = Census.Reporter()
-	return Better(key, peer, electedKey, peers[electedKey])
-end
-
--- Если действующий репортёр пропал, проверяем уже объявленный H1 запасного кандидата:
--- не ждём следующего H1, который может прийти только через минуту.
-local function ResolveFallback(now)
-	local guild = ns.MyGuild()
-	if not guild then return end
-	local electedKey = Census.Reporter()
-	local candidateKey, candidate
-	for key, peer in pairs(Live(now)) do
-		if peer.fp and Trusted(key) and Better(key, peer, electedKey, peers[electedKey])
-			and not ns.Security.MemberByFingerprint(guild, peer.name, peer.fp)
-			and (not peer.askedAt or now - peer.askedAt >= 30)
-			and Better(key, peer, candidateKey, candidate) then
-			candidateKey, candidate = key, peer
-		end
-	end
-	if candidate then
-		candidate.askedAt = now
-		ns.Security.Resolve(candidate.fp, candidate.name, candidate.name, function() end, true)
-	end
-end
-
 function Census.IsReporter()
 	if not ns.IsMember() or not ns.loginAt then return false end
 	if ns.Now() - ns.loginAt < C.LOGIN_QUIET then return false end
+	if not ns.Security.MyCertificate() then return false end
 	return Census.Reporter() == ns.myKey
 end
 
@@ -136,7 +92,6 @@ function Census.Track()
 	if key ~= elected then
 		previous = elected and { key = elected, untilAt = now + C.REPORTER_HANDOVER } or nil
 		elected = key
-		ResolveFallback(now)
 	end
 	local me = Census.IsReporter()
 	if me == acting then return end
@@ -193,22 +148,10 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	if dist ~= "GUILD" then return end
 	local h = Codec.DecodeHello(msg)
 	if not h then return end
-	local key, now = U.Key(sender), ns.Now()
+	local key = U.Key(sender)
 	local known = peers[key]
-	local peer = { t = now, z = h.zones, r = h.relay, name = sender, version = h.version, fp = h.fp,
-		legacy = h.legacy,
-		askedAt = known and known.askedAt }
-	peers[key] = peer
-	-- Отпечаток в H1 — заявление кандидата. Если сертификата ещё нет в кэше,
-	-- запрашиваем его и допускаем кандидата только после проверки подписи.
-	if h.fp and Trusted(key) then
-		local guild = ns.MyGuild()
-		local cert = guild and ns.Security.MemberByFingerprint(guild, sender, h.fp)
-		if not cert and CouldReplace(key, peer) and (not peer.askedAt or now - peer.askedAt >= 30) then
-			peer.askedAt = now
-			ns.Security.Resolve(h.fp, sender, sender, function() end, true)
-		end
-	end
+	peers[key] = { t = ns.Now(), z = h.zones, r = h.relay, name = sender, version = h.version,
+		fp = h.fp, legacy = h.legacy }
 	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее.
 	if not known then ns.After(math.random(2, 6), "hello back", Census.SendHello) end
 end)

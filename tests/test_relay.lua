@@ -319,7 +319,7 @@ T.test("relay: офицер без сертификата не вытесняе�
 	T.ok(c.B.ns.Census.IsReporter(), "после ухода Веры Борис — репортёр")
 
 	-- У Аллы сохранены корни доверия, но нет ни своего сертификата, ни сертификата Бориса.
-	-- Издатель вышел из игры: сертификат Бориса приходит по запросу KQ после H1.
+	-- Издатель вышел из игры: кэш сертификатов Аллы остаётся пустым.
 	local roots = {}
 	for key, root in pairs(c.A.ns.Security.Roots()) do roots[key] = root end
 	local saved = { realms = {} }
@@ -330,12 +330,18 @@ T.test("relay: офицер без сертификата не вытесняе�
 	local Al = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 1, db = saved })
 	c.B.ns.Roster.Scan()
 	T.eq(Al.ns.Security.Member(guild, c.B:Name()), nil, "сертификата Бориса у Аллы сначала нет")
-	w:Run(60)
+	w:Run(15)
+	T.eq(Al.ns.Security.Member(guild, c.B:Name()), nil, "H1 не требует локального сертификата")
+	T.eq(Al.ns.Census.Reporter(), boris, "новый клиент сразу выбирает действующего репортёра")
+	T.ok(Al.ns.Census.MayForward(boris), "ранний RG от Бориса разрешён без его сертификата")
+	c.G:Slash("/cz1", "офицер без сертификата: первая строка")
+	w:Run(30)
+	T.eq(Al:Saw("офицер без сертификата: первая строка"), 1, "первая строка получена без сертификата Бориса")
+	w:Run(15)
 	local announced = c.B.ns.Census.Peers()[Key(c.B, Al:Name())]
 	T.ok(announced, "Борис получил H1 от Аллы")
 	T.no(announced.legacy, "H1 Аллы явно сообщает об отсутствии сертификата")
 	T.eq(Al.ns.Security.MyCertificate(), nil, "офицеру без издателя не выдали сертификат")
-	T.ok(Al.ns.Security.Member(guild, c.B:Name()), "Алла получила сертификат Бориса по H1 и KQ")
 	T.eq(c.B.ns.Census.Reporter(), boris, "Борис не уступил место офицеру без сертификата")
 	T.eq(Al.ns.Census.Reporter(), boris, "Алла также выбрала Бориса")
 
@@ -345,11 +351,36 @@ T.test("relay: офицер без сертификата не вытесняе�
 		T.eq(c.B:Saw(value), 1, "Борис получил сообщение один раз")
 		T.eq(Al:Saw(value), 1, "Алла получила сообщение один раз")
 	end
-	Line("офицер без сертификата: первая строка")
 	w:Run(c.B.ns.Config.REPORTER_HANDOVER + 20)
 	T.ok(c.B.ns.Census.IsReporter(), "Борис остаётся репортёром после интервала передачи")
 	Line("офицер без сертификата: вторая строка")
 	T.eq(#c.B.ns.db.errors, 0, "Борис: без ошибок")
+	T.eq(#Al.ns.db.errors, 0, "Алла: без ошибок")
+end)
+
+T.test("relay: старый H1 выбирает действующего репортёра без локального сертификата", function()
+	local w, c = Build()
+	local guild, vera = "Чиллзон Север", Key(c.B, c.V:Name())
+	local roots = {}
+	for key, root in pairs(c.A.ns.Security.Roots()) do roots[key] = root end
+	local saved = { realms = {} }
+	saved.realms[c.B.ns.group] = {}
+	saved.realms[c.B.ns.group][c.B.ns.faction] = {
+		security = { version = 1, roots = roots, certs = {}, policies = {} },
+	}
+	local Al = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 3, db = saved })
+	c.V.ns.Roster.Scan()
+	w:Run(8)
+	T.eq(Al.ns.Security.Member(guild, c.V:Name()), nil, "сертификат Веры не хранится у Аллы")
+	w:Deliver(c.V, "GUILD", c.V.ns.PREFIX, "H1~0.4.1~")
+	w:Run(1)
+	local peer = Al.ns.Census.Peers()[vera]
+	T.ok(peer and peer.legacy and not peer.fp, "старый H1 не содержит отпечатка")
+	T.eq(Al.ns.Census.Reporter(), vera, "старая Вера выбрана без зависимости от кэша")
+	T.ok(Al.ns.Census.MayForward(vera), "RG от старого клиента разрешён")
+	c.G:Slash("/cz1", "совместимость со старым H1")
+	w:Run(30)
+	T.eq(Al:Saw("совместимость со старым H1"), 1, "первое сообщение дошло один раз")
 	T.eq(#Al.ns.db.errors, 0, "Алла: без ошибок")
 end)
 
@@ -384,7 +415,7 @@ T.test("relay: прежний действующий сертификат ост
 	local renewed = Ya.ns.Security.Member(guild, c.B:Name())
 	T.ok(accepted and renewed and renewed.fp ~= old.fp, "Яна проверила новый сертификат Бориса")
 	T.eq(c.B.ns.Security.MyCertificate().fp, old.fp, "Борис ещё работает со старым")
-	T.ok(Ya.ns.Security.MemberByFingerprint(guild, c.B:Name(), old.fp), "старый сертификат всё ещё действителен")
+	T.eq(Ya.ns.Census.Peers()[key].fp, old.fp, "Борис объявил старый отпечаток")
 	c.V:Logout()
 	w:Run(c.B.ns.Config.PEER_WINDOW + 40)
 	T.ok(c.B.ns.Census.IsReporter(), "Борис стал репортёром со старым сертификатом")
@@ -420,9 +451,6 @@ T.test("relay: смена репортёра — чат гильдии не те
 	end
 	w:Run(15); Line(1)
 	w:Run(15); Line(2)
-	if not Al.ns.Security.MyCertificate() then
-		T.eq(c.B.ns.Census.Reporter(), vera, "до сертификата репортёр — Вера")
-	end
 	T.no(Al.ns.Census.IsReporter(), "Алла после входа ещё молчит")
 	-- Рядовой Севера пробует перехватить аренду, пока она передаётся: назвать себя
 	-- преемником (RU) и зарегистрироваться (RR).
@@ -446,9 +474,9 @@ T.test("relay: смена репортёра — чат гильдии не те
 	T.ok(held[alla], "аренда перешла к Алле")
 	T.eq(held[vera], nil, "у Веры аренды больше нет")
 	for i, text in ipairs(lines) do
-		for _, cl in ipairs({ c.B, c.V }) do T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз") end
-		-- Новый клиент принимает RG после получения корней и сертификата репортёра.
-		if i >= 3 then T.eq(Al:Saw(text), 1, "Алла видит строку " .. i .. " один раз") end
+		for _, cl in ipairs({ c.B, c.V, Al }) do
+			T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз")
+		end
 	end
 	-- После передачи рядовой тоже не перехватывает аренду Аллы.
 	for _, r in ipairs(relays) do

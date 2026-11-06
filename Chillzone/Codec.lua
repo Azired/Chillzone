@@ -285,9 +285,9 @@ end
 
 function Codec.DecodeHello(s)
 	if type(s) ~= "string" then return nil end
-	local version, flags, fp = s:match("^H1~([^~]*)~([%a]*)~([%w_-]*)$")
-	if not version then version, flags = s:match("^H1~([^~]*)~?([%a]*)$") end
-	if not version or (fp and fp ~= "0" and #fp ~= 16) then return nil end
+	local version, flags, fp = s:match("^H1~([^~]*)~([^~]*)~([^~]*)")
+	if not version then version, flags = s:match("^H1~([^~]*)~?([^~]*)") end
+	if not version or (fp and fp ~= "0" and (#fp ~= 16 or not fp:match("^[%w_-]+$"))) then return nil end
 	return { version = version:sub(1, 16), zones = flags:find("z", 1, true) ~= nil,
 		relay = flags:find("r", 1, true) ~= nil, fp = fp ~= "0" and fp or nil, legacy = fp == nil }
 end

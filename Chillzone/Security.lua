@@ -238,14 +238,14 @@ function S.CheckCertificate(raw, owner, done, from)
 end
 -- fn(c) — когда известен проверенный действующий сертификат с этим отпечатком: сразу или
 -- после того, как sender ответит на KQ. owner — чей это должен быть сертификат.
-function S.Resolve(fp, owner, sender, fn, viaGuild)
+function S.Resolve(fp, owner, sender, fn)
     if type(fp) ~= "string" or #fp ~= FP_LEN then return false end
     local function Use(c)
         if c and c.approvedRoot and Current(c) and (not owner or c.key == U.Key(owner)) then fn(c) end
     end
     local raw = byFp[fp]
     if raw then Use(Certificate(raw)); return true end
-    return Await(fp, sender, Use, viaGuild)
+    return Await(fp, sender, Use)
 end
 function S.Fingerprint(raw)
     local c = raw and Certificate(raw)
@@ -258,16 +258,6 @@ function S.Member(guild, name)
     local c = raw and Certificate(raw)
     local root = c and Root(c.guild)
     return root and c.approvedRoot == root.public and Current(c) and c or nil
-end
--- При обычном продлении старый сертификат остаётся действительным. Для выборов
--- проверяем именно тот отпечаток, который назвал кандидат в H1.
-function S.MemberByFingerprint(guild, name, fp)
-    if type(fp) ~= "string" or #fp ~= FP_LEN then return nil end
-    local raw = byFp[fp]
-    local c = raw and Certificate(raw)
-    local root = c and Root(c.guild)
-    return root and c.approvedRoot == root.public and U.GuildKey(c.guild) == U.GuildKey(guild)
-        and c.key == U.Key(name) and Current(c) and c or nil
 end
 function S.Certificates(guild)
     local out, s = {}, Store()
