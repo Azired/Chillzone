@@ -397,6 +397,7 @@ T.test("relay: прежний действующий сертификат ост
 	local Ya = w:Client({ first = "Яна", surname = "Тихая", guild = guild, rank = 3, db = saved })
 	w:Run(90)
 	local old = assert(c.B.ns.Security.MyCertificate())
+	c.V:Logout() -- издатель не обновит сертификат Бориса во время проверки
 	-- H1 объявляет отпечаток, но больше не запрашивает сертификат ради выборов.
 	-- Получаем прежний сертификат от самого Бориса до проверки его продления.
 	c.B.ns.Security.Introduce(Ya:Name(), old.raw, true)
@@ -420,7 +421,6 @@ T.test("relay: прежний действующий сертификат ост
 	T.ok(accepted and renewed and renewed.fp ~= old.fp, "Яна проверила новый сертификат Бориса")
 	T.eq(c.B.ns.Security.MyCertificate().fp, old.fp, "Борис ещё работает со старым")
 	T.eq(Ya.ns.Census.Peers()[key].fp, old.fp, "Борис объявил старый отпечаток")
-	c.V:Logout()
 	w:Run(c.B.ns.Config.PEER_WINDOW + 40)
 	T.ok(c.B.ns.Census.IsReporter(), "Борис стал репортёром со старым сертификатом")
 	T.eq(Ya.ns.Census.Reporter(), key, "Яна выбрала Бориса по действующему старому отпечатку")
@@ -448,12 +448,27 @@ T.test("relay: смена репортёра — чат гильдии не те
 	-- Входит офицер Севера, которого выборы ставят выше Веры: меньший ключ.
 	local Al = w:Client({ first = "Алла", surname = "Альфа", guild = "Чиллзон Север", rank = 1 })
 	c.B.ns.Roster.Scan(); c.V.ns.Roster.Scan()
+	local decisions = {}
+	local originalMayForward = Al.ns.Census.MayForward
+	Al.ns.Census.MayForward = function(key)
+		local ok = originalMayForward(key)
+		if key == vera and #decisions < 4 then
+			decisions[#decisions + 1] = ("%d:%s:h1=%s:cert=%s"):format(
+				w.now, tostring(ok), tostring(Al.ns.Census.Peers()[vera] ~= nil),
+				tostring(Al.ns.Security.MyCertificate() ~= nil))
+		end
+		return ok
+	end
 	local lines = {}
 	local function Line(i)
 		lines[i] = ("смена репортёра %02d"):format(i)
 		c.G:Slash("/cz1", lines[i])
 	end
-	w:Run(15); Line(1)
+	w:Run(15)
+	local earlyH1 = Al.ns.Census.Peers()[vera] ~= nil
+	local earlyFresh = Al.ns.Roster.Fresh()
+	local earlyCert = Al.ns.Security.MyCertificate() ~= nil
+	Line(1)
 	w:Run(15); Line(2)
 	T.no(Al.ns.Census.IsReporter(), "Алла после входа ещё молчит")
 	-- Рядовой Севера пробует перехватить аренду, пока она передаётся: назвать себя
@@ -478,8 +493,8 @@ T.test("relay: смена репортёра — чат гильдии не те
 	T.ok(held[alla], "аренда перешла к Алле")
 	T.eq(held[vera], nil, "у Веры аренды больше нет")
 	local firstDebug = " (untrusted=" .. tostring(Al.ns.Relay.stats.untrusted) ..
-		", reporter=" .. tostring(Al.ns.Census.Reporter()) ..
-		", Vera H1=" .. tostring(Al.ns.Census.Peers()[vera] and Al.ns.Census.Peers()[vera].fp) .. ")"
+		", t15:h1=" .. tostring(earlyH1) .. ":fresh=" .. tostring(earlyFresh) .. ":cert=" .. tostring(earlyCert) ..
+		", RG=" .. table.concat(decisions, ",") .. ")"
 	for i, text in ipairs(lines) do
 		for _, cl in ipairs({ c.B, c.V, Al }) do
 			T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз" ..

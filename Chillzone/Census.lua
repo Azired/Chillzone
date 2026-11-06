@@ -219,7 +219,9 @@ end)
 -- Q1: вошедший просит у репортёра своей гильдии всё, что тот знает.
 ---------------------------------------------------------------------------
 ns.Comm.On("Q1", function(_, sender, dist)
-	if dist ~= "GUILD" or not Census.IsReporter() then return end
+	-- Пока преемник молчит после входа, прежний репортёр уже передаёт RG и может
+	-- передать ему корни доверия и кэш без ожидания конца LOGIN_QUIET.
+	if dist ~= "GUILD" or not Census.Forwarding() then return end
 	local now = ns.Now()
 	if now - lastQ1Answer < C.Q1_GAP then return end
 	if #ns.Data.Cached() == 0 then return end
