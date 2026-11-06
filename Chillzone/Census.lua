@@ -53,9 +53,9 @@ function Census.Reporter(withoutMe)
 		if not Trusted(key) then return false end
 		if key == ns.myKey then return mine ~= nil end
 		local p = live[key]
-		if not p then return false end
-		local c = guild and ns.Security.Member(guild, p.name)
-		return c ~= nil and (p.legacy or p.fp == c.fp)
+		if not p or not guild then return false end
+		if p.fp then return ns.Security.MemberByFingerprint(guild, p.name, p.fp) ~= nil end
+		return p.legacy and ns.Security.Member(guild, p.name) ~= nil
 	end
 	local officers = not withoutMe and ready(ns.myKey) and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
 	for key in pairs(live) do
@@ -66,6 +66,23 @@ function Census.Reporter(withoutMe)
 	end
 	local me = not withoutMe and ns.myKey or nil
 	return Codec.PickReporter(me, ns.char and ns.char.shareZones or false, live, now, C.PEER_WINDOW, eligible)
+end
+
+-- Запрашиваем сертификат лишь у кандидата, который может сменить уже подтверждённого
+-- репортёра. Иначе каждый читатель запрашивал бы сертификаты у всех согильдийцев.
+local function CouldReplace(key, peer)
+	local electedKey = Census.Reporter()
+	if not electedKey then return true end
+	local officer = ns.Roster.IsOfficerRank(ns.Roster.byKey[key])
+	local incumbentOfficer = electedKey == ns.myKey
+		and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
+		or ns.Roster.IsOfficerRank(ns.Roster.byKey[electedKey])
+	if officer ~= incumbentOfficer then return officer end
+	local incumbent = peers[electedKey]
+	local zones = electedKey == ns.myKey and ns.char and ns.char.shareZones or incumbent and incumbent.z
+	zones = not not zones
+	if peer.z ~= zones then return peer.z end
+	return key < electedKey
 end
 
 function Census.IsReporter()
@@ -157,10 +174,10 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	-- запрашиваем его и допускаем кандидата только после проверки подписи.
 	if h.fp and Trusted(key) then
 		local guild = ns.MyGuild()
-		local cert = guild and ns.Security.Member(guild, sender)
-		if (not cert or cert.fp ~= h.fp) and (not peer.askedAt or now - peer.askedAt >= 30) then
+		local cert = guild and ns.Security.MemberByFingerprint(guild, sender, h.fp)
+		if not cert and CouldReplace(key, peer) and (not peer.askedAt or now - peer.askedAt >= 30) then
 			peer.askedAt = now
-			ns.Security.Resolve(h.fp, sender, sender, function() end)
+			ns.Security.Resolve(h.fp, sender, sender, function() end, true)
 		end
 	end
 	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее.
