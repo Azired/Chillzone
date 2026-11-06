@@ -331,7 +331,9 @@ T.test("relay: офицер без сертификата не вытесняе�
 	c.B.ns.Roster.Scan()
 	T.eq(Al.ns.Security.Member(guild, c.B:Name()), nil, "сертификата Бориса у Аллы сначала нет")
 	w:Run(60)
-	T.ok(c.B.ns.Census.Peers()[Key(c.B, Al:Name())], "Борис получил H1 от Аллы")
+	local announced = c.B.ns.Census.Peers()[Key(c.B, Al:Name())]
+	T.ok(announced, "Борис получил H1 от Аллы")
+	T.no(announced.legacy, "H1 Аллы явно сообщает об отсутствии сертификата")
 	T.eq(Al.ns.Security.MyCertificate(), nil, "офицеру без издателя не выдали сертификат")
 	T.ok(Al.ns.Security.Member(guild, c.B:Name()), "Алла получила сертификат Бориса по H1 и KQ")
 	T.eq(c.B.ns.Census.Reporter(), boris, "Борис не уступил место офицеру без сертификата")
