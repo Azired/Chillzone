@@ -59,7 +59,8 @@ end
 ---------------------------------------------------------------------------
 -- Я
 ---------------------------------------------------------------------------
--- Officer authority comes from the leader rank or the native officer flag.
+-- Откуда офицерские права: звание главы, игровой флаг «офицер» или, если игра флаг не
+-- сказала, номер звания (Config.OFFICER_RANK).
 local function OfficerSource(rank)
 	if type(rank) ~= "number" then return "?" end
 	if rank == 0 then return L.DBG_SRC_LEADER end

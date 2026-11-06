@@ -61,6 +61,59 @@ T.test("security: expired and retired authority credentials fail closed", functi
     T.no(accepted, "retired root cannot regain authority through a cached certificate")
 end)
 
+T.test("security: после /cz trust reset чужой гильдии офицер снова подтверждает её корень", function()
+    local w, c = Build()
+    -- Второй участник Ордена: отзыв (KF) и повторное подтверждение (KU, KT) доходят и до него.
+    local D = w:Client({ first = "Дина", surname = "Дальняя", guild = "Орден Чиллзона", rank = 3 })
+    c.G.ns.Roster.Scan()
+    w:Run(60)
+    local gk = c.G.ns.Util.GuildKey("Чиллзон Север")
+    local public = c.V.ns.Security.MyCertificate().public
+    T.eq(D.ns.Security.Roots()[gk] and D.ns.Security.Roots()[gk].public, public, "Дина знает корень Севера")
+    T.ok(c.G.ns.Security.Reset("Чиллзон Север"), "Глеб сбрасывает корень Севера")
+    w:Run(5)
+    for _, cl in ipairs({ c.G, D }) do
+        T.eq(cl.ns.Security.Roots()[gk], nil, cl:Name() .. ": корня Севера нет")
+        T.ok(cl.ns.store.security.retired[gk][public], cl:Name() .. ": ключ помечен отозванным")
+    end
+    -- Без явного подтверждения отозванный ключ не возвращается: KT от Веры (в чужую гильдию
+    -- не доходит) или повторное объявление офицером Ордена.
+    c.G.ns.Comm.Dispatch("KT~Чиллзон Север~" .. c.V:Name() .. "~" .. public, c.G:Name(), "GUILD")
+    T.eq(c.G.ns.Security.Roots()[gk], nil, "KT не возвращает отозванный корень")
+    -- Офицер Севера снова просит соединения, Глеб подтверждает.
+    T.ok(c.V.ns.Security.Link(c.G:Name()), "Вера просит соединения")
+    w:Run(5)
+    T.ok(c.G.ns.Security.Accept(c.V:Name()), "Глеб подтверждает отозванный прежде корень")
+    w:Run(20)
+    for _, cl in ipairs({ c.G, D }) do
+        local root = cl.ns.Security.Roots()[gk]
+        T.eq(root and root.public, public, cl:Name() .. ": корень Севера снова принят")
+        T.eq(cl.ns.store.security.retired[gk], nil, cl:Name() .. ": отметки об отзыве нет")
+    end
+    -- Снова в обратную сторону: сброс, затем просит Глеб, а подтверждает Вера (ответ KL~R).
+    T.ok(c.G.ns.Security.Reset("Чиллзон Север"), "второй сброс")
+    w:Run(5)
+    T.ok(c.G.ns.Security.Link(c.V:Name()), "Глеб просит соединения")
+    w:Run(5)
+    T.ok(c.V.ns.Security.Accept(c.G:Name()), "Вера подтверждает")
+    w:Run(20)
+    for _, cl in ipairs({ c.G, D }) do
+        local root = cl.ns.Security.Roots()[gk]
+        T.eq(root and root.public, public, cl:Name() .. ": корень Севера принят по ответу на /cz link")
+    end
+    -- Связь работает: строка Веры снова доходит до Ордена.
+    c.V:Slash("/cz1", "снова на связи")
+    w:Run(60)
+    T.eq(c.G:Saw("снова на связи"), 1, "Глеб видит строку Севера")
+    -- Рядовой Ордена не может снять отметку об отзыве своим KU.
+    T.ok(c.G.ns.Security.Reset("Чиллзон Север"), "третий сброс")
+    w:Run(5)
+    D.ns.Comm.Send("GUILD", "KU~Чиллзон Север~" .. public, { prio = true })
+    w:Run(5)
+    T.ok(c.G.ns.store.security.retired[gk][public], "KU рядового не снимает отметку")
+    for _, cl in ipairs({ c.G, c.V, D }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
+end)
+
 T.test("security: a genuinely signed member census cannot grant authority", function()
     local w, c = Build()
     local old = c.B.ns.Security.MyCertificate()
@@ -74,7 +127,7 @@ T.test("security: a genuinely signed member census cannot grant authority", func
     w:Run(2)
     T.ok(wire, "member can sign census data with its own key")
     Whisper(w, c.B, c.A, c.B.ns.Codec.EncodeRL("L", wire))
-    T.eq(c.G.ns.Security.KnownRank("Чиллзон Север", c.B:Name()), nil, "signed census grants no leader authority")
+    T.eq(Wow.CertRank(c.G.ns, "Чиллзон Север", c.B:Name()), nil, "signed census grants no leader authority")
     local payload = c.B.ns.Codec.EncodeChat("L", "Чиллзон Север", 9011, "MAGE", "self-promoted-member")
     c.B.ns.Security.Seal(payload, function(value) wire = value end)
     w:Run(2)
@@ -255,13 +308,13 @@ T.test("security: a forged census report never grants a leader role", function()
     local raw = codec.EncodeReport({ guild = guild, total = 1, online = 1,
         leader = c.X:Name(), faction = "Alliance", st = c.X.ns.ServerTime() })
     Whisper(w, c.X, c.A, codec.EncodeRL("L", raw))
-    T.eq(c.V.ns.Data.KnownRank(guild, c.X:Name()), nil, "self-report grants no rank")
+    T.eq(Wow.CertRank(c.V.ns, guild, c.X:Name()), nil, "self-report grants no rank")
     Whisper(w, c.X, c.A, codec.EncodeRL("P", codec.EncodeChat("L", guild, 9002, "MAGE", "forged-leader-probe")))
     T.eq(c.V:Saw("forged-leader-probe"), 0, "outsider cannot write to leaders")
     c.A.ns.Config.TRUST_ANY_MEMBER = false
     Whisper(w, c.X, c.A, codec.EncodeRL("L", raw))
     Whisper(w, c.X, c.A, codec.EncodeRL("P", codec.EncodeChat("L", guild, 9012, "MAGE", "strict-forged-leader-probe")))
-    T.eq(c.V.ns.Data.KnownRank(guild, c.X:Name()), nil, "strict transport setting grants no rank from a report")
+    T.eq(Wow.CertRank(c.V.ns, guild, c.X:Name()), nil, "strict transport setting grants no rank from a report")
     T.eq(c.V:Saw("strict-forged-leader-probe"), 0, "strict transport setting also rejects self-promotion")
 end)
 

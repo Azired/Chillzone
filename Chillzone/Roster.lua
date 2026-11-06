@@ -53,7 +53,8 @@ end
 -- Офицерские звания. Как в ChillZoneUnion 0.6: офицер — не ранг 0–1, а звание с игровым
 -- флагом «офицер» (галочка OfficerCheckbox в настройках гильдии, флаг 22 у
 -- C_GuildInfo.GuildControlGetRankFlags; звания там считаются с 1, ранги ростера — с 0).
--- Unknown permission flags never grant officer access by rank number.
+-- Если игра флаг не сказала (нет API, ошибка, пустая или secret-таблица), офицер — звание
+-- с номером не больше Config.OFFICER_RANK, как до подписей: иначе офицером остался бы один глава.
 ---------------------------------------------------------------------------
 local OFFICER_FLAG = 22
 local rankOfficer = {} -- [rankIndex] = true/false, сбрасывается при каждом скане
@@ -78,14 +79,15 @@ function Roster.RankFlagOfficer(rank)
 	return nil
 end
 
--- Офицерское ли звание rankIndex в моей гильдии. Глава (0) — всегда.
+-- Офицерское ли звание rankIndex в моей гильдии. Глава (0) — всегда. Без флага игры —
+-- по номеру звания (Config.OFFICER_RANK).
 function Roster.IsOfficerRank(rank)
 	if type(rank) ~= "number" then return false end
 	if rank == 0 then return true end
 	local v = rankOfficer[rank]
 	if v == nil then
 		v = Roster.RankFlagOfficer(rank)
-		if v == nil then v = false end
+		if v == nil then v = rank <= C.OFFICER_RANK end
 		rankOfficer[rank] = v
 	end
 	return v

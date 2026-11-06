@@ -27,6 +27,10 @@ local RGB = {
 	A = { 0.5, 0.83, 0.76 }, C = { 0.44, 0.66, 1 }, L = { 1, 0.7, 0.28 },
 }
 Chat.stats = { sent = 0, shown = 0, dupes = 0, refused = 0, limited = 0 }
+-- Почему своя строка не подписана (Security.Seal): что сказать игроку.
+local SEAL_FAILED = {
+	nocert = L.AUTH_NOT_READY, busy = L.CHAT_SEAL_BUSY, failed = L.CHAT_SEAL_FAILED, long = L.CHAT_SEAL_LONG,
+}
 
 local seen = {} -- [Key#id#text] = время
 local buckets = {} -- [Key] = { n, t }
@@ -246,11 +250,20 @@ function Chat.Send(tier, text)
 		ns.Print(L.CHAT_NOT_MEMBER)
 		return false
 	end
-	if Chat.MyLevel() < Chat.TIER_LEVEL[tier] then
+	local need = Chat.TIER_LEVEL[tier]
+	if Chat.MyLevel() < need then
 		ns.Print(L.CHAT_NO_RIGHTS, L["TIER_" .. tier])
 		return false
 	end
-	if not ns.Security.MyCertificate() then ns.Print(L.AUTH_NOT_READY); return false end
+	local mine = ns.Security.MyCertificate()
+	if not mine then ns.Print(L.AUTH_NOT_READY); return false end
+	-- Получатели проверяют уровень по сертификату (Security.Level), а не по званию в ростере:
+	-- роль в сертификате подтверждена лишь AUTH_ROLE_TTL после выдачи. Строку с устаревшей
+	-- ролью они отклонили бы молча — лучше сказать об этом здесь.
+	if ns.Security.Level(mine) < need then
+		ns.Print(L.CHAT_ROLE_STALE, L["TIER_" .. tier])
+		return false
+	end
 	text = Codec.SanitizeChat(text)
 	if text == "" then
 		ns.Print(L.CHAT_USAGE)
@@ -269,19 +282,39 @@ function Chat.Send(tier, text)
 	local _, class = UnitClass("player")
 	local budget = math.min(C.CHAT_PART, Codec.ChatBudget(guild, Codec.CLASS_CODE[class or ""] or ""))
 	local parts, cut = Codec.SplitChat(text, budget, C.CHAT_PARTS)
+	-- Подпись идёт асинхронно и может не получиться и в очереди, и позже. Причину игрок
+	-- видит один раз на строку.
+	local told = false
+	local function Failed(why)
+		if told then return end
+		told = true
+		ns.Print(SEAL_FAILED[why] or L.CHAT_SEAL_FAILED)
+	end
+	local queued = 0
 	for _, part in ipairs(parts) do
 		nextId = (nextId + 1) % 10000
 		local msg = Codec.EncodeChat(tier, guild, nextId, class, part)
 		if msg then
 			local id, textPart = nextId, part
-			ns.Security.Seal(msg, function(wire)
+			local ok, why = ns.Security.Seal(msg, function(wire, failed)
+				if not wire then Failed(failed); return end
 				ns.Comm.Send("GUILD", wire, { prio = true, logged = true })
 				ns.Relay.Out("P", wire)
 				seen[ns.myKey .. "#" .. id .. "#" .. textPart] = now
 				Chat.Show(tier, guild, ns.me, class, textPart)
 				Chat.stats.sent = Chat.stats.sent + 1
 			end)
+			if not ok then
+				Failed(why)
+				break
+			end
+			queued = queued + 1
 		end
+	end
+	if queued == 0 then
+		if not told then Failed("failed") end
+		lastSend = -1e9 -- ничего не ушло: повтор не считается частым
+		return false
 	end
 	ns.Comm.Flush(2)
 	if cut then ns.Print(L.CHAT_CUT) end

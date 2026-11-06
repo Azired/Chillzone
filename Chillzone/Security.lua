@@ -1,5 +1,5 @@
--- Signed identities, guild-approved credentials and end-to-end payload integrity.
--- Relays carry bytes; only guild authorities certify identities and permissions.
+-- Chillzone: ключи игроков, сертификаты от их гильдий и подпись пакетов от автора до получателя.
+-- Реле только переносят байты; ключи и права заверяют только глава и офицеры гильдии.
 -- Корень доверия своей гильдии офицер задаёт вручную, один раз на гильдию: /cz trust init.
 -- Подписанный пакет S1 несёт отпечаток сертификата автора, а сам сертификат приходит
 -- отдельно (KP, по запросу — KQ) и проверяется один раз. Отметка «проверен против корня»
@@ -18,6 +18,7 @@ local byFp, waiting, checking, inflight, hints = {}, {}, {}, {}, {}
 local initAsking, heardHint = nil, -1e9
 local asked, introduced, served, resent = {}, {}, {}, {}
 local openedHere = {}
+local sealed = {} -- [пакет S1] = { inner, cert, at }: подписанное мной недавно (S.Own)
 local serial, lastHello, lastPolicy = 0, -1e9, -1e9
 local lastSaid
 local policySigning = {}
@@ -148,7 +149,7 @@ local function VerifyCertificate(raw)
     if c.issuer == root.public and U.Key(c.issuerName) == U.Key(root.name) then
         if c.delegation ~= "" then return end
     else
-        -- Only a root-signed officer credential may delegate issuance, one level.
+        -- Выдавать сертификаты может только офицер с сертификатом от корня, на один уровень.
         local d = Certificate(c.delegation)
         if not Current(d) or not d.canIssue or (d.role ~= "leader" and d.role ~= "officer") or d.delegation ~= ""
             or U.GuildKey(d.guild) ~= U.GuildKey(c.guild) or d.public ~= c.issuer or d.key ~= U.Key(c.issuerName)
@@ -156,8 +157,8 @@ local function VerifyCertificate(raw)
             or c.expires > d.expires or not Ed.Verify(d.issuerPK, d.body, d.sig) then return end
     end
     if not Ed.ValidPublicKey(c.pk) or not Ed.Verify(c.issuerPK, c.body, c.sig) then return end
-    -- Signature work yields frames. Its trust root and delegation must still be
-    -- current when the result is committed, not merely when the job started.
+    -- Проверка подписи растянута на кадры: корень и делегирование должны быть в силе и при
+    -- записи результата, а не только в начале проверки.
     local liveRoot = Root(c.guild)
     if not liveRoot or liveRoot.public ~= root.public or not Current(c) then return end
     return Approve(c, root.public)
@@ -207,7 +208,6 @@ local function Keep(c)
         s.delegations[gk] = s.delegations[gk] or {}
         s.delegations[gk][c.key], s.verified[gk]["@" .. c.key] = c.raw, c.approvedRoot
     end
-    ns.Fire("CREDENTIAL", c)
 end
 -- owner — чей это должен быть сертификат; from — кто его прислал (с него и лимит проверок).
 function S.CheckCertificate(raw, owner, done, from)
@@ -274,10 +274,6 @@ function S.Level(c)
     if c.role == "officer" then return U.IsMainGuild(c.guild) and 3 or 2 end
     return 1
 end
-function S.KnownRank(guild, name)
-    local c = S.Member(guild, name)
-    if c and S.Level(c) > 1 then return c.role == "leader" and 0 or c.rank end
-end
 function S.MyCertificate()
     local g = ns.MyGuild()
     local c = g and S.Member(g, ns.me)
@@ -289,14 +285,27 @@ local function ShareRoot(guild, root)
             { key = "root:" .. U.GuildKey(guild), guard = S.CanAdmin })
     end
 end
-local function Pin(guild, name, public)
+-- Снять с ключа public отметку об отзыве (см. Forget).
+local function Unretire(gk, public)
+    local list = Store().retired[gk]
+    if not list or not list[public] then return end
+    list[public] = nil
+    if next(list) == nil then Store().retired[gk] = nil end
+end
+-- Задать корень гильдии guild. Отозванный ключ (/cz trust reset) из каталога, от офицеров
+-- (KT) и т. п. не принимается; confirmed — его явно подтвердил офицер здесь же
+-- (/cz accept или ответ на свой /cz link): тогда отметка об отзыве снимается.
+local function Pin(guild, name, public, confirmed)
     if not U.IsMemberGuild(guild) or not Name(name) then return false end
     local pk = Ed.FromB64(public)
     if not pk or #pk ~= 32 then return false end
     local s, gk = Store(), U.GuildKey(guild)
-    if s.retired[gk] and s.retired[gk][public] then return false end
     local old = s.roots[gk]
     if old and (old.public ~= public or U.Key(old.name) ~= U.Key(name)) then return false end
+    if s.retired[gk] and s.retired[gk][public] then
+        if not confirmed then return false end
+        Unretire(gk, public)
+    end
     if old then return true end
     s.roots[gk] = { name = name, public = public, guild = guild }
     hints[gk] = nil
@@ -308,8 +317,8 @@ local function Authority()
     if not identity or not S.CanAdmin() then return end
     local root = Root(ns.MyGuild())
     if not root then return end
-    -- Exactly one online native officer issues credentials. A backup retains its
-    -- root-signed delegation separately from its frequently renewed role proof.
+    -- Сертификаты выдаёт ровно один офицер в игре. Запасной хранит делегирование от корня
+    -- отдельно от часто продлеваемого подтверждения звания.
     local delegations = Store().delegations[GuildKey()] or {}
     local best, bestIsRoot
     for _, row in ipairs(ns.Roster.members) do
@@ -362,7 +371,7 @@ local function Issue(name, public)
     return started
 end
 local function Entropy()
-    -- Same compromise as Olympus: mixed local samples, NOT an OS CSPRNG.
+    -- Тот же компромисс, что в Olympus: смесь местных замеров, а НЕ криптостойкий генератор ОС.
     local parts = { "Chillzone identity v1", ns.me, ns.group, ns.faction }
     local function Sample(fn, ...)
         if type(fn) ~= "function" then return end
@@ -526,6 +535,13 @@ ns.Comm.On("KF", function(msg, sender, dist)
     local guild, public = msg:match("^KF~([^~]+)~([%w_-]+)$")
     if guild then Forget(guild, public) end
 end)
+-- KU~гильдия~ключ: офицер своей гильдии явно подтвердил отозванный корень чужой гильдии
+-- (/cz accept, /cz link). Принимается от тех же, от кого KF; сам корень приходит следом (KT).
+ns.Comm.On("KU", function(msg, sender, dist)
+    if dist ~= "GUILD" or not ns.Roster.Fresh() or not ns.Roster.IsOfficerRank(ns.Roster.RankOf(sender)) then return end
+    local guild, public = msg:match("^KU~([^~]+)~([%w_-]+)$")
+    if guild and U.IsMemberGuild(guild) and U.GuildKey(guild) ~= GuildKey() then Unretire(U.GuildKey(guild), public) end
+end)
 function S.SendPolicies(target)
     local key, now = U.Key(target), ns.Now()
     policySent[key] = policySent[key] or {}
@@ -596,13 +612,19 @@ function S.Link(name)
     ns.Print(ns.L.AUTH_SENT, U.Display(name))
     return true
 end
+-- Офицер явно подтвердил корень чужой гильдии: гильдии — сначала что он больше не отозван
+-- (KU: прежний /cz trust reset ушёл всем по KF), затем сам корень (KT).
+local function Confirmed(guild, public)
+    ns.Comm.Send("GUILD", "KU~" .. guild .. "~" .. public, { prio = true, key = "unretire:" .. U.GuildKey(guild), guard = S.CanAdmin })
+    ShareRoot(guild, Root(guild))
+end
 function S.Accept(name)
     local key = U.Key(name)
     local p, root = pending[key], ns.MyGuild() and Root(ns.MyGuild())
     if not S.CanAdmin() or not p or not root or ns.Now() > p.untilAt then return false end
-    if not Pin(p.guild, p.name, p.public) then return false end
+    if not Pin(p.guild, p.name, p.public, true) then return false end
     pending[key] = nil
-    ShareRoot(p.guild, Root(p.guild))
+    Confirmed(p.guild, p.public)
     ns.Comm.Send("WHISPER", "KL~R~" .. p.nonce .. "~" .. ns.MyGuild() .. "~" .. root.name .. "~" .. root.public,
         { target = name, prio = true, guard = S.CanAdmin })
     S.Introduce(name)
@@ -623,9 +645,9 @@ ns.Comm.On("KL", function(msg, sender, dist)
     else
         local p = outgoing[key]
         if not p or p.nonce ~= nonce or ns.Now() > p.untilAt then return end
-        if Pin(guild, name, public) then
+        if Pin(guild, name, public, true) then
             outgoing[key] = nil
-            ShareRoot(guild, Root(guild))
+            Confirmed(guild, public)
             S.Introduce(sender)
             ns.Print(ns.L.AUTH_PAIRED, U.Display(sender), guild)
         end
@@ -653,9 +675,9 @@ ns.Comm.On("K1", function(msg, sender, dist)
             ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(held.raw), { target = sender, prio = true, key = "kp-own:" .. k })
         end
     end
-    -- A reload has the same native name as the old peer. Answer its identity
-    -- announcement so it learns the officer reporter before accepting RG, and
-    -- the guild root before an officer would think of /cz trust init.
+    -- После перезагрузки имя то же. Ответить на объявление ключа, чтобы вошедший узнал
+    -- репортёра-офицера раньше, чем примет RG, и корень гильдии раньше, чем офицер возьмётся
+    -- за /cz trust init.
     if S.CanAdmin() and ns.Now() - lastNativeHello >= 5 then
         lastNativeHello = ns.Now()
         local root = Root(ns.MyGuild())
@@ -674,7 +696,8 @@ ns.Comm.On("KP", function(msg, sender, dist)
     end, sender)
 end)
 -- Запрос сертификата по отпечатку. Шёпотом отвечает любой, у кого он проверен. В гильдии —
--- только владелец или репортёр (они и шлют в гильдию подписанные пакеты), один KP на всех.
+-- только владелец или репортёр (и прежний, пока передаёт дела): они и шлют в гильдию
+-- подписанные пакеты. Один KP на всех.
 ns.Comm.On("KQ", function(msg, sender, dist)
     if dist ~= "WHISPER" and dist ~= "GUILD" then return end
     local fp = msg:match("^KQ~([%w_-]+)$")
@@ -687,7 +710,7 @@ ns.Comm.On("KQ", function(msg, sender, dist)
     local key = (dist == "GUILD" and "GUILD" or Peer(sender)) .. "|" .. fp
     if served[key] and now - served[key] < 30 then return end
     if dist == "GUILD" then
-        if c.key ~= ns.myKey and not (ns.Census and ns.Census.IsReporter()) then return end
+        if c.key ~= ns.myKey and not (ns.Census and ns.Census.Forwarding()) then return end
         served[key] = now
         ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = "kp:" .. key })
         return
@@ -696,19 +719,35 @@ ns.Comm.On("KQ", function(msg, sender, dist)
     served[key] = now
     ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(raw), { target = sender, prio = true, key = "kp:" .. key })
 end)
+-- Подписать своё M1 или R1. done(wire) — подписано; done(nil, why) — не вышло уже после
+-- постановки в очередь. Возвращает true (подпись в очереди) или false, why.
+-- why: "nocert" — нет действующего сертификата, "busy" — очередь подписей полна,
+-- "failed" — подпись не удалась или сертификат сменился, пока она шла, "long" — пакет велик.
 function S.Seal(inner, done)
     local c, saved = S.MyCertificate(), identity
-    if not c or not saved or not ns.IsMember() then return false end
+    if not c or not saved or not ns.IsMember() then return false, "nocert" end
     local kind = inner:sub(1, 2)
-    if kind ~= "M1" and kind ~= "R1" then return false end
+    if kind ~= "M1" and kind ~= "R1" then return false, "failed" end
     saved.sequence = saved.sequence + 1
     local at, sequence = tostring(ns.ServerTime()), tostring(saved.sequence)
     local body = Pack("MESSAGE", { ns.group, ns.faction, c.raw, at, sequence, inner })
-    return Job(function() return Ed.Sign(saved.seed, body, saved.pk) end, function(sig)
-        if not sig or identity ~= saved or not ns.IsMember() or not Current(c) or not S.MyCertificate() then return end
+    local queued = Job(function() return Ed.Sign(saved.seed, body, saved.pk) end, function(sig)
+        if not sig or identity ~= saved or not ns.IsMember() or not Current(c) or not S.MyCertificate() then
+            done(nil, "failed")
+            return
+        end
         local wire = "S1~" .. c.fp .. "~" .. at .. "~" .. sequence .. "~" .. Ed.ToB64(sig) .. "~" .. inner
-        if #wire <= MAX_WIRE then done(wire) end
+        if #wire > MAX_WIRE then done(nil, "long"); return end
+        sealed[wire] = { inner = inner, cert = c, at = ns.Now() }
+        done(wire)
     end)
+    if not queued then return false, "busy" end
+    return true
+end
+-- Пакет, который я сам подписал недавно: вложенное и мой сертификат, без проверки подписи.
+function S.Own(wire)
+    local mine = sealed[wire]
+    if mine and Current(mine.cert) then return mine.inner, mine.cert end
 end
 -- sender — от кого пришёл пакет (автор или пересылающий): с него лимит и у него KQ.
 -- viaGuild — пакет пришёл по GUILD.
@@ -854,6 +893,7 @@ ns.On("LOGIN", function()
         local now, clock = ns.ServerTime(), ns.Now()
         Sweep(false)
         for wire, entry in pairs(cachedOpens) do if now - entry.at > 120 then cachedOpens[wire] = nil end end
+        for wire, entry in pairs(sealed) do if clock - entry.at > 120 then sealed[wire] = nil end end
         for id, entry in pairs(replay) do if now - entry.at > C.CHAT_DEDUPE then replay[id], openedHere[id] = nil, nil end end
         for key, p in pairs(pending) do if clock > p.untilAt then pending[key] = nil end end
         for key, p in pairs(outgoing) do if clock > p.untilAt then outgoing[key] = nil end end
