@@ -53,9 +53,9 @@ function Census.Reporter(withoutMe)
 		if not Trusted(key) then return false end
 		if key == ns.myKey then return mine ~= nil end
 		local p = live[key]
-		if not p or not p.fp then return false end
+		if not p then return false end
 		local c = guild and ns.Security.Member(guild, p.name)
-		return c ~= nil and c.fp == p.fp
+		return c ~= nil and (p.legacy or p.fp == c.fp)
 	end
 	local officers = not withoutMe and ready(ns.myKey) and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
 	for key in pairs(live) do
@@ -150,6 +150,7 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	local key, now = U.Key(sender), ns.Now()
 	local known = peers[key]
 	local peer = { t = now, z = h.zones, r = h.relay, name = sender, version = h.version, fp = h.fp,
+		legacy = h.legacy,
 		askedAt = known and known.askedAt }
 	peers[key] = peer
 	-- Отпечаток в H1 — заявление кандидата. Если сертификата ещё нет в кэше,
