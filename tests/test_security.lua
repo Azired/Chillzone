@@ -435,11 +435,11 @@ T.test("security: additional readers cause no author-to-reader confirmation traf
     local leader = c.V.ns.Util.Key(c.V:Name())
     local function Ready()
         for _, reader in ipairs(readers) do
-            if reader.ns.Census.Reporter() ~= leader then return false end
+            if reader.ns.Census.Reporter() ~= leader or reader.ns.Census.Handing() then return false end
         end
         return true
     end
-    local deadline = w.now + 120
+    local deadline = w.now + 180
     while not Ready() and w.now < deadline do w:Run(10) end
     T.ok(Ready(), "readers agree on the certified leader before measuring passive traffic")
     local start = #w.log
