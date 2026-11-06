@@ -432,6 +432,16 @@ T.test("security: additional readers cause no author-to-reader confirmation traf
     local readers = {}
     for i = 1, 12 do readers[i] = w:Client({ first = "Читатель" .. i, surname = "Севера", guild = "Чиллзон Север", rank = 3 }) end
     w:Run(180)
+    local leader = c.V.ns.Util.Key(c.V:Name())
+    local function Ready()
+        for _, reader in ipairs(readers) do
+            if reader.ns.Census.Reporter() ~= leader then return false end
+        end
+        return true
+    end
+    local deadline = w.now + 120
+    while not Ready() and w.now < deadline do w:Run(10) end
+    T.ok(Ready(), "readers agree on the certified leader before measuring passive traffic")
     local start = #w.log
     c.V:Slash("/cz1", "one-signature-many-readers")
     w:Run(40)
@@ -443,7 +453,7 @@ T.test("security: additional readers cause no author-to-reader confirmation traf
             for _, reader in ipairs(readers) do T.no(e.target == reader:Name(), "author sends no private confirmation to readers") end
         end
         if e.dist == "WHISPER" then
-            for _, reader in ipairs(readers) do T.no(e.from == reader:Name(), "passive readers do not poll remote relays") end
+            for _, reader in ipairs(readers) do T.no(e.from == reader:Name(), "passive readers do not poll remote relays: " .. e.from .. " " .. tostring(e.msg)) end
         end
     end
 end)
