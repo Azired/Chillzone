@@ -5,7 +5,7 @@ local C = {}
 ns.Config = C
 
 C.VERSION = "0.3.0"
-C.PREFIX = "CHZSIGNED1" -- incompatible trust boundary: unsigned older clients cannot join
+C.PREFIX = "CHZSIGNED1" -- новый префикс: старые клиенты без подписей с этими не общаются
 
 -- «Своя» гильдия: в названии есть эта подстрока (без учёта регистра, кириллица).
 C.GUILD_TOKEN = "Чиллзон"
@@ -13,8 +13,8 @@ C.GUILD_TOKEN = "Чиллзон"
 C.MAIN_GUILD = "Чиллзон"
 -- Офицеры — звания с игровым флагом «офицер» (галочка в настройках гильдии), как в
 -- ChillZoneUnion 0.6.
--- Live authorization fails closed when the native permission flag is unknown.
--- OFFICER_RANK is retained only as a default for pure data builders.
+-- Если игра флаг не сказала (нет API, ошибка, пустой ответ), офицер — звание с номером не
+-- больше OFFICER_RANK (0 — глава).
 C.OFFICER_RANK = 1
 -- Связные: игровое звание, которому глава гильдии доверяет связь между гильдиями
 -- (как «Ветеран» в ChillZoneUnion). Сравнивается название звания целиком, без учёта
@@ -23,13 +23,10 @@ C.OFFICER_RANK = 1
 -- Остальные участники не пересылают чужие сообщения. Пустая строка — только глава и офицеры.
 -- Действует, только когда TRUST_ANY_MEMBER = false.
 C.RELAY_RANK = "Ветеран"
--- Certified members are fallback transports. Native/certified officers have priority.
--- Forwarded data always requires an end-to-end signature; relay status grants no issuer rights.
--- false retains the optional officer/veteran transport restriction.
+-- true — репортёром и реле может быть любой участник с сертификатом; главы и офицеры
+-- идут первыми. Пересылаемое всегда подписано автором, а роль реле не даёт права выдавать
+-- сертификаты. false — только главы, офицеры и связные (RELAY_RANK).
 C.TRUST_ANY_MEMBER = true
-
--- Legacy configuration retained for compatibility; it grants no trust in 0.3.
-C.RELAYS = {}
 
 -- Необязательный белый список гильдий. Пустой — подходит любая гильдия с GUILD_TOKEN.
 C.GUILDS = {
@@ -50,6 +47,9 @@ C.SCAN_EVERY = 60 -- чтение ростера
 C.REPORT_EVERY = 170 -- отчёт переписи репортёра
 C.REPORT_IDLE = 600 -- без изменений — не чаще
 C.LOGIN_QUIET = 70 -- первые секунды после входа репортёр молчит (слушает выборы)
+-- Прежний репортёр после смены ещё пересылает гильдии RM по старой аренде, пока не
+-- зарегистрировался новый (тому мешает LOGIN_QUIET), а гильдия принимает его RG.
+C.REPORTER_HANDOVER = 120
 C.Q1_GAP = 120 -- ответ на Q1 не чаще
 
 C.FRESH = 15 * 60 -- онлайн и зоны свежие
@@ -78,11 +78,11 @@ C.CHAT_REFILL = 1.2 -- и по одной раз в столько секунд
 C.CHAT_TIER_MIN = 60 -- строк в минуту на уровень
 C.CHAT_HISTORY = 100
 
--- Credentials permit transport for a day; privileged roles require a recent renewal.
 -- Срок сертификата, делегирования офицеру и каталога главной гильдии. Корень продлевает
 -- делегирования, пока он в игре: без него гильдия работает столько, сколько этот срок.
 -- Столько же исключённый участник может писать от имени гильдии.
 C.AUTH_TTL = 7 * 24 * 3600
+-- Роль в сертификате (уровни C и L) подтверждена только столько секунд после выдачи.
 C.AUTH_ROLE_TTL = 15 * 60
 C.AUTH_RENEW = 10 * 60
 C.AUTH_ROSTER_TTL = 120

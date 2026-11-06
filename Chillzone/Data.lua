@@ -120,32 +120,12 @@ function Data.IsFresh(row, now)
 	return row ~= nil and (now or ns.ServerTime()) - (row.st or 0) <= C.FRESH
 end
 
--- Census content never authorizes roles. Only a current guild credential does.
-function Data.KnownRank(guild, name, now)
-	return ns.Security and ns.Security.KnownRank(guild, name) or nil
-end
-
 -- Отчёт главной гильдии (не старше суток) или nil.
 function Data.Main(now)
 	now = now or ns.ServerTime()
 	local row = Data.Row(C.MAIN_GUILD)
 	if row and now - (row.st or 0) <= C.TOTAL_KEEP then return row end
 	return nil
-end
-
--- These compatibility helpers use the same credential boundary as the relay.
-function Data.IsMainTrusted(name, now)
-	if not ns.Security or not ns.Security.Roots()[U.GuildKey(C.MAIN_GUILD)] then return nil end
-	local c = ns.Security.Member(C.MAIN_GUILD, name)
-	return c ~= nil and (C.TRUST_ANY_MEMBER or c.role ~= "member") or false
-end
-
--- Глава или офицер главной гильдии по её отчёту (без связных): true, false или nil (отчёта
--- нет или руководство в отчётах расходится).
-function Data.IsMainOfficer(name, now)
-	if not ns.Security or not ns.Security.Roots()[U.GuildKey(C.MAIN_GUILD)] then return nil end
-	local c = ns.Security.Member(C.MAIN_GUILD, name)
-	return c ~= nil and ns.Security.Level(c) > 1
 end
 
 ---------------------------------------------------------------------------

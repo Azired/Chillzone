@@ -9,8 +9,6 @@ unused_args = false
 exclude_files = {
 	"Chillzone/libs/**",
 	"reference/**",
-	"crypto-evaluation/**",
-	"security-review/**",
 }
 
 -- Каждый файл аддона начинается с local ADDON, ns = ... — ADDON обычно не нужен.

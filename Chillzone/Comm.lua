@@ -30,7 +30,7 @@ Comm.stats = { sent = 0, recv = 0, fails = 0, retried = 0, dropped = 0, queued =
 Comm.lastWhisper = {} -- [Key] = когда шептали (для системного «нет такого игрока»)
 
 -- Типы, текст которых никогда не содержит "|": чистятся целиком до разбора.
-local PLAIN = { H1 = true, Q1 = true, RP = true, RY = true, RR = true, R1 = true }
+local PLAIN = { H1 = true, Q1 = true, RP = true, RY = true, RR = true, RU = true, R1 = true }
 
 function Comm.On(kind, fn)
 	handlers[kind] = fn

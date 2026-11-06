@@ -344,8 +344,8 @@ local function Env(c)
 	return setmetatable(env, { __index = _G })
 end
 
--- opts: first, surname, realm, faction, guild, rank, class, level, zone, relays (Config.RELAYS),
--- config (поля Config поверх Config.lua)
+-- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
+-- поверх Config.lua)
 function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
@@ -361,7 +361,6 @@ function World:Client(opts)
 		if not f:find("^libs/") or f == "libs/Ed25519.lua" then
 			T.load({ f }, c.env, c.ns)
 			if f == "Config.lua" then
-				c.ns.Config.RELAYS = opts.relays or {}
 				for k, v in pairs(opts.config or {}) do c.ns.Config[k] = v end
 			end
 		end
@@ -431,6 +430,13 @@ function Client:Leaks()
 	end
 	table.sort(out)
 	return out
+end
+
+-- Ранг name в guild, который подтверждает свежий сертификат (глава — 0), или nil.
+function Wow.CertRank(ns, guild, name)
+	local c = ns.Security.Member(guild, name)
+	if c and ns.Security.Level(c) > 1 then return c.role == "leader" and 0 or c.rank end
+	return nil
 end
 
 Wow.SERVER0 = SERVER0

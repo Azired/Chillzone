@@ -2,7 +2,6 @@
 local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
 
-local RELAY = { "Арагорн Светлый" }
 -- Доверие по званию (как до TRUST_ANY_MEMBER): только глава, офицеры и «Ветеран».
 local RANKS = { TRUST_ANY_MEMBER = false }
 local LINK = "|cffa335ee|Hitem:19019::::::::60:::::|h[Громосвёрт, Благословенный клинок Искателя Ветра]|h|r"
@@ -24,9 +23,9 @@ local function Build(opts)
 	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, zone = "Штормград", config = cfg })
 	c.K = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, realm = "CAMWOWUS2Realm3PvE", class = "PALADIN", config = cfg })
 	c.M = w:Client({ first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3, class = "PRIEST", config = cfg })
-	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2, relays = RELAY, class = "WARRIOR", zone = "Тернистая долина", config = cfg })
-	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, relays = RELAY, realm = "CAMWOWUS2Realm5PvE", class = "DRUID", config = cfg })
-	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, relays = RELAY, class = "HUNTER", config = cfg })
+	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2, class = "WARRIOR", zone = "Тернистая долина", config = cfg })
+	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, realm = "CAMWOWUS2Realm5PvE", class = "DRUID", config = cfg })
+	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, class = "HUNTER", config = cfg })
 	if not opts.run or opts.run > 30 then
 		w:Run(30)
 		w:Init(c.A, c.V, c.G)
@@ -116,6 +115,33 @@ T.test("census: изменение списка связных не теряет
 	T.eq(changed.veterans[1].name, "Другой Ветеран", "имя связного")
 end)
 
+T.test("census: отчёт считается отправленным только после подписи", function()
+	local w, c, reports, reportAt = CensusReports(false)
+	local S = c.ns.Security
+	-- Подпись не встала в очередь: отчёта нет, и следующая проверка не ждёт REPORT_EVERY.
+	S.Seal = function() return false, "busy" end
+	reportAt(0)
+	T.eq(#reports, 0, "очередь подписей полна — отчёта нет")
+	-- Подпись не удалась уже в колбэке.
+	S.Seal = function(_, done) done(nil, "failed"); return true end
+	reportAt(10)
+	T.eq(#reports, 0, "подпись не удалась — отчёта нет")
+	-- Подпись идёт долго: вторую не ставим, время отправки — по завершении.
+	local calls, pending = 0, nil
+	S.Seal = function(raw, done) calls = calls + 1; pending = function() done(raw) end; return true end
+	reportAt(20)
+	reportAt(30)
+	T.eq(calls, 1, "пока идёт подпись, вторая не ставится")
+	T.eq(#reports, 0, "до конца подписи отчёт не ушёл")
+	w.now = w.now + 5
+	pending()
+	T.eq(#reports, 1, "подписанный отчёт ушёл")
+	reportAt(35 + c.ns.Config.REPORT_EVERY - 6)
+	T.eq(#reports, 1, "интервал считается от конца подписи")
+	T.eq(calls, 1, "неизменный отчёт не подписывается заново")
+	T.eq(#c.ns.db.errors, 0, "без ошибок")
+end)
+
 T.test("relay: глобалы не утекают", function()
 	local _, c = Build({ run = 5 })
 	for name, cl in pairs(c) do
@@ -163,8 +189,8 @@ T.test("relay: перепись сходится у всех", function()
 	T.eq(row.r.online, 3, "онлайн главной")
 	local tree = c.G.ns.Data.Kingdom()
 	T.ok(tree.king and tree.king.leader == "Карл Великий", "король")
-	T.eq(c.B.ns.Data.KnownRank("Чиллзон", "Арагорн Светлый"), 1, "ранг офицера главной")
-	T.eq(c.B.ns.Data.KnownRank("Орден Чиллзона", "Глеб Гордый-CAMWOWUS2Realm7PvE"), 0, "ранг главы")
+	T.eq(Wow.CertRank(c.B.ns, "Чиллзон", "Арагорн Светлый"), 1, "ранг офицера главной")
+	T.eq(Wow.CertRank(c.B.ns, "Орден Чиллзона", "Глеб Гордый-CAMWOWUS2Realm7PvE"), 0, "ранг главы")
 end)
 
 T.test("relay: реле выучено из ответа доверенного реле", function()
@@ -181,7 +207,7 @@ T.test("relay: без проверки звания любой участник 
 	T.eq(c.A.ns.Relay.TrustOf("Мира Тихая"), "member", "согильдийцы — по ростеру")
 	T.eq(c.B.ns.Relay.TrustOf("Мира Тихая"), "member", "member credential verified independently of gossip")
 	-- Рядовой Севера с зонами — единственный, кто делится зонами, поэтому репортёр он.
-	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3, relays = RELAY })
+	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3 })
 	Ak:Slash("/cz", "zones on")
 	w:Run(200)
 	T.eq(Ak.ns.Census.Reporter(), Key(Ak, "Вера Верная"), "zone sharing does not preempt an officer")
@@ -238,6 +264,109 @@ T.test("relay: уровни чата — офицеры и главы", function
 	T.eq(c.B:Saw("главам слово"), 0, "Борис не видит")
 end)
 
+T.test("relay: строка не пропадает молча, если подпись не удалась", function()
+	local w, c = Build()
+	local S = c.B.ns.Security
+	local seal = S.Seal
+	S.Seal = function() return false, "busy" end
+	c.B:Slash("/cz1", "строка без подписи")
+	T.eq(c.B:Saw("подписи не успевают"), 1, "очередь полна — причина видна")
+	-- Подпись встала в очередь, но не удалась: причина — один раз на строку из нескольких частей.
+	S.Seal = function(_, done) w:Schedule(w.now + 1, function() done(nil, "failed") end, c.B); return true end
+	c.B:Slash("/cz1", ("длинная строка "):rep(30))
+	w:Run(5)
+	T.eq(c.B:Saw("подписать её не удалось"), 1, "сбой в колбэке — причина видна один раз")
+	S.Seal = function() return false, "nocert" end
+	c.B:Slash("/cz1", "строка до сертификата")
+	T.eq(c.B:Saw("Ключ ещё не подтверждён"), 1, "нет сертификата — причина видна")
+	w:Run(30)
+	for name, cl in pairs(c) do
+		T.eq(cl:Saw("строка без подписи"), 0, name .. ": неподписанная строка никуда не ушла")
+	end
+	S.Seal = seal
+	c.B:Slash("/cz1", "строка после сбоя")
+	w:Run(30)
+	T.eq(c.G:Saw("строка после сбоя"), 1, "после сбоя строка уходит сразу, без «слишком часто»")
+	T.eq(#c.B.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("relay: уровень канала у отправителя — по сертификату, как у получателей", function()
+	local w, c = Build()
+	local V = c.V
+	local clock = V.ns.ServerTime
+	-- Звание в ростере Веры прежнее, а роль в сертификате уже не подтверждена (AUTH_ROLE_TTL).
+	local issued = V.ns.Security.MyCertificate().issued
+	V.ns.ServerTime = function() return issued + V.ns.Config.AUTH_ROLE_TTL + 1 end
+	T.eq(V.ns.Chat.MyLevel(), 3, "по званию Вера — глава")
+	T.eq(V.ns.Security.Level(V.ns.Security.MyCertificate()), 1, "по сертификату — нет")
+	V:Slash("/cz3", "глава без свежей роли")
+	T.ok(V:Saw("сертификат больше не подтверждает") >= 1, "Вера видит причину")
+	V.ns.ServerTime = clock
+	w:Run(30)
+	for name, cl in pairs(c) do T.eq(cl:Saw("глава без свежей роли"), 0, name .. ": строка не ушла") end
+	V:Slash("/cz3", "глава со свежей ролью")
+	w:Run(30)
+	T.eq(c.G:Saw("глава со свежей ролью"), 1, "со свежей ролью строка доходит")
+end)
+
+T.test("relay: смена репортёра — чат гильдии не теряется, аренда переходит преемнику", function()
+	local w, c = Build()
+	local U = c.A.ns.Util
+	local gk = U.GuildKey("Чиллзон Север")
+	local vera, alla = Key(c.A, "Вера Верная"), Key(c.A, "Алла Альфа")
+	local relays = { c.A, c.K, c.M }
+	local function Holders()
+		local out = {}
+		for _, r in ipairs(relays) do
+			local held = r.ns.Relay.Reporters()[gk]
+			if held and r.ns.Now() - held.t <= 60 then out[held.key] = (out[held.key] or 0) + 1 end
+		end
+		return out
+	end
+	T.ok(Holders()[vera], "до смены аренда у Веры")
+	-- Входит офицер Севера, которого выборы ставят выше Веры: меньший ключ.
+	local Al = w:Client({ first = "Алла", surname = "Альфа", guild = "Чиллзон Север", rank = 1 })
+	c.B.ns.Roster.Scan(); c.V.ns.Roster.Scan()
+	local lines = {}
+	local function Line(i)
+		lines[i] = ("смена репортёра %02d"):format(i)
+		c.G:Slash("/cz1", lines[i])
+	end
+	w:Run(15); Line(1)
+	w:Run(15); Line(2)
+	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия уже выбрала Аллу")
+	T.no(Al.ns.Census.IsReporter(), "Алла после входа ещё молчит")
+	-- Рядовой Севера пробует перехватить аренду, пока она передаётся: назвать себя
+	-- преемником (RU) и зарегистрироваться (RR).
+	local cert = c.B.ns.Security.MyCertificate()
+	for _, r in ipairs(relays) do
+		c.B.ns.Comm.Send("WHISPER", "RU~Чиллзон Север~Борис Быстрый", { target = r:Name(), prio = true })
+		c.B.ns.Comm.Send("WHISPER", "RR~Чиллзон Север~" .. cert.fp, { target = r:Name(), prio = true })
+	end
+	w:Run(5)
+	T.ok(Holders()[vera], "аренда всё ещё у Веры")
+	T.eq(Holders()[Key(c.A, "Борис Быстрый")], nil, "рядовой аренду не перехватил")
+	for i = 3, 10 do w:Run(15); Line(i) end
+	w:Run(30)
+	T.ok(Al.ns.Census.IsReporter(), "Алла — репортёр")
+	local held = Holders()
+	T.ok(held[alla], "аренда перешла к Алле")
+	T.eq(held[vera], nil, "у Веры аренды больше нет")
+	for i, text in ipairs(lines) do
+		for _, cl in ipairs({ c.B, c.V, Al }) do T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз") end
+	end
+	-- После передачи рядовой тоже не перехватывает аренду Аллы.
+	for _, r in ipairs(relays) do
+		c.B.ns.Comm.Send("WHISPER", "RU~Чиллзон Север~Борис Быстрый", { target = r:Name(), prio = true })
+		c.B.ns.Comm.Send("WHISPER", "RR~Чиллзон Север~" .. cert.fp, { target = r:Name(), prio = true })
+	end
+	w:Run(5)
+	T.ok(Holders()[alla], "аренда у Аллы")
+	T.eq(Holders()[Key(c.A, "Борис Быстрый")], nil, "рядовой аренду не перехватил")
+	for name, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, name .. ": без ошибок") end
+	T.eq(#Al.ns.db.errors, 0, "Алла: без ошибок")
+end)
+
 T.test("relay: RG от рядового отклоняется — и чат, и отчёт", function()
 	local w, c = Build({ config = RANKS })
 	local M = c.M -- «Рядовой» главной гильдии
@@ -265,7 +394,7 @@ end)
 
 T.test("relay: рядовой не становится репортёром — ни с первым именем, ни с зонами", function()
 	local w, c = Build({ config = RANKS })
-	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3, relays = RELAY, config = RANKS })
+	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3, config = RANKS })
 	Ak:Slash("/cz", "zones on")
 	w:Run(200)
 	for _, cl in ipairs({ c.B, c.V, Ak }) do
@@ -315,11 +444,11 @@ T.test("relay: офицер — по игровому флагу звания, �
 	-- Борис — репортёр Севера, его сертификат приходит к Глебу вместе с переписью. Без
 	-- сертификата перепись сама офицерских прав не даёт.
 	c.G.ns.store.security.certs[c.G.ns.Util.GuildKey("Чиллзон Север")][Key(c.G, "Борис Быстрый")] = nil
-	T.eq(c.G.ns.Data.KnownRank("Чиллзон Север", "Борис Быстрый"), nil, "перепись не выдаёт Борису офицерские права")
-	T.eq(c.G.ns.Data.KnownRank("Чиллзон", "Арагорн Светлый"), nil, "Арагорна в офицерах главной нет")
+	T.eq(Wow.CertRank(c.G.ns, "Чиллзон Север", "Борис Быстрый"), nil, "перепись не выдаёт Борису офицерские права")
+	T.eq(Wow.CertRank(c.G.ns, "Чиллзон", "Арагорн Светлый"), nil, "Арагорна в офицерах главной нет")
 	c.B:Slash("/cz2", "офицер по флагу")
 	w:Run(30)
-	T.eq(c.G.ns.Data.KnownRank("Чиллзон Север", "Борис Быстрый"), 2, "Глеб проверил отдельный офицерский сертификат Бориса")
+	T.eq(Wow.CertRank(c.G.ns, "Чиллзон Север", "Борис Быстрый"), 2, "Глеб проверил отдельный офицерский сертификат Бориса")
 	for _, n in ipairs({ "K", "V", "G" }) do T.eq(c[n]:Saw("офицер по флагу"), 1, n .. " видит") end
 	T.eq(c.A:Saw("офицер по флагу"), 0, "Арагорн без флага не видит")
 	T.eq(c.M:Saw("офицер по флагу"), 0, "рядовой не видит")
@@ -327,28 +456,39 @@ T.test("relay: офицер — по игровому флагу звания, �
 	T.ok(c.A:Saw("можно писать только") >= 1, "Арагорну отказано")
 end)
 
-T.test("relay: unknown officer permissions do not grant officer access", function()
+T.test("relay: без флагов звания офицер — по номеру звания (OFFICER_RANK)", function()
 	local w = Wow.World()
-	w:Guild("Чиллзон")
+	w:Guild("Чиллзон", nil, { [0] = true, [1] = false }) -- по флагу звание 1 — не офицер
 	local X = w:Client({ first = "Ксения", surname = "Иксова", guild = "Чиллзон", rank = 2 })
 	local R = X.ns.Roster
+	X:Fire("GUILD_RANKS_UPDATE")
+	T.eq(R.RankFlagOfficer(1), false, "игра сказала флаг")
+	T.no(R.IsOfficerRank(1), "флаг игры важнее номера звания")
+	local secret = {}
 	local answers = {
 		{ "пустая таблица", function() return {} end },
 		{ "ошибка", function() error("нельзя") end },
 		{ "не таблица", function() return nil end },
+		{ "нет флага 22", function() return { true, false } end },
+		{ "secret-таблица", function() return secret end },
 	}
+	X.env.issecretvalue = function(v) return v == secret end
 	for _, a in ipairs(answers) do
 		X.env.C_GuildInfo.GuildControlGetRankFlags = a[2]
 		X:Fire("GUILD_RANKS_UPDATE")
 		T.eq(R.RankFlagOfficer(1), nil, a[1] .. ": флаг неизвестен")
-		T.no(R.IsOfficerRank(1), a[1] .. ": rank number cannot prove officer status")
+		T.ok(R.IsOfficerRank(1), a[1] .. ": звание 1 — офицер по OFFICER_RANK")
 		T.no(R.IsOfficerRank(2), a[1] .. ": звание 2 — нет")
+		T.ok(R.IsOfficerRank(0), a[1] .. ": глава — всегда")
 	end
 	X.env.C_GuildInfo.GuildControlGetRankFlags = nil
 	X:Fire("GUILD_RANKS_UPDATE")
-	T.no(R.IsOfficerRank(1), "missing API must fail closed")
-	T.no(R.IsOfficerRank(3), "ordinary rank remains ordinary")
+	T.ok(R.IsOfficerRank(1), "нет API: звание 1 — офицер")
+	T.no(R.IsOfficerRank(3), "рядовой остаётся рядовым")
 	T.ok(R.IsOfficerRank(0), "глава — всегда")
+	X.ns.Config.OFFICER_RANK = 0
+	X:Fire("GUILD_RANKS_UPDATE")
+	T.no(R.IsOfficerRank(1), "OFFICER_RANK = 0: офицер только глава")
 	T.eq(#X.ns.db.errors, 0, "без ошибок")
 end)
 
@@ -415,7 +555,7 @@ end)
 
 T.test("relay: из старых скрытых каналов аддон выходит, их строки спрятаны", function()
 	local w = Build()
-	local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3, relays = RELAY })
+	local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
 	N.joined["ChillzoneA"], N.joinedById[7] = 7, "ChillzoneA"
 	w:Run(10)
 	T.eq(N.joined["ChillzoneA"], nil, "вышла из ChillzoneA")
@@ -461,9 +601,9 @@ T.test("relay: участник главной вне тройки реле пи
 	c.O2 = w:Client({ first = "Виктор", surname = "Верный", guild = "Чиллзон", rank = 1 })
 	c.K = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, class = "PALADIN" })
 	c.M = w:Client({ first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3, class = "PRIEST" })
-	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2, relays = RELAY })
-	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, relays = RELAY })
-	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, relays = RELAY })
+	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2 })
+	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0 })
 	w:Run(30)
 	w:Init(c.A, c.V, c.G)
 	w:Pair(c.V, c.A)

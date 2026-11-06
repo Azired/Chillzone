@@ -13,7 +13,8 @@
 -- Привет: H1~<версия>~<флаги>                  (z — делится зонами, r — ретранслятор)
 -- Запрос: Q1~
 -- Чат:    M1~tier~guild~id~class~text          (tier A|C|L, id 0-9999, class — 2 буквы)
--- Реле:   RP~ · RY~Имя1,Имя2 · RR~guild · RL~mode~inner · RM~mode~origin~inner · RG~mode~origin~inner
+-- Реле:   RP~fp · RY~Имя1,Имя2 · RR~guild~fp · RU~guild~преемник · RL~mode~inner
+--         RM~mode~origin~inner · RG~mode~origin~inner     (fp — отпечаток сертификата)
 local ADDON, ns = ...
 
 local Codec = {}
@@ -22,7 +23,7 @@ ns.Codec = Codec
 local floor, concat = math.floor, table.concat
 
 Codec.CHUNK = 220
-Codec.MAX_CHUNKS = 32 -- signed credential chain plus a full census report; still bounded
+Codec.MAX_CHUNKS = 32 -- полный отчёт переписи с подписью и запасом; предел всё же есть
 Codec.MAX_MSG = 250 -- длиннее — режется на куски
 Codec.GUILD_CAP = 1000
 local MAX_COUNT = 10000
