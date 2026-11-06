@@ -37,6 +37,17 @@ function World:Run(seconds)
 	self.now = stop
 end
 
+-- Офицеры задают корни доверия своих гильдий (/cz trust init): раз на гильдию.
+function World:Init(...)
+	local list = { ... }
+	for _, c in ipairs(list) do assert(c.ns.Security.Init(), c:Name() .. ": /cz trust init отклонён") end
+	self:Run(12)
+	for _, c in ipairs(list) do
+		local root = c.ns.Security.Roots()[c.ns.Util.GuildKey(c.guild)]
+		assert(root and root.name == c:Name(), c:Name() .. ": корень не задан")
+	end
+end
+
 function World:Pair(source, receiver)
 	assert(source.ns.Security.Link(receiver:Name()), "officer could not initiate pairing")
 	self:Run(5)

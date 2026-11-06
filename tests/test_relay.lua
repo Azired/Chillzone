@@ -29,6 +29,7 @@ local function Build(opts)
 	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, relays = RELAY, class = "HUNTER", config = cfg })
 	if not opts.run or opts.run > 30 then
 		w:Run(30)
+		w:Init(c.A, c.V, c.G)
 		w:Pair(c.V, c.A)
 		w:Pair(c.G, c.A)
 	end
@@ -311,6 +312,9 @@ T.test("relay: офицер — по игровому флагу звания, �
 	T.eq(c.A.ns.Chat.MyLevel(), 1, "Арагорн (звание 1 без флага) — участник")
 	T.ok(c.B.ns.GuildChat.CanOfficer(), "Борису доступен офицерский чат гильдии")
 	T.no(c.A.ns.GuildChat.CanOfficer(), "Арагорну — нет")
+	-- Борис — репортёр Севера, его сертификат приходит к Глебу вместе с переписью. Без
+	-- сертификата перепись сама офицерских прав не даёт.
+	c.G.ns.store.security.certs[c.G.ns.Util.GuildKey("Чиллзон Север")][Key(c.G, "Борис Быстрый")] = nil
 	T.eq(c.G.ns.Data.KnownRank("Чиллзон Север", "Борис Быстрый"), nil, "перепись не выдаёт Борису офицерские права")
 	T.eq(c.G.ns.Data.KnownRank("Чиллзон", "Арагорн Светлый"), nil, "Арагорна в офицерах главной нет")
 	c.B:Slash("/cz2", "офицер по флагу")
@@ -442,6 +446,40 @@ T.test("relay: длинный отчёт (несколько кусков) до�
 		T.eq(c[n].ns.Codec.EncodeReport(received), c[n].ns.Codec.EncodeReport(expected), n .. ": complete data, excluding snapshot time")
 		T.ok(row.signed, n .. ": retains the original signed envelope")
 	end
+end)
+
+T.test("relay: участник главной вне тройки реле пишет всем через реле", function()
+	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 7)
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	w:Guild("Чиллзон Север")
+	w:Guild("Орден Чиллзона")
+	local c = {}
+	-- Четыре офицера главной: тройка реле — Арагорн, Богдан, Виктор. Карл и Мира вне её.
+	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1 })
+	c.O1 = w:Client({ first = "Богдан", surname = "Бравый", guild = "Чиллзон", rank = 1 })
+	c.O2 = w:Client({ first = "Виктор", surname = "Верный", guild = "Чиллзон", rank = 1 })
+	c.K = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, class = "PALADIN" })
+	c.M = w:Client({ first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3, class = "PRIEST" })
+	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2, relays = RELAY })
+	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, relays = RELAY })
+	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, relays = RELAY })
+	w:Run(30)
+	w:Init(c.A, c.V, c.G)
+	w:Pair(c.V, c.A)
+	w:Pair(c.G, c.A)
+	w:Run(400)
+	T.no(c.M.ns.Relay.Serving(), "у Миры репортёры не регистрируются")
+	T.no(c.K.ns.Relay.Serving(), "у Карла тоже")
+	c.M:Slash("/cz1", "рядовая главной пишет всем")
+	w:Run(5)
+	c.K:Slash("/cz1", "глава вне тройки пишет всем")
+	w:Run(30)
+	for _, n in ipairs({ "B", "V", "G" }) do
+		T.eq(c[n]:Saw("рядовая главной пишет всем"), 1, n .. " видит строку Миры")
+		T.eq(c[n]:Saw("глава вне тройки пишет всем"), 1, n .. " видит строку Карла")
+	end
+	for n, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, n .. ": без ошибок") end
 end)
 
 T.test("relay: реле вышло из игры — сообщение уходит через другое", function()
