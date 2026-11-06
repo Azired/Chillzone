@@ -156,8 +156,12 @@ end)
 
 T.test("codec: привет и конверты реле", function()
 	local _, Codec = fresh()
-	local h = Codec.DecodeHello(Codec.EncodeHello("0.1.0", true, false))
+	local fp = "0123456789abcdef"
+	local h = Codec.DecodeHello(Codec.EncodeHello("0.1.0", true, false, fp))
 	T.ok(h.zones and not h.relay, "флаги")
+	T.eq(h.fp, fp, "сертификат объявлен в H1")
+	T.eq(Codec.DecodeHello("H1~0.4.1~zr").fp, nil, "старый H1 читается без сертификата")
+	T.no(Codec.DecodeHello("H1~0.4.1~zr~short"), "неверный отпечаток отклонён")
 	local inner = Codec.EncodeChat("A", "Чиллзон", 1, "", "ссылка " .. LINK)
 	local kind, _, _, got = Codec.DecodeRelay(Codec.EncodeRL("P", inner))
 	T.eq(kind, "RL", "RL")
