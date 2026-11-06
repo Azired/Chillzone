@@ -678,3 +678,39 @@ T.test("security: a member who missed their own credential gets it again after K
     T.ok(B.ns.Security.MyCertificate(), "the issuer whispered it back after K1 ~0")
     T.eq(#B.ns.db.errors, 0, "no hidden errors")
 end)
+
+T.test("security: early certificate waits for its root despite forged wait metadata", function()
+    local w, c = Build()
+    local guild = "Орден Чиллзона"
+    local root = c.G.ns.Security.Roots()[c.G.ns.Util.GuildKey(guild)]
+    local certificate = c.G.ns.Security.MyCertificate()
+    local wire
+    c.G.ns.Security.Seal(c.G.ns.Codec.EncodeChat("A", guild, 9341, "HUNTER", "ранняя строка"),
+        function(value) wire = value end)
+    w:Run(3)
+    T.ok(wire, "real signed message is ready")
+
+    local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+    -- Контролируем порядок KP/KT: фоновые объявления не должны подменить этот сценарий.
+    local fire = N.Fire
+    N.Fire = function(self, event, ...)
+        if event == "CHAT_MSG_ADDON" or event == "CHAT_MSG_ADDON_LOGGED" then return end
+        return fire(self, event, ...)
+    end
+    N.ns.Roster.Scan()
+    local opened, forged = 0, 0
+    T.ok(N.ns.Security.Open(wire, c.V:Name(), function() opened = opened + 1 end, true),
+        "message waits for the author certificate")
+    local fake, replacements = wire:gsub("~M1~A~Орден Чиллзона~", "~M1~A~Чиллзон~", 1)
+    T.eq(replacements, 1, "forgery changes the claimed guild with the same fingerprint")
+    N.ns.Security.Open(fake, c.X:Name(), function() forged = forged + 1 end)
+    N.ns.Comm.Dispatch("KP~" .. N.ns.Ed25519.ToB64(certificate.raw), c.V:Name(), "GUILD")
+    w:Run(65)
+    T.eq(opened, 0, "unverified certificate grants no trust before KT")
+    T.eq(N.ns.Security.Member(guild, c.G:Name()), nil, "certificate is not admitted yet")
+    N.ns.Comm.Dispatch("KT~" .. guild .. "~" .. root.name .. "~" .. root.public, c.V:Name(), "GUILD")
+    w:Run(10)
+    T.eq(opened, 1, "retained certificate releases the original message after its root")
+    T.eq(forged, 0, "forged guild never authorizes the modified message")
+    T.eq(#N.ns.db.errors, 0, "no hidden errors")
+end)

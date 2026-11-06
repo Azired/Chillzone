@@ -453,24 +453,8 @@ T.test("relay: смена репортёра — чат гильдии не те
 		lines[i] = ("смена репортёра %02d"):format(i)
 		c.G:Slash("/cz1", lines[i])
 	end
-	w:Run(15)
-	local firstState = { h1 = Al.ns.Census.Peers()[vera] ~= nil, roster = Al.ns.Roster.Fresh(),
-		cert = Al.ns.Security.MyCertificate() ~= nil, reporter = Al.ns.Census.Reporter(),
-		root = Al.ns.Security.Roots()[U.GuildKey("Орден Чиллзона")] ~= nil }
-	local startLog = #w.log
-	Line(1)
-	w:Run(15)
-	local earlyUntrusted = Al.ns.Relay.stats.untrusted
-	local earlyRoot = Al.ns.Security.Roots()[U.GuildKey("Орден Чиллзона")] ~= nil
-	local traffic = {}
-	for j = startLog + 1, #w.log do
-		local e = w.log[j]
-		local kind = e.msg:sub(1, 2)
-		if kind == "RG" or kind == "KQ" or kind == "KP" or kind == "KT" then
-			traffic[#traffic + 1] = kind .. "@" .. e.from
-		end
-	end
-	Line(2)
+	w:Run(15); Line(1)
+	w:Run(15); Line(2)
 	T.no(Al.ns.Census.IsReporter(), "Алла после входа ещё молчит")
 	-- Рядовой Севера пробует перехватить аренду, пока она передаётся: назвать себя
 	-- преемником (RU) и зарегистрироваться (RR).
@@ -493,16 +477,9 @@ T.test("relay: смена репортёра — чат гильдии не те
 	local held = Holders()
 	T.ok(held[alla], "аренда перешла к Алле")
 	T.eq(held[vera], nil, "у Веры аренды больше нет")
-	local finalRoot = Al.ns.Security.Roots()[U.GuildKey("Орден Чиллзона")] ~= nil
-	local firstDebug = (" t15:h1=%s:roster=%s:cert=%s:reporter=%s:root=%s; t30:untrusted=%s:root=%s; end:root=%s:untrusted=%s; traffic=%s"):format(
-		tostring(firstState.h1), tostring(firstState.roster), tostring(firstState.cert),
-		tostring(firstState.reporter), tostring(firstState.root), tostring(earlyUntrusted),
-		tostring(earlyRoot), tostring(finalRoot), tostring(Al.ns.Relay.stats.untrusted),
-		table.concat(traffic, ","))
 	for i, text in ipairs(lines) do
 		for _, cl in ipairs({ c.B, c.V, Al }) do
-			T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз" ..
-				(cl == Al and i == 1 and firstDebug or ""))
+			T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз")
 		end
 	end
 	-- После передачи рядовой тоже не перехватывает аренду Аллы.

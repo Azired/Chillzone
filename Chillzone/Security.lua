@@ -190,16 +190,15 @@ local function Await(fp, sender, fn, viaGuild, missingGuild)
     if not list then
         local total = 0; for _ in pairs(waiting) do total = total + 1 end
         if total >= MAX_PENDING then S.stats.limited = S.stats.limited + 1; return false end
-        list = { at = ns.Now(), untilAt = untilAt }
+        list = { untilAt = untilAt }
         waiting[fp] = list
     end
     if #list >= 8 then return false end
     list[#list + 1] = fn
-    list.sender, list.viaGuild = sender, viaGuild
-    if missingGuild then
-        list.waitGuild = missingGuild
-        list.untilAt = math.max(list.untilAt, untilAt)
+    if not list.sender or (viaGuild and not list.viaGuild) then
+        list.sender, list.viaGuild = sender, viaGuild
     end
+    if missingGuild then list.untilAt = math.max(list.untilAt, untilAt) end
     AskCertificate(fp, sender, viaGuild)
     return true
 end
@@ -209,8 +208,7 @@ ns.On("AUTH_ROOT", function(guild)
     if not Root(guild) then return end
     local now = ns.Now()
     for fp, list in pairs(waiting) do
-        if now <= list.untilAt and not byFp[fp]
-            and (not list.waitGuild or U.GuildKey(list.waitGuild) == U.GuildKey(guild)) then
+        if now <= list.untilAt and not byFp[fp] then
             local resolved = false
             if list.raw then
                 local from, raw = list.rawFrom, list.raw
@@ -221,11 +219,15 @@ ns.On("AUTH_ROOT", function(guild)
             if not resolved then AskCertificate(fp, list.sender, list.viaGuild, true) end
             -- Ответ на первый KQ могли подавить на 30 секунд; неподтверждённый KP
             -- также может оказаться неверным. Повторяем только при живом ожидании.
-            ns.After(31, "certificate after root", function()
-                if waiting[fp] == list and ns.Now() <= list.untilAt and not byFp[fp] then
-                    AskCertificate(fp, list.sender, list.viaGuild, true)
-                end
-            end)
+            if not list.retryScheduled then
+                list.retryScheduled = true
+                ns.After(31, "certificate after root", function()
+                    list.retryScheduled = false
+                    if waiting[fp] == list and ns.Now() <= list.untilAt and not byFp[fp] then
+                        AskCertificate(fp, list.sender, list.viaGuild, true)
+                    end
+                end)
+            end
         end
     end
 end)
@@ -728,9 +730,9 @@ ns.Comm.On("KP", function(msg, sender, dist)
     if not raw then return end
     -- KP мог прийти до KT. Храним не более одного неподтверждённого сертификата
     -- на ожидаемый отпечаток; после получения корня проверяем его обычным путём.
-    local c = Certificate(raw)
-    local list = c and waiting[c.fp]
-    if list and ns.Now() <= list.untilAt and not Root(c.guild) then
+    local candidate = Certificate(raw)
+    local list = candidate and waiting[candidate.fp]
+    if list and ns.Now() <= list.untilAt and not Root(candidate.guild) then
         list.raw, list.rawFrom = raw, sender
         return
     end
