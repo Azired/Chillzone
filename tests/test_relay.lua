@@ -57,6 +57,7 @@ local function CensusReports(withVeteran)
 	-- Только расписание: подпись здесь завершается синхронно. Настоящие подписи
 	-- и проверка сертификатов покрываются сетевыми и adversarial-тестами.
 	c.ns.Security.Seal = function(raw, done) done(raw); return true end
+	c.ns.Security.MyCertificate = function() return { fp = "0123456789abcdef" } end
 	c.ns.Relay.Out = function(mode, raw)
 		T.eq(mode, "L", "режим переписи")
 		reports[#reports + 1] = raw
@@ -307,6 +308,47 @@ T.test("relay: уровень канала у отправителя — по с
 	V:Slash("/cz3", "глава со свежей ролью")
 	w:Run(30)
 	T.eq(c.G:Saw("глава со свежей ролью"), 1, "со свежей ролью строка доходит")
+end)
+
+T.test("relay: офицер без сертификата не вытесняет работающего репортёра", function()
+	local w, c = Build()
+	local guild, boris = "Чиллзон Север", Key(c.B, "Борис Быстрый")
+	c.V:Logout()
+	w:Run(c.B.ns.Config.PEER_WINDOW + 40)
+	T.ok(c.B.ns.Security.MyCertificate(), "у Бориса действующий сертификат")
+	T.ok(c.B.ns.Census.IsReporter(), "после ухода Веры Борис — репортёр")
+
+	-- У Аллы сохранены корни доверия, но нет ни своего сертификата, ни сертификата Бориса.
+	-- Издатель вышел из игры: сертификат Бориса приходит по запросу KQ после H1.
+	local roots = {}
+	for key, root in pairs(c.A.ns.Security.Roots()) do roots[key] = root end
+	local saved = { realms = {} }
+	saved.realms[c.B.ns.group] = {}
+	saved.realms[c.B.ns.group][c.B.ns.faction] = {
+		security = { version = 1, roots = roots, certs = {}, policies = {} },
+	}
+	local Al = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 1, db = saved })
+	c.B.ns.Roster.Scan()
+	T.eq(Al.ns.Security.Member(guild, c.B:Name()), nil, "сертификата Бориса у Аллы сначала нет")
+	w:Run(60)
+	T.ok(c.B.ns.Census.Peers()[Key(c.B, Al:Name())], "Борис получил H1 от Аллы")
+	T.eq(Al.ns.Security.MyCertificate(), nil, "офицеру без издателя не выдали сертификат")
+	T.ok(Al.ns.Security.Member(guild, c.B:Name()), "Алла получила сертификат Бориса по H1 и KQ")
+	T.eq(c.B.ns.Census.Reporter(), boris, "Борис не уступил место офицеру без сертификата")
+	T.eq(Al.ns.Census.Reporter(), boris, "Алла также выбрала Бориса")
+
+	local function Line(value)
+		c.G:Slash("/cz1", value)
+		w:Run(30)
+		T.eq(c.B:Saw(value), 1, "Борис получил сообщение один раз")
+		T.eq(Al:Saw(value), 1, "Алла получила сообщение один раз")
+	end
+	Line("офицер без сертификата: первая строка")
+	w:Run(c.B.ns.Config.REPORTER_HANDOVER + 20)
+	T.ok(c.B.ns.Census.IsReporter(), "Борис остаётся репортёром после интервала передачи")
+	Line("офицер без сертификата: вторая строка")
+	T.eq(#c.B.ns.db.errors, 0, "Борис: без ошибок")
+	T.eq(#Al.ns.db.errors, 0, "Алла: без ошибок")
 end)
 
 T.test("relay: смена репортёра — чат гильдии не теряется, аренда переходит преемнику", function()
