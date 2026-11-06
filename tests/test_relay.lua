@@ -353,6 +353,49 @@ T.test("relay: офицер без сертификата не вытесняе�
 	T.eq(#Al.ns.db.errors, 0, "Алла: без ошибок")
 end)
 
+T.test("relay: прежний действующий сертификат остаётся пригодным после продления", function()
+	local w, c = Build()
+	local guild, key = "Чиллзон Север", Key(c.B, "Борис Быстрый")
+	local roots = {}
+	for name, root in pairs(c.A.ns.Security.Roots()) do roots[name] = root end
+	local saved = { realms = {} }
+	saved.realms[c.B.ns.group] = {}
+	saved.realms[c.B.ns.group][c.B.ns.faction] = {
+		security = { version = 1, roots = roots, certs = {}, policies = {} },
+	}
+	local Ya = w:Client({ first = "Яна", surname = "Тихая", guild = guild, rank = 3, db = saved })
+	w:Run(90)
+	local old = assert(c.B.ns.Security.MyCertificate())
+	T.ok(Ya.ns.Security.Member(guild, c.B:Name()), "Яна знает первоначальный сертификат Бориса")
+
+	-- Вера продлевает сертификат, но Борис временно не получает её аддон-сообщения.
+	local originalFire, originalRenew = c.B.Fire, c.V.ns.Config.AUTH_RENEW
+	c.B.Fire = function(self, event, ...)
+		if event == "CHAT_MSG_ADDON" or event == "CHAT_MSG_ADDON_LOGGED" then
+			local _, msg, dist, sender = ...
+			if dist == "GUILD" and self.ns.Util.Key(sender) == self.ns.Util.Key(c.V:Name()) then return end
+		end
+		return originalFire(self, event, ...)
+	end
+	c.V.ns.Config.AUTH_RENEW = 1
+	w:Run(35)
+	c.V.ns.Config.AUTH_RENEW = originalRenew
+	local renewed = Ya.ns.Security.Member(guild, c.B:Name())
+	T.ok(renewed and renewed.fp ~= old.fp, "Яна знает новый сертификат Бориса")
+	T.eq(c.B.ns.Security.MyCertificate().fp, old.fp, "Борис ещё работает со старым")
+	T.ok(Ya.ns.Security.MemberByFingerprint(guild, c.B:Name(), old.fp), "старый сертификат всё ещё действителен")
+	c.V:Logout()
+	w:Run(2)
+	c.B.Fire = originalFire
+	w:Run(c.B.ns.Config.PEER_WINDOW + 40)
+	T.ok(c.B.ns.Census.IsReporter(), "Борис стал репортёром со старым сертификатом")
+	T.eq(Ya.ns.Census.Reporter(), key, "Яна выбрала Бориса по действующему старому отпечатку")
+	c.G:Slash("/cz1", "старый сертификат остаётся действительным")
+	w:Run(30)
+	T.eq(Ya:Saw("старый сертификат остаётся действительным"), 1, "сообщение получено один раз")
+	T.eq(#Ya.ns.db.errors, 0, "Яна: без ошибок")
+end)
+
 T.test("relay: смена репортёра — чат гильдии не теряется, аренда переходит преемнику", function()
 	local w, c = Build()
 	local U = c.A.ns.Util
@@ -378,7 +421,9 @@ T.test("relay: смена репортёра — чат гильдии не те
 	end
 	w:Run(15); Line(1)
 	w:Run(15); Line(2)
-	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия уже выбрала Аллу")
+	if not Al.ns.Security.MyCertificate() then
+		T.eq(c.B.ns.Census.Reporter(), vera, "до сертификата репортёр — Вера")
+	end
 	T.no(Al.ns.Census.IsReporter(), "Алла после входа ещё молчит")
 	-- Рядовой Севера пробует перехватить аренду, пока она передаётся: назвать себя
 	-- преемником (RU) и зарегистрироваться (RR).
@@ -390,6 +435,11 @@ T.test("relay: смена репортёра — чат гильдии не те
 	w:Run(5)
 	T.ok(Holders()[vera], "аренда всё ещё у Веры")
 	T.eq(Holders()[Key(c.A, "Борис Быстрый")], nil, "рядовой аренду не перехватил")
+	local deadline = w.now + 70
+	while not Al.ns.Security.MyCertificate() and w.now < deadline do w:Run(5) end
+	T.ok(Al.ns.Security.MyCertificate(), "Алле выдали сертификат")
+	w:Run(10)
+	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия выбрала сертифицированную Аллу")
 	for i = 3, 10 do w:Run(15); Line(i) end
 	w:Run(30)
 	T.ok(Al.ns.Census.IsReporter(), "Алла — репортёр")
