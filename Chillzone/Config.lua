@@ -4,7 +4,7 @@ local ADDON, ns = ...
 local C = {}
 ns.Config = C
 
-C.VERSION = "0.3.0"
+C.VERSION = "0.4.0"
 C.PREFIX = "CHZSIGNED1" -- incompatible trust boundary: unsigned older clients cannot join
 
 -- «Своя» гильдия: в названии есть эта подстрока (без учёта регистра, кириллица).
