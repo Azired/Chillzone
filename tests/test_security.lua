@@ -523,3 +523,105 @@ T.test("security: verification limits count authors and forwarders separately", 
     T.eq(S.stats.limited - before, 25 - c.G.ns.Config.AUTH_NEW_PER_MIN, "one sender's forged credentials share one budget")
     T.eq(#c.G.ns.db.errors, 0, "no hidden errors")
 end)
+
+T.test("security: other officers keep the guild certified for days while the root is away", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    local O = w:Client({ first = "Олег", surname = "Опытный", guild = "Чиллзон Север", rank = 1 })
+    local B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 3 })
+    w:Run(30)
+    w:Init(V)
+    w:Run(60)
+    T.ok(O.ns.Security.MyCertificate(), "officer certified by the root")
+    T.ok(B.ns.Security.MyCertificate(), "member certified by the root")
+    V:Logout()
+    local online = { O, B }
+    local function Skip(days) -- server time jumps; timers are not replayed
+        for _, cl in ipairs(online) do cl.clockSkew = (cl.clockSkew or 0) + days * 86400 end
+    end
+    Skip(3)
+    O.ns.Roster.Scan()
+    w:Run(30)
+    T.ok(B.ns.Security.MyCertificate(), "three days later the member still has a credential")
+    -- A newcomer is certified by the remaining officer under his delegation from the root.
+    local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+    N.clockSkew = O.clockSkew
+    online[#online + 1] = N
+    O.ns.Roster.Scan(); B.ns.Roster.Scan()
+    w:Run(60)
+    local U, cert = O.ns.Util, N.ns.Security.MyCertificate()
+    T.ok(cert and U.Key(cert.issuerName) == U.Key(O:Name()), "newcomer certified by the officer, not the absent root")
+    T.ok(B.ns.Security.Member("Чиллзон Север", N:Name()), "and the guild accepts that credential")
+    -- More than AUTH_TTL after the root was last online nobody can issue any more.
+    Skip(5)
+    w:Run(30)
+    T.eq(B.ns.Security.MyCertificate(), nil, "the member's credential expired")
+    T.eq(N.ns.Security.MyCertificate(), nil, "the newcomer's too: it never outlives the delegation")
+    for _, cl in ipairs({ V, O, B, N }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": no errors") end
+end)
+
+T.test("security: forged packets with someone's fingerprint do not spend that author's limit", function()
+    local w, c = Build()
+    local S = c.G.ns.Security
+    S.CheckCertificate(c.B.ns.Security.MyCertificate().raw, nil, function() end)
+    w:Run(5)
+    local genuine
+    c.B.ns.Security.Seal(c.B.ns.Codec.EncodeChat("A", "Чиллзон Север", 9300, "MAGE", "настоящая строка"),
+        function(v) genuine = v end)
+    w:Run(3)
+    -- The fingerprint is public: an outsider stamps it on packets with signatures that do not match.
+    local limit, rejected = c.G.ns.Config.AUTH_AUTHOR_PER_MIN, S.stats.rejected
+    for i = 1, limit do
+        local forged = genuine:gsub("^(S1~[%w_-]+~)(%d+)", function(head, at) return head .. (tonumber(at) - i) end)
+        S.Open(forged, c.X:Name(), function() end)
+    end
+    w:Run(10)
+    T.eq(S.stats.rejected - rejected, limit, "every forgery fails its signature check")
+    local opened = 0
+    S.Open(genuine, c.A:Name(), function() opened = opened + 1 end)
+    w:Run(5)
+    T.eq(opened, 1, "the real author's packet still opens")
+    T.eq(#c.G.ns.db.errors, 0, "no hidden errors")
+end)
+
+T.test("security: an officer's other credentials do not crowd out a member's own", function()
+    local w, c = Build()
+    local B, V = c.B, c.V
+    T.eq(B.ns.Security.MyCertificate().rank, 3, "an ordinary member to begin with")
+    -- KPs from Vera with other members' credentials keep Boris's limit for new credentials from
+    -- her used up, as on a guild's first day. Own-guild names must be in the roster, or such a
+    -- KP is dropped before the limit. Once the limit is used up, extras cost no signature checks.
+    local mine, Ed = V.ns.Security.MyCertificate(), B.ns.Ed25519
+    local letters = { "а", "б", "в", "г", "д" }
+    local others = {}
+    for i = 1, B.ns.Config.AUTH_NEW_PER_MIN + 1 do
+        local name = "Запасной Ж" .. letters[(i - 1) % 5 + 1] .. letters[math.floor((i - 1) / 5) + 1]
+        w:AddOffline("Чиллзон Север", name .. "-CAMWOWUS2Realm7PvE", 3)
+        local body = Fields("CREDENTIAL", { mine.group, mine.faction, mine.guild, name, mine.public, "member", 3,
+            mine.issued, mine.expires, mine.issuerName, mine.issuer, "0", 1 })
+        others[i] = "KP~" .. Ed.ToB64(Fields("CERT", { body, Ed.ToB64(mine.sig), "" }))
+    end
+    -- Boris becomes a veteran: Vera issues a new credential, and it must still get through.
+    B.rank = 2
+    B.ns.Roster.Scan(); V.ns.Roster.Scan()
+    for _ = 1, 100 do
+        for _, msg in ipairs(others) do B.ns.Comm.Dispatch(msg, V:Name(), "GUILD") end
+        w:Run(0.25)
+    end
+    local cert = B.ns.Security.MyCertificate()
+    T.eq(cert and cert.rank, 2, "the new credential arrived despite the exhausted limit")
+    T.eq(#B.ns.db.errors, 0, "no hidden errors")
+end)
+
+T.test("security: a member who missed their own credential gets it again after K1", function()
+    local w, c = Build()
+    local B, U = c.B, c.B.ns.Util
+    T.ok(B.ns.Security.MyCertificate(), "certified")
+    -- The KP never reached Boris; Vera holds a fresh credential and will not issue it again.
+    B.ns.store.security.certs[U.GuildKey("Чиллзон Север")][U.Key(B:Name())] = nil
+    T.eq(B.ns.Security.MyCertificate(), nil, "no credential")
+    w:Run(75)
+    T.ok(B.ns.Security.MyCertificate(), "the issuer whispered it back after K1 ~0")
+    T.eq(#B.ns.db.errors, 0, "no hidden errors")
+end)

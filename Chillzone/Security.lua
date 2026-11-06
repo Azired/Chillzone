@@ -16,7 +16,7 @@ local certCache, verifyPending, replay, cachedOpens, limits = {}, {}, {}, {}, {}
 -- пока свой корень не задан.
 local byFp, waiting, checking, inflight, hints = {}, {}, {}, {}, {}
 local initAsking, heardHint = nil, -1e9
-local asked, introduced, served = {}, {}, {}
+local asked, introduced, served, resent = {}, {}, {}, {}
 local openedHere = {}
 local serial, lastHello, lastPolicy = 0, -1e9, -1e9
 local lastSaid
@@ -68,6 +68,12 @@ local function Budget(key, limit)
     b.n = b.n + 1
     if b.n > limit then S.stats.limited = S.stats.limited + 1; return false end
     return true
+end
+-- Лимит уже исчерпан? Ничего не списывает: для тех, чья принадлежность ещё не доказана.
+local function Spent(key, limit)
+    local b = limits[key]
+    if b and ns.Now() - b.t < 60 and b.n >= limit then S.stats.limited = S.stats.limited + 1; return true end
+    return false
 end
 local function Job(fn, done)
     local accepted = Ed.Run(fn, function(ok, value)
@@ -215,7 +221,10 @@ function S.CheckCertificate(raw, owner, done, from)
     end
     local count = 0; for _ in pairs(checking) do count = count + 1 end
     if count >= MAX_PENDING then S.stats.limited = S.stats.limited + 1; return false end
-    if not Budget("n:" .. Peer(from or owner or c.name), C.AUTH_NEW_PER_MIN) then return false end
+    -- Свой сертификат — отдельно: при первой выдаче все KP идут от одного офицера, и чужие
+    -- сертификаты не должны вытеснять мой (повторно его не выдадут до продления).
+    local own = c.key == ns.myKey and identity ~= nil and c.public == identity.public
+    if not Budget(own and "own" or "n:" .. Peer(from or owner or c.name), C.AUTH_NEW_PER_MIN) then return false end
     checking[raw], inflight[c.fp] = { done }, true
     local accepted = Job(function() return VerifyCertificate(raw) end, function(valid)
         local callbacks = checking[raw] or {}
@@ -394,8 +403,9 @@ function S.Say()
     if not identity or not ns.IsMember() or not ns.Roster.Fresh() then return end
     lastHello = ns.Now()
     keys[ns.myKey] = { name = ns.me, public = identity.public }
-    ns.Comm.Send("GUILD", "K1~" .. identity.public, { key = "identity" })
     local mine = S.MyCertificate()
+    -- "~0": сертификата у меня нет. Издатель, у которого он уже есть, пришлёт его шёпотом.
+    ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0"), { key = "identity" })
     if mine and (not lastSaid or lastSaid.raw ~= mine.raw or lastHello - lastSaid.at >= C.AUTH_ANNOUNCE) then
         lastSaid = { raw = mine.raw, at = lastHello }
         ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(mine.raw), { key = "my-credential" })
@@ -628,10 +638,21 @@ ns.Comm.On("KT", function(msg, sender, dist)
 end)
 ns.Comm.On("K1", function(msg, sender, dist)
     if dist ~= "GUILD" or not NativeRole(sender) then return end
-    local public = msg:match("^K1~([%w_-]+)$")
-    local raw = public and Ed.FromB64(public)
+    local public, flag = msg:match("^K1~([%w_-]+)(.*)$")
+    if flag ~= "" and flag ~= "~0" then return end
+    local raw = Ed.FromB64(public)
     if not raw or #raw ~= 32 then return end
-    keys[U.Key(sender)] = { name = sender, public = public }
+    local k = U.Key(sender)
+    keys[k] = { name = sender, public = public }
+    -- У участника нет сертификата, а у меня, активного издателя, он есть: первый KP до него
+    -- не дошёл (лимит, ещё не было корня). Issue свежий сертификат заново не выдаёт.
+    if flag == "~0" and Authority() and (not resent[k] or ns.Now() - resent[k] >= 60) then
+        local held = S.Member(ns.MyGuild(), sender)
+        if held and held.public == public then
+            resent[k] = ns.Now()
+            ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(held.raw), { target = sender, prio = true, key = "kp-own:" .. k })
+        end
+    end
     -- A reload has the same native name as the old peer. Answer its identity
     -- announcement so it learns the officer reporter before accepting RG, and
     -- the guild root before an officer would think of /cz trust init.
@@ -717,13 +738,16 @@ function S.Open(wire, sender, done, viaGuild)
         if count >= MAX_PENDING then S.stats.limited = S.stats.limited + 1; return false end
         -- Сертификат уже проверен, осталась одна подпись. Лимит — на автора и отдельно,
         -- выше, на пересылающего: через реле и репортёра идут сообщения многих авторов.
-        if not Budget("a:" .. c.key, C.AUTH_AUTHOR_PER_MIN) or not Budget("h:" .. Peer(sender), C.AUTH_HOP_PER_MIN) then return false end
+        -- Пересылающий платит сразу. Автор — только за верную подпись: отпечаток публичен,
+        -- и подделки с чужим отпечатком не должны выбирать лимит настоящего автора.
+        if Spent("a:" .. c.key, C.AUTH_AUTHOR_PER_MIN) or not Budget("h:" .. Peer(sender), C.AUTH_HOP_PER_MIN) then return false end
         verifyPending[wire] = { done }
         local body = Pack("MESSAGE", { ns.group, ns.faction, c.raw, at, seq, inner })
         local accepted = Job(function() return Ed.Verify(c.pk, body, sig) end, function(valid)
             local callbacks = verifyPending[wire] or {}
             verifyPending[wire] = nil
             if not valid or not Current(c) then S.stats.rejected = S.stats.rejected + 1; return end
+            if not Budget("a:" .. c.key, C.AUTH_AUTHOR_PER_MIN) then return end
             local id = c.public .. ":" .. c.key .. ":" .. seq
             local later = ns.ServerTime()
             if kind == "M1" then
@@ -839,6 +863,7 @@ ns.On("LOGIN", function()
         for key, b in pairs(limits) do if clock - b.t >= 60 then limits[key] = nil end end
         for key, t in pairs(asked) do if clock - t >= 60 then asked[key] = nil end end
         for key, t in pairs(served) do if clock - t >= 60 then served[key] = nil end end
+        for key, t in pairs(resent) do if clock - t >= 60 then resent[key] = nil end end
         for key, t in pairs(introduced) do if clock - t >= C.AUTH_INTRODUCE then introduced[key] = nil end end
     end)
 end)

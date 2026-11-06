@@ -79,7 +79,10 @@ C.CHAT_TIER_MIN = 60 -- строк в минуту на уровень
 C.CHAT_HISTORY = 100
 
 -- Credentials permit transport for a day; privileged roles require a recent renewal.
-C.AUTH_TTL = 24 * 3600
+-- Срок сертификата, делегирования офицеру и каталога главной гильдии. Корень продлевает
+-- делегирования, пока он в игре: без него гильдия работает столько, сколько этот срок.
+-- Столько же исключённый участник может писать от имени гильдии.
+C.AUTH_TTL = 7 * 24 * 3600
 C.AUTH_ROLE_TTL = 15 * 60
 C.AUTH_RENEW = 10 * 60
 C.AUTH_ROSTER_TTL = 120
