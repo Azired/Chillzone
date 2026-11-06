@@ -366,27 +366,26 @@ T.test("relay: прежний действующий сертификат ост
 	local Ya = w:Client({ first = "Яна", surname = "Тихая", guild = guild, rank = 3, db = saved })
 	w:Run(90)
 	local old = assert(c.B.ns.Security.MyCertificate())
-	T.ok(Ya.ns.Security.Member(guild, c.B:Name()), "Яна знает первоначальный сертификат Бориса")
+	local first = Ya.ns.Security.Member(guild, c.B:Name())
+	T.ok(first and first.fp == old.fp, "Яна знает первоначальный сертификат Бориса")
 
-	-- Вера продлевает сертификат, но Борис временно не получает её аддон-сообщения.
-	local originalFire, originalRenew = c.B.Fire, c.V.ns.Config.AUTH_RENEW
-	c.B.Fire = function(self, event, ...)
-		if event == "CHAT_MSG_ADDON" or event == "CHAT_MSG_ADDON_LOGGED" then
-			local dist, sender = select(3, ...)
-			if dist == "GUILD" and self.ns.Util.Key(sender) == self.ns.Util.Key(c.V:Name()) then return end
-		end
-		return originalFire(self, event, ...)
-	end
-	c.V.ns.Config.AUTH_RENEW = 1
-	w:Run(35)
-	c.V.ns.Config.AUTH_RENEW = originalRenew
+	-- Настоящий новый сертификат от Веры попал к Яне, но не к Борису.
+	local Ed = c.V.ns.Ed25519
+	local seed
+	for _, identity in pairs(c.V.ns.db.securityKeys) do seed = Ed.FromB64(identity.seed) end
+	T.ok(seed, "ключ Веры доступен в симуляторе")
+	local body, replaced = old.body:gsub(tostring(old.issued), tostring(old.issued + 1), 1)
+	T.eq(replaced, 1, "новый сертификат имеет другую дату выдачи")
+	local signature = Ed.ToB64(Ed.Sign(seed, body))
+	local raw = ("CERT:%d:%s%d:%s%d:%s"):format(#body, body, #signature, signature, #old.delegation, old.delegation)
+	local accepted = false
+	T.ok(Ya.ns.Security.CheckCertificate(raw, c.B:Name(), function() accepted = true end, c.V:Name()), "проверка началась")
+	w:Run(10)
 	local renewed = Ya.ns.Security.Member(guild, c.B:Name())
-	T.ok(renewed and renewed.fp ~= old.fp, "Яна знает новый сертификат Бориса")
+	T.ok(accepted and renewed and renewed.fp ~= old.fp, "Яна проверила новый сертификат Бориса")
 	T.eq(c.B.ns.Security.MyCertificate().fp, old.fp, "Борис ещё работает со старым")
 	T.ok(Ya.ns.Security.MemberByFingerprint(guild, c.B:Name(), old.fp), "старый сертификат всё ещё действителен")
 	c.V:Logout()
-	w:Run(2)
-	c.B.Fire = originalFire
 	w:Run(c.B.ns.Config.PEER_WINDOW + 40)
 	T.ok(c.B.ns.Census.IsReporter(), "Борис стал репортёром со старым сертификатом")
 	T.eq(Ya.ns.Census.Reporter(), key, "Яна выбрала Бориса по действующему старому отпечатку")
