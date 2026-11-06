@@ -244,10 +244,10 @@ luacheck следит за глобалами: аддон может писат�
 ### Выпуск версии
 
 1. Поднять версию в двух местах: `## Version:` в `Chillzone/Chillzone.toc` и `C.VERSION` в `Chillzone/Config.lua`. Закоммитить в `main`.
-2. Поставить тег и запушить его: `git tag v0.4.0 && git push origin v0.4.0`.
-3. [`.github/workflows/release.yml`](../.github/workflows/release.yml) проверит, что тег совпадает с версией в toc, прогонит тесты и luacheck, соберёт `Chillzone-0.4.0.zip` (в нём одна папка `Chillzone`) и создаст черновик релиза с шаблоном описания.
+2. Поставить тег и запушить его: `git tag v0.4.1 && git push origin v0.4.1`.
+3. [`.github/workflows/release.yml`](../.github/workflows/release.yml) проверит, что тег совпадает с версией в toc, прогонит тесты и luacheck, соберёт `Chillzone-0.4.1.zip` (в нём одна папка `Chillzone`) и создаст черновик релиза с шаблоном описания.
 4. Дописать в черновике «Что нового» и опубликовать.
 
-Можно и наоборот: сначала `gh release create v0.4.0 --notes-file notes.md` с готовым описанием — тогда workflow приложит архив к уже созданному релизу.
+Можно и наоборот: сначала `gh release create v0.4.1 --notes-file notes.md` с готовым описанием — тогда workflow приложит архив к уже созданному релизу.
 
 Лицензия — MIT, см. [LICENSE](../LICENSE).
