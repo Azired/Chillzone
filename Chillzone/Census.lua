@@ -68,21 +68,49 @@ function Census.Reporter(withoutMe)
 	return Codec.PickReporter(me, ns.char and ns.char.shareZones or false, live, now, C.PEER_WINDOW, eligible)
 end
 
+-- Сравнение для выборов: офицеры, согласие делиться зонами, затем ключ игрока.
+local function Better(key, peer, otherKey, other)
+	if not otherKey then return true end
+	local officer = ns.Roster.IsOfficerRank(ns.Roster.byKey[key])
+	local otherOfficer
+	if otherKey == ns.myKey then
+		otherOfficer = ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
+	else
+		otherOfficer = ns.Roster.IsOfficerRank(ns.Roster.byKey[otherKey])
+	end
+	if officer ~= otherOfficer then return officer end
+	local zones = otherKey == ns.myKey and ns.char and ns.char.shareZones or other and other.z
+	zones = not not zones
+	if peer.z ~= zones then return peer.z end
+	return key < otherKey
+end
+
 -- Запрашиваем сертификат лишь у кандидата, который может сменить уже подтверждённого
 -- репортёра. Иначе каждый читатель запрашивал бы сертификаты у всех согильдийцев.
 local function CouldReplace(key, peer)
 	local electedKey = Census.Reporter()
-	if not electedKey then return true end
-	local officer = ns.Roster.IsOfficerRank(ns.Roster.byKey[key])
-	local incumbentOfficer = electedKey == ns.myKey
-		and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
-		or ns.Roster.IsOfficerRank(ns.Roster.byKey[electedKey])
-	if officer ~= incumbentOfficer then return officer end
-	local incumbent = peers[electedKey]
-	local zones = electedKey == ns.myKey and ns.char and ns.char.shareZones or incumbent and incumbent.z
-	zones = not not zones
-	if peer.z ~= zones then return peer.z end
-	return key < electedKey
+	return Better(key, peer, electedKey, peers[electedKey])
+end
+
+-- Если действующий репортёр пропал, проверяем уже объявленный H1 запасного кандидата:
+-- не ждём следующего H1, который может прийти только через минуту.
+local function ResolveFallback(now)
+	local guild = ns.MyGuild()
+	if not guild then return end
+	local electedKey = Census.Reporter()
+	local candidateKey, candidate
+	for key, peer in pairs(Live(now)) do
+		if peer.fp and Trusted(key) and Better(key, peer, electedKey, peers[electedKey])
+			and not ns.Security.MemberByFingerprint(guild, peer.name, peer.fp)
+			and (not peer.askedAt or now - peer.askedAt >= 30)
+			and Better(key, peer, candidateKey, candidate) then
+			candidateKey, candidate = key, peer
+		end
+	end
+	if candidate then
+		candidate.askedAt = now
+		ns.Security.Resolve(candidate.fp, candidate.name, candidate.name, function() end, true)
+	end
 end
 
 function Census.IsReporter()
@@ -108,6 +136,7 @@ function Census.Track()
 	if key ~= elected then
 		previous = elected and { key = elected, untilAt = now + C.REPORTER_HANDOVER } or nil
 		elected = key
+		ResolveFallback(now)
 	end
 	local me = Census.IsReporter()
 	if me == acting then return end
