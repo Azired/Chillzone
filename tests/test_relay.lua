@@ -493,10 +493,12 @@ T.test("relay: смена репортёра — чат гильдии не те
 	local held = Holders()
 	T.ok(held[alla], "аренда перешла к Алле")
 	T.eq(held[vera], nil, "у Веры аренды больше нет")
-	local firstDebug = (" t15:h1=%s:roster=%s:cert=%s:reporter=%s:root=%s; t30:untrusted=%s:root=%s; traffic=%s"):format(
+	local finalRoot = Al.ns.Security.Roots()[U.GuildKey("Орден Чиллзона")] ~= nil
+	local firstDebug = (" t15:h1=%s:roster=%s:cert=%s:reporter=%s:root=%s; t30:untrusted=%s:root=%s; end:root=%s:untrusted=%s; traffic=%s"):format(
 		tostring(firstState.h1), tostring(firstState.roster), tostring(firstState.cert),
 		tostring(firstState.reporter), tostring(firstState.root), tostring(earlyUntrusted),
-		tostring(earlyRoot), table.concat(traffic, ","))
+		tostring(earlyRoot), tostring(finalRoot), tostring(Al.ns.Relay.stats.untrusted),
+		table.concat(traffic, ","))
 	for i, text in ipairs(lines) do
 		for _, cl in ipairs({ c.B, c.V, Al }) do
 			T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз" ..

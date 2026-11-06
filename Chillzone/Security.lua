@@ -184,17 +184,22 @@ local function AskCertificate(fp, sender, viaGuild, retry)
         ns.Comm.Send("WHISPER", "KQ~" .. fp, { target = sender, prio = true, key = "kq:" .. key })
     end
 end
-local function Await(fp, sender, fn, viaGuild)
+local function Await(fp, sender, fn, viaGuild, missingGuild)
     local list = waiting[fp]
+    local untilAt = ns.Now() + (missingGuild and C.CHAT_DEDUPE or 30)
     if not list then
         local total = 0; for _ in pairs(waiting) do total = total + 1 end
         if total >= MAX_PENDING then S.stats.limited = S.stats.limited + 1; return false end
-        list = { at = ns.Now() }
+        list = { at = ns.Now(), untilAt = untilAt }
         waiting[fp] = list
     end
     if #list >= 8 then return false end
     list[#list + 1] = fn
     list.sender, list.viaGuild = sender, viaGuild
+    if missingGuild then
+        list.waitGuild = missingGuild
+        list.untilAt = math.max(list.untilAt, untilAt)
+    end
     AskCertificate(fp, sender, viaGuild)
     return true
 end
@@ -204,8 +209,24 @@ ns.On("AUTH_ROOT", function(guild)
     if not Root(guild) then return end
     local now = ns.Now()
     for fp, list in pairs(waiting) do
-        local sender, viaGuild = list.sender, list.viaGuild
-        if now - list.at <= 30 and not byFp[fp] then AskCertificate(fp, sender, viaGuild, true) end
+        if now <= list.untilAt and not byFp[fp]
+            and (not list.waitGuild or U.GuildKey(list.waitGuild) == U.GuildKey(guild)) then
+            local resolved = false
+            if list.raw then
+                local from, raw = list.rawFrom, list.raw
+                resolved = S.CheckCertificate(raw, nil, function(c)
+                    if c.key == U.Key(from) then ns.Fire("AUTH_PEER", c, from) end
+                end, from)
+            end
+            if not resolved then AskCertificate(fp, list.sender, list.viaGuild, true) end
+            -- Ответ на первый KQ могли подавить на 30 секунд; неподтверждённый KP
+            -- также может оказаться неверным. Повторяем только при живом ожидании.
+            ns.After(31, "certificate after root", function()
+                if waiting[fp] == list and ns.Now() <= list.untilAt and not byFp[fp] then
+                    AskCertificate(fp, list.sender, list.viaGuild, true)
+                end
+            end)
+        end
     end
 end)
 local function Keep(c)
@@ -705,6 +726,14 @@ ns.Comm.On("KP", function(msg, sender, dist)
     local raw = msg:match("^KP~([%w_-]+)$")
     raw = raw and Ed.FromB64(raw)
     if not raw then return end
+    -- KP мог прийти до KT. Храним не более одного неподтверждённого сертификата
+    -- на ожидаемый отпечаток; после получения корня проверяем его обычным путём.
+    local c = Certificate(raw)
+    local list = c and waiting[c.fp]
+    if list and ns.Now() <= list.untilAt and not Root(c.guild) then
+        list.raw, list.rawFrom = raw, sender
+        return
+    end
     S.CheckCertificate(raw, nil, function(c)
         if c.key == U.Key(sender) then ns.Fire("AUTH_PEER", c, sender) end
     end, sender)
@@ -827,7 +856,7 @@ function S.Open(wire, sender, done, viaGuild)
     end
     local raw = byFp[fp]
     if raw then return Check(Certificate(raw)) end
-    return Await(fp, sender, Check, viaGuild)
+    return Await(fp, sender, Check, viaGuild, not Root(guild) and guild or nil)
 end
 ns.Comm.On("S1", function(wire, sender, dist)
     if dist ~= "GUILD" or not NativeRole(sender) then return end
@@ -913,7 +942,7 @@ ns.On("LOGIN", function()
         for key, p in pairs(outgoing) do if clock > p.untilAt then outgoing[key] = nil end end
         for raw, c in pairs(certCache) do if c.expires <= now then certCache[raw] = nil end end
         for fp, raw in pairs(byFp) do if not certCache[raw] then byFp[fp] = nil end end
-        for fp, list in pairs(waiting) do if clock - list.at > 30 then waiting[fp] = nil end end
+        for fp, list in pairs(waiting) do if clock > list.untilAt then waiting[fp] = nil end end
         for key, b in pairs(limits) do if clock - b.t >= 60 then limits[key] = nil end end
         for key, t in pairs(asked) do if clock - t >= 60 then asked[key] = nil end end
         for key, t in pairs(served) do if clock - t >= 60 then served[key] = nil end end
@@ -922,6 +951,7 @@ ns.On("LOGIN", function()
     end)
 end)
 ns.On("GUILD_CHANGED", function()
+    wipe(waiting)
     keys, issuing, pending, outgoing, hints = {}, {}, {}, {}, {}
     lastHello, lastPolicy, lastSaid = -1e9, -1e9, nil
     S.Say()
