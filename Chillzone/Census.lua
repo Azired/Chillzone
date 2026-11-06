@@ -15,6 +15,7 @@ local peers = {} -- [Key] = { t, z, r, name, version }: согильдийцы �
 local lastSent, lastSentAt = nil, -1e9
 local lastQ1Answer = -1e9
 local trustCatchupPending = false
+local lastHelloFp
 
 function Census.Peers()
 	return peers
@@ -46,14 +47,22 @@ end
 function Census.Reporter(withoutMe)
 	if not ns.myKey then return nil end
 	local now = ns.Now()
-	local live = Live(now)
-	local officers = not withoutMe and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
+	local live, guild = Live(now), ns.MyGuild()
+	local mine = not withoutMe and ns.Security.MyCertificate()
+	local function ready(key)
+		if not Trusted(key) then return false end
+		if key == ns.myKey then return mine ~= nil end
+		local p = live[key]
+		if not p or not p.fp then return false end
+		local c = guild and ns.Security.Member(guild, p.name)
+		return c ~= nil and c.fp == p.fp
+	end
+	local officers = not withoutMe and ready(ns.myKey) and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
 	for key in pairs(live) do
-		if ns.Roster.IsOfficerRank(ns.Roster.byKey[key]) then officers = true end
+		if ready(key) and ns.Roster.IsOfficerRank(ns.Roster.byKey[key]) then officers = true end
 	end
 	local function eligible(key)
-		if not Trusted(key) then return false end
-		return not officers or ns.Roster.IsOfficerRank(ns.Roster.byKey[key])
+		return ready(key) and (not officers or ns.Roster.IsOfficerRank(ns.Roster.byKey[key]))
 	end
 	local me = not withoutMe and ns.myKey or nil
 	return Codec.PickReporter(me, ns.char and ns.char.shareZones or false, live, now, C.PEER_WINDOW, eligible)
@@ -76,6 +85,8 @@ local acting, handingUntil = false, nil -- я репортёр; до каких 
 
 function Census.Track()
 	local now = ns.Now()
+	local cert = ns.Security.MyCertificate()
+	if ns.IsMember() and (cert and cert.fp or nil) ~= lastHelloFp then Census.SendHello() end
 	local key = Census.Reporter()
 	if key ~= elected then
 		previous = elected and { key = elected, untilAt = now + C.REPORTER_HANDOVER } or nil
@@ -126,7 +137,9 @@ end
 function Census.SendHello()
 	if not ns.IsMember() then return end
 	local R = ns.Relay
-	local hello = Codec.EncodeHello(ns.VERSION, ns.char.shareZones, R and R.IAmRelay() or false)
+	local cert = ns.Security.MyCertificate()
+	lastHelloFp = cert and cert.fp or nil
+	local hello = Codec.EncodeHello(ns.VERSION, ns.char.shareZones, R and R.IAmRelay() or false, lastHelloFp)
 	ns.Comm.Send("GUILD", hello, { key = "hello" })
 end
 
@@ -134,9 +147,21 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	if dist ~= "GUILD" then return end
 	local h = Codec.DecodeHello(msg)
 	if not h then return end
-	local key = U.Key(sender)
+	local key, now = U.Key(sender), ns.Now()
 	local known = peers[key]
-	peers[key] = { t = ns.Now(), z = h.zones, r = h.relay, name = sender, version = h.version }
+	local peer = { t = now, z = h.zones, r = h.relay, name = sender, version = h.version, fp = h.fp,
+		askedAt = known and known.askedAt }
+	peers[key] = peer
+	-- Отпечаток в H1 — заявление кандидата. Если сертификата ещё нет в кэше,
+	-- запрашиваем его и допускаем кандидата только после проверки подписи.
+	if h.fp and Trusted(key) then
+		local guild = ns.MyGuild()
+		local cert = guild and ns.Security.Member(guild, sender)
+		if (not cert or cert.fp ~= h.fp) and (not peer.askedAt or now - peer.askedAt >= 30) then
+			peer.askedAt = now
+			ns.Security.Resolve(h.fp, sender, sender, function() end)
+		end
+	end
 	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее.
 	if not known then ns.After(math.random(2, 6), "hello back", Census.SendHello) end
 end)
@@ -254,6 +279,7 @@ end)
 
 ns.On("GUILD_CHANGED", function()
 	wipe(peers)
+	lastHelloFp = nil
 	elected, previous, acting, handingUntil = nil, nil, false, nil
 	lastSent, lastSentAt, signing, epoch = nil, -1e9, nil, epoch + 1
 	ns.After(3, "hello after guild change", Census.SendHello)
