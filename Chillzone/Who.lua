@@ -1,0 +1,156 @@
+-- Chillzone: поиск участников сервером для вступления. Поиск и обход лимита 50 строк
+-- адаптированы из Olympus Who.lua (MIT). Один запрос только из щелчка игрока.
+-- Результат идёт в штатный список /who: чужие фреймы и их события не меняем.
+local ADDON, ns = ...
+
+local U, L = ns.Util, ns.L
+local Who = { COOLDOWN = 10, TIMEOUT = 6, LATE = 30, ROUND_TTL = 900, MAX = 50, MAX_FOUND = 1000 }
+ns.Who = Who
+Who.found = {}
+local lastSend, pending, roundAt, step, brackets = -math.huge, nil, nil, 0, nil
+local byKey = {}
+local hooked, legacyHooked, sending = nil, false, false
+local lateUntil = -math.huge
+
+-- Пост-хук не заменяет игровой поиск. Чужой /who отменяет ожидание нашего ответа,
+-- иначе его строки могли бы попасть в наш список адресатов.
+local function HookSearch()
+	if type(hooksecurefunc) ~= "function" then return end
+	local function OtherSearch()
+		if sending then return end
+		if pending then lateUntil = ns.Now() + Who.LATE end
+		pending, lastSend = nil, ns.Now()
+		ns.Fire("RECRUIT")
+	end
+	if C_FriendList and type(C_FriendList.SendWho) == "function" then
+		if hooked == C_FriendList then return end
+		hooked = C_FriendList
+		hooksecurefunc(C_FriendList, "SendWho", OtherSearch)
+	elseif type(SendWho) == "function" and not legacyHooked then
+		legacyHooked = true
+		hooksecurefunc("SendWho", OtherSearch)
+	end
+end
+
+local function Plain(v)
+	if type(issecretvalue) == "function" and issecretvalue(v) then return nil end
+	return v
+end
+
+local function Info(i)
+	if C_FriendList and C_FriendList.GetWhoInfo then
+		local row = C_FriendList.GetWhoInfo(i)
+		if type(row) ~= "table" then return end
+		return Plain(row.fullName), Plain(row.fullGuildName), Plain(row.level), Plain(row.filename) or Plain(row.classStr)
+	elseif GetWhoInfo then
+		local name, guild, level, _, class, _, file = GetWhoInfo(i)
+		return Plain(name), Plain(guild), Plain(level), Plain(file) or Plain(class)
+	end
+end
+
+-- Делим по увиденным уровням, чтобы на молодом сервере не искать пустые 40-60.
+function Who.Brackets(levels, maxLevel)
+	table.sort(levels)
+	local out, low = {}, 1
+	for i = 1, 4 do
+		local cut = #levels >= 5 and levels[math.floor(i * #levels / 5)] or math.floor(i * maxLevel / 5)
+		cut = math.min(cut, maxLevel - 1)
+		if cut >= low then out[#out + 1], low = { low, cut }, cut + 1 end
+	end
+	out[#out + 1] = { low, maxLevel }
+	return out
+end
+
+function Who.IsPending() return pending ~= nil end
+function Who.Fresh() return roundAt ~= nil and ns.Now() - roundAt <= Who.ROUND_TTL end
+
+function Who.Reset()
+	pending, roundAt, step, brackets = nil, nil, 0, nil
+	Who.found, byKey, Who.missing = {}, {}, false
+	Who.rangeCapped = nil
+	ns.Fire("WHO", Who.found)
+end
+
+function Who.Search()
+	if ns.IsMember() then return false end
+	local now = ns.Now()
+	if pending or now < lateUntil or now - lastSend < Who.COOLDOWN then
+		ns.Print(L.RECRUIT_SEARCH_WAIT)
+		return false
+	end
+	HookSearch()
+	local send = C_FriendList and C_FriendList.SendWho or SendWho
+	if type(send) ~= "function" then ns.Print(L.RECRUIT_NO_WHO); return false end
+	if not Who.Fresh() or (brackets and step > #brackets) then Who.Reset() end
+	local query = ('g-"%s"'):format(ns.Config.GUILD_TOKEN:gsub('["%c]', ""))
+	if step > 0 and brackets then query = query .. (" %d-%d"):format(brackets[step][1], brackets[step][2]) end
+	local p = { step = step }
+	pending, lastSend = p, now
+	-- Не читаем чужой запоздалый ответ после тайм-аута. Следующий щелчок повторит диапазон.
+	ns.After(Who.TIMEOUT, "поиск: тайм-аут", function()
+		if pending ~= p then return end
+		pending = nil
+		lateUntil = ns.Now() + Who.LATE
+		ns.Print(L.RECRUIT_SEARCH_TIMEOUT)
+		ns.Fire("RECRUIT")
+	end)
+	sending = true
+	local ok = pcall(function()
+		if C_FriendList and C_FriendList.SetWhoToUi then C_FriendList.SetWhoToUi(true)
+		elseif SetWhoToUI then SetWhoToUI(1) end
+		send(query)
+	end)
+	sending = false
+	if not ok then pending = nil; ns.Print(L.RECRUIT_NO_WHO); return false end
+	ns.Print(L.RECRUIT_SEARCHING)
+	ns.Fire("RECRUIT")
+	return true
+end
+
+local function OnAnswer()
+	local p = pending
+	if not p or ns.IsMember() then return end
+	pending = nil
+	local count, total
+	if C_FriendList and C_FriendList.GetNumWhoResults then count, total = C_FriendList.GetNumWhoResults()
+	elseif GetNumWhoResults then count, total = GetNumWhoResults() end
+	count, total = tonumber(Plain(count)) or 0, tonumber(Plain(total)) or 0
+	local capped = count >= Who.MAX or total > count
+	local levels, maxLevel = {}, (GetMaxPlayerLevel and GetMaxPlayerLevel()) or 60
+	maxLevel = tonumber(Plain(maxLevel)) or 60
+	for i = 1, math.min(count, Who.MAX) do
+		local name, guild, level, class = Info(i)
+		if type(name) == "string" and type(guild) == "string" then
+			-- fullGuildName может содержать суффикс реалма. Дефис внутри названия остаётся.
+			local base, realm = guild:match("^(.-)%-([^%-]+)$")
+			if base and U.IsRealmName(realm) then guild = base end
+			name = U.Normal(name)
+			local nameRealm = name:match("%-([^%-]+)$")
+			local key = U.Key(name)
+			if key and U.IsMemberGuild(guild) and (not nameRealm or U.GroupOf(nameRealm) == ns.group) then
+				level = tonumber(level)
+				if level and level >= 1 and level <= 255 then levels[#levels + 1] = level; maxLevel = math.max(maxLevel, level) end
+				if not byKey[key] and #Who.found < Who.MAX_FOUND then
+					local row = { name = name, guild = guild, level = level, class = class }
+					Who.found[#Who.found + 1], byKey[key] = row, row
+				elseif byKey[key] then
+					local row = byKey[key]
+					row.name, row.guild, row.level, row.class = name, guild, level, class
+				end
+			end
+		end
+	end
+	if p.step == 0 then
+		roundAt = ns.Now()
+		Who.missing = capped
+		brackets = capped and Who.Brackets(levels, maxLevel) or {}
+		step = 1
+	else
+		step = p.step + 1
+		Who.rangeCapped = Who.rangeCapped or capped
+		Who.missing = step <= #brackets or Who.rangeCapped or false
+	end
+	ns.Fire("WHO", Who.found)
+end
+ns.RegisterEvent("WHO_LIST_UPDATE", OnAnswer)
+ns.On("GUILD_CHANGED", Who.Reset)

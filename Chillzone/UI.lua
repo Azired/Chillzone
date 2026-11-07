@@ -138,6 +138,8 @@ local function BuildSettings(parent)
 		ns.db.settings.minimap.hide = not on
 		UI.UpdateMinimapButton()
 	end)
+	Check("recruits", L.CHECK_RECRUITS, L.CHECK_RECRUITS_TIP,
+		function() return not ns.Recruit.NoContactMe() end, function(on) ns.Recruit.SetNoContact(not on) end)
 	local hint = settings:CreateFontString(nil, "OVERLAY", "GameFontDisable")
 	hint:SetPoint("TOPLEFT", settings, "TOPLEFT", 20, -24 - #checks * 30)
 	hint:SetPoint("RIGHT", settings, "RIGHT", -20, 0)
@@ -171,8 +173,21 @@ end
 function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncDebugTab()
+	if not ns.IsMember() and current ~= "settings" then current = "join"
+	elseif ns.IsMember() and current == "join" then current = "census" end
 	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
 	UI.RenderStatus()
+	if current == "join" then
+		heading:SetText(L.RECRUIT_TITLE)
+		ns.ChatPane.Hide()
+		body:Show()
+		scroll:Hide()
+		settings:Hide()
+		ns.CensusPane.Hide()
+		ns.RecruitPane.Show()
+		return
+	end
+	ns.RecruitPane.Hide()
 	local def
 	for _, t in ipairs(TABS) do
 		if t.key == current then def = t end
@@ -331,6 +346,7 @@ local function Create()
 	child:SetSize(WIDTH - 50, 10)
 	scroll:SetScrollChild(child)
 	BuildSettings(body)
+	ns.RecruitPane.Build(body)
 	ns.CensusPane.Build(body)
 	body:Hide()
 
@@ -339,7 +355,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel() end)
 	local elapsed, debugElapsed = 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -348,7 +364,7 @@ local function Create()
 			UI.Render()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
-			if current == "census" or current == "kingdom" then UI.Render() else UI.RenderStatus() end
+			if current == "census" or current == "kingdom" or current == "join" then UI.Render() else UI.RenderStatus() end
 		end
 	end)
 end
@@ -371,7 +387,7 @@ function UI.OpenChat(channel, focus)
 	current = "chat"
 	frame:Show()
 	UI.Render()
-	ns.ChatPane.Select(channel, focus)
+	if ns.IsMember() then ns.ChatPane.Select(channel, focus) end
 end
 
 -- Открытая вкладка или nil, если окно закрыто.
@@ -393,6 +409,7 @@ ns.On("ROSTER", Refresh)
 ns.On("RELAYS", Refresh)
 ns.On("SETTINGS", Refresh)
 ns.On("GUILD_CHANGED", Refresh)
+ns.On("RECRUIT", function() if frame and frame:IsShown() then UI.Render() end end)
 
 ---------------------------------------------------------------------------
 -- Кнопка у миникарты: левый щелчок — окно, правый — круги на карте, перетаскивание — место.

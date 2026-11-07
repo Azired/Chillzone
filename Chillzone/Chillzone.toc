@@ -27,8 +27,11 @@ Census.lua
 Relay.lua
 Chat.lua
 GuildChat.lua
+Who.lua
+Recruit.lua
 Views.lua
 ChatPane.lua
+RecruitPane.lua
 CensusPane.lua
 Debug.lua
 UI.lua

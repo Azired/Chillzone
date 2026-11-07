@@ -234,6 +234,49 @@ local function Env(c)
 	env.GetRealmName = function() return c.realm end
 	env.UnitFactionGroup = function() return c.faction end
 	env.UnitClass = function() return CLASS_LOCAL[c.class], c.class end
+	env.UnitLevel = function() return c.level end
+	env.issecretvalue = function() return false end
+	env.GetMaxPlayerLevel = function() return 60 end
+	c.invites, c.whoQueries = {}, {}
+	env.CanGuildInvite = function()
+		if c.canInvite ~= nil then return c.canInvite end
+		return c.guild ~= nil and c.rank <= 1
+	end
+	env.GuildInvite = function(name)
+		assert(env.CanGuildInvite(), "нет права приглашать")
+		c.invites[#c.invites + 1] = name
+	end
+	env.C_FriendList = {
+		SetWhoToUi = function(on) c.whoToUi = on end,
+		SendWho = function(query)
+			c.whoQueries[#c.whoQueries + 1] = query
+			if c.whoTimeout then return end
+			local rows = {}
+			local token = query:match('g%-"([^"]+)"')
+			local low, high = query:match(" (%d+)%-(%d+)$")
+			for _, other in ipairs(w.clients) do
+				if other.online and other.faction == c.faction and other.guild
+					and c.ns.Util.GroupOf(other.realm) == c.ns.group
+					and token and c.ns.Util.Fold(other.guild):find(c.ns.Util.Fold(token), 1, true)
+					and (not low or (other.level >= tonumber(low) and other.level <= tonumber(high))) then
+					rows[#rows + 1] = { fullName = Stamp(other), fullGuildName = other.guild, level = other.level, filename = other.class }
+				end
+			end
+			local results = c.whoRows or rows
+			w:Schedule(w.now + 0.1, function()
+				c.whoResults = results
+				c:Fire("WHO_LIST_UPDATE")
+			end, c)
+		end,
+		GetNumWhoResults = function() return math.min(50, #(c.whoResults or {})), #(c.whoResults or {}) end,
+		GetWhoInfo = function(i) return c.whoResults[i] end,
+	}
+	env.SendWho = function(query) return env.C_FriendList.SendWho(query) end
+	env.GetNumWhoResults = function() return env.C_FriendList.GetNumWhoResults() end
+	env.GetWhoInfo = function(i)
+		local row = env.C_FriendList.GetWhoInfo(i)
+		return row.fullName, row.fullGuildName, row.level, "Человек", CLASS_LOCAL[row.filename], c.zone, row.filename
+	end
 	env.IsInGuild = function() return c.guild ~= nil end
 	env.GetGuildInfo = function()
 		if not c.guild then return nil end
@@ -269,6 +312,7 @@ local function Env(c)
 		return 0, 0, math.floor(r.days or 0), 0
 	end
 	env.C_GuildInfo = {
+		Invite = env.GuildInvite,
 		GuildRoster = function() w:Schedule(w.now + 0.2, function() c:Fire("GUILD_ROSTER_UPDATE") end, c) end,
 		-- Права звания rankOrder (с 1): таблица из 24 флагов, [22] — «офицер».
 		GuildControlGetRankFlags = function(order)
@@ -320,7 +364,24 @@ local function Env(c)
 			if o:Guid() == guid then return CLASS_LOCAL[o.class], o.class end
 		end
 	end
-	env.hooksecurefunc = function(name, fn)
+	env.hooksecurefunc = function(name, fn, callback)
+		if type(name) == "table" then
+			local original = name[fn]
+			name[fn] = function(...)
+				local result = original(...)
+				callback(...)
+				return result
+			end
+			return
+		end
+		if name == "SendWho" then
+			local original = env[name]
+			env[name] = function(...)
+				local result = original(...)
+				fn(...)
+				return result
+			end
+		end
 		c.hooks[name] = c.hooks[name] or {}
 		table.insert(c.hooks[name], fn)
 	end
