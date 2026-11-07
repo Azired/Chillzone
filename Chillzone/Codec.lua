@@ -12,6 +12,7 @@
 -- Кусок:  C<id>:<i>:<n>:<piece>                (аддон-сообщение не длиннее 255 байт)
 -- Привет: H1~<версия>~<флаги>[~<fp>|~0]        (z — зоны, r — реле, fp — сертификат; 0 — без него)
 -- Запрос: Q1~
+-- Ответ:  Q2~<id>~B|E                        (необязательное начало/окончание ответа, id 1-999999)
 -- Чат:    M1~tier~guild~id~class~text          (tier A|C|L, id 0-9999, class — 2 буквы)
 -- Реле:   RP~fp · RY~Имя1,Имя2 · RR~guild~fp · RU~guild~преемник · RL~mode~inner
 --         RM~mode~origin~inner · RG~mode~origin~inner     (fp — отпечаток сертификата)
@@ -606,5 +607,7 @@ end
 
 -- Ключ дедупликации реле.
 function Codec.DedupeKey(originKey, inner)
-	return ("%s|%d|%d"):format(originKey or "?", #inner, ns.Util.Hash(inner))
+	-- Хеш до 2^32 - 1 не помещается в знаковый %d клиента игры.
+	return ("%s|%d|%.0f"):format(originKey or "?", #inner, ns.Util.Hash(inner))
 end
+

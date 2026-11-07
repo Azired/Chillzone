@@ -612,6 +612,7 @@ ns.Comm.On("RG", function(msg, sender, dist)
 	end
 	local kind, mode, origin, inner = Codec.DecodeRelay(msg)
 	if kind ~= "RG" then return end
+	if mode == "L" then ns.Census.ObserveResponse(sender, origin, inner) end
 	Deliver(mode, origin, inner, { via = "RG", relay = sender }, false)
 end)
 
@@ -790,3 +791,4 @@ ns.Status(function()
 	local pick = Relay.Pick()
 	return L.STATUS_RELAY:format(Relay.IAmRelay() and L.YES or L.NO, ok, total, pick and U.Display(pick.name) or "—", #hold)
 end)
+

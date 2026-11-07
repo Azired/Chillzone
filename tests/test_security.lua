@@ -714,3 +714,101 @@ T.test("security: early certificate waits for its root despite forged wait metad
     T.eq(forged, 0, "forged guild never authorizes the modified message")
     T.eq(#N.ns.db.errors, 0, "no hidden errors")
 end)
+
+T.test("security: unknown roots cannot prolong the whole certificate queue", function()
+    for _, senders in ipairs({ 1, 4 }) do
+        local w = Wow.World()
+        w:Guild("Чиллзон Север")
+        local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+        local S, Ed = N.ns.Security, N.ns.Ed25519
+        for i = 1, 32 do
+            local wire = "S1~" .. string.format("%016d", i) .. "~" .. N.ns.ServerTime() .. "~1~"
+                .. Ed.ToB64(string.rep("\0", 64)) .. "~M1~A~Чиллзон Подделка " .. i .. "~1~MAGE~подделка"
+            T.ok(S.Open(wire, "Атакующий Игрок" .. (i % senders), function() end), "short waits still fit")
+        end
+        T.no(S.Resolve(string.rep("Z", 16), nil, "Реле Игрок", function() end), "all 32 places are occupied")
+        w:Run(31) -- до первого GC, который работает раз в минуту
+        local admitted = 0
+        for i = 33, 64 do
+            if S.Resolve(string.format("%016d", i), nil, "Реле Игрок", function() end) then admitted = admitted + 1 end
+        end
+        T.eq(admitted, senders == 1 and 28 or 24, "expired short waits free capacity despite unknown roots")
+        T.eq(#N.ns.db.errors, 0, "no hidden errors")
+    end
+end)
+
+T.test("security: only related roots retry certificate requests", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+    local ns, calls = N.ns, {}
+    local send = ns.Comm.Send
+    ns.Comm.Send = function(dist, msg, opts)
+        if msg:sub(1, 3) == "KQ~" then calls[#calls + 1] = { wire = msg, dist = dist, target = opts.target } end
+        return send(dist, msg, opts)
+    end
+    local fp = string.rep("A", 16)
+    local wire = "S1~" .. fp .. "~" .. ns.ServerTime() .. "~1~" .. ns.Ed25519.ToB64(string.rep("\0", 64))
+        .. "~M1~A~Чиллзон Дальний~1~MAGE~подделка"
+    T.ok(ns.Security.Open(wire, "Репортёр Гильдии", function() end, true))
+    -- Другая неподтверждённая гильдия с тем же fp не стирает исходную ассоциацию и путь GUILD.
+    T.ok(ns.Security.Open(wire:gsub("Чиллзон Дальний", "Чиллзон Ложный"), "Атакующий Игрок", function() end))
+    w:Run(11)
+    local before = #calls
+    for i = 1, 12 do
+        local guild = "Чиллзон Посторонний " .. i
+        ns.Security.Roots()[ns.Util.GuildKey(guild)] = { guild = guild, name = "Глава Гильдии", public = "root" .. i }
+        ns.Fire("AUTH_ROOT", guild)
+    end
+    w:Run(32)
+    T.eq(#calls, before, "unrelated roots create neither immediate nor delayed KQ")
+    local guild = "Чиллзон Дальний"
+    ns.Security.Roots()[ns.Util.GuildKey(guild)] = { guild = guild, name = "Глава Гильдии", public = "related-root" }
+    ns.Fire("AUTH_ROOT", guild)
+    T.eq(#calls, before + 1, "original guild still retries after forged metadata")
+    T.eq(calls[#calls].dist, "GUILD", "retry keeps the guild route")
+    for _ = 1, 12 do ns.Fire("AUTH_ROOT", guild) end
+    T.eq(#calls, before + 1, "repeated root notifications do not amplify requests")
+    w:Run(32)
+    T.eq(#calls, before + 2, "one delayed retry survives the responder cooldown")
+    T.eq(#ns.db.errors, 0, "no hidden errors")
+end)
+
+T.test("security: retained genuine KP survives a forged candidate in either order", function()
+    for _, forgedFirst in ipairs({ false, true }) do
+        local w, c = Build()
+        local guild = "Орден Чиллзона"
+        local root = c.G.ns.Security.Roots()[c.G.ns.Util.GuildKey(guild)]
+        local certificate = c.G.ns.Security.MyCertificate()
+        local wire
+        c.G.ns.Security.Seal(c.G.ns.Codec.EncodeChat("A", guild, 9342, "HUNTER", "ранний настоящий KP"),
+            function(value) wire = value end)
+        w:Run(3)
+        T.ok(wire, "signed message ready")
+        local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+        local fire = N.Fire
+        N.Fire = function(self, event, ...)
+            if event == "CHAT_MSG_ADDON" or event == "CHAT_MSG_ADDON_LOGGED" then return end
+            return fire(self, event, ...)
+        end
+        N.ns.Roster.Scan()
+        local Ed, opened = N.ns.Ed25519, 0
+        T.ok(N.ns.Security.Open(wire, c.V:Name(), function() opened = opened + 1 end, true))
+        local _, attacker = next(c.X.ns.db.securityKeys)
+        local body, replacements = certificate.body:gsub(certificate.public:gsub("(%W)", "%%%1"), attacker.public, 1)
+        T.eq(replacements, 1, "forged body uses a different public key")
+        local fake = Fields("CERT", { body, Ed.ToB64(certificate.sig), certificate.delegation })
+        T.eq(N.ns.Security.Fingerprint(fake), certificate.fp, "forgery copies the public fingerprint")
+        local function Genuine() N.ns.Comm.Dispatch("KP~" .. Ed.ToB64(certificate.raw), c.V:Name(), "GUILD") end
+        local function Forged() N.ns.Comm.Dispatch("KP~" .. Ed.ToB64(fake), c.X:Name(), "WHISPER") end
+        if forgedFirst then Forged(); Genuine() else Genuine(); Forged() end
+        w:Run(65)
+        T.eq(opened, 0, "neither candidate grants trust before KT")
+        N.ns.Comm.Dispatch("KT~" .. guild .. "~" .. root.name .. "~" .. root.public, c.V:Name(), "GUILD")
+        w:Run(10)
+        T.eq(opened, 1, "real candidate opens without waiting 31 seconds for another KP")
+        T.eq(N.ns.Security.Member(guild, c.G:Name()).public, certificate.public, "only the real key is admitted")
+        T.eq(#N.ns.db.errors, 0, "no hidden errors")
+    end
+end)
+
