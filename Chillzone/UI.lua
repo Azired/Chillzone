@@ -1,5 +1,6 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
 -- значки на правом краю (Чат, Перепись, Королевство, Настройки, а главам и офицерам ещё Заявки и Отладка).
+-- Только текущему главе главной гильдии доступна вкладка «Объединение» (UnionPane.lua).
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, остальные вкладки — список строк из Views.lua
 -- и Debug.lua во вставке окна. Кнопка у миникарты — по образцу Olympus UI.lua.
 local ADDON, ns = ...
@@ -19,6 +20,7 @@ local TABS = {
 	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" } },
 	{ key = "debug", text = "TAB_DEBUG", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" } },
+	{ key = "union", text = "TAB_UNION", icons = { "Interface\\Icons\\INV_Misc_GroupLooking" } },
 }
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
 local frame, body, scroll, child, settings = nil, nil, nil, nil, nil
@@ -168,6 +170,7 @@ end
 local function Allowed(key)
 	if key == "requests" then return ns.RecruitSync.IsOfficer() end
 	if key == "debug" then return ns.Debug.Allowed() end
+	if key == "union" then return ns.Security.CanManageUnion() end
 	return true
 end
 
@@ -193,6 +196,7 @@ end
 function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncTabs()
+	if current ~= "union" then ns.UnionPane.Hide() end
 	if not ns.IsMember() and current ~= "settings" then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
 	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
@@ -233,6 +237,12 @@ function UI.Render()
 		scroll:Hide()
 		ns.CensusPane.Hide()
 		ns.RecruitPane.ShowInbox()
+		return
+	end
+	if current == "union" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.UnionPane.Show()
 		return
 	end
 	if current == "census" then
@@ -377,6 +387,7 @@ local function Create()
 	ns.RecruitPane.Build(body)
 	ns.RecruitPane.BuildInbox(body)
 	ns.CensusPane.Build(body)
+	ns.UnionPane.Build(body)
 	body:Hide()
 
 	ns.ChatPane.Build(f)
@@ -384,7 +395,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide() end)
 	local elapsed, debugElapsed = 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -393,7 +404,9 @@ local function Create()
 			UI.Render()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
-			if current == "census" or current == "kingdom" or current == "join" or current == "requests" then UI.Render() else UI.RenderStatus() end
+			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union" then
+				UI.Render()
+			else UI.RenderStatus() end
 		end
 	end)
 end
@@ -433,7 +446,8 @@ end
 
 local function Refresh()
 	if not frame or not frame:IsShown() then return end
-	if current == "census" or current == "kingdom" or current == "debug" or current == "requests" or TabsChanged() then
+	if current == "census" or current == "kingdom" or current == "debug" or current == "union" or current == "requests"
+		or TabsChanged() then
 		UI.Render()
 	else
 		UI.RenderStatus()
@@ -443,6 +457,7 @@ ns.On("DATA", Refresh)
 ns.On("ROSTER", Refresh)
 ns.On("RELAYS", Refresh)
 ns.On("SETTINGS", Refresh)
+ns.On("UNION", Refresh)
 ns.On("GUILD_CHANGED", Refresh)
 ns.On("RECRUIT", function() if frame and frame:IsShown() then UI.Render() end end)
 

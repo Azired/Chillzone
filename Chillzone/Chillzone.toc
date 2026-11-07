@@ -35,5 +35,6 @@ ChatPane.lua
 RecruitPane.lua
 CensusPane.lua
 Debug.lua
+UnionPane.lua
 UI.lua
 Map.lua

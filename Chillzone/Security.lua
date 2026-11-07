@@ -1,6 +1,7 @@
 -- Chillzone: ключи игроков, сертификаты от их гильдий и подпись пакетов от автора до получателя.
 -- Реле только переносят байты; ключи и права заверяют только глава и офицеры гильдии.
 -- Корень доверия своей гильдии офицер задаёт вручную, один раз на гильдию: /chillzone trust init.
+-- Состав объединения и его изменения подписывает только текущий глава главной гильдии.
 -- Подписанный пакет S1 несёт отпечаток сертификата автора, а сам сертификат приходит
 -- отдельно (KP, по запросу — KQ) и проверяется один раз. Отметка «проверен против корня»
 -- хранится в SavedVariables, поэтому после входа сертификаты не проверяются заново.
@@ -24,6 +25,8 @@ local lastSaid
 local policySigning = {}
 local policySent = {}
 local lastNativeHello = -1e9
+local nativeTrustPending = false
+local nativeUnionPending = false
 local MAX_CERT, MAX_WIRE, MAX_PENDING, FP_LEN = 1800, 7000, 32, 16
 
 local function Store()
@@ -85,7 +88,19 @@ local function Job(fn, done)
     return accepted
 end
 function S.CanAdmin()
-    return ns.IsMember() and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.MyRank())
+    -- Свой корень нужен и гильдии, которая только просит подключить её к объединению.
+    return ns.MyGuild() ~= nil and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.MyRank())
+end
+function S.CanManageUnion()
+    return U.IsMainGuild(ns.MyGuild()) and ns.Roster.Fresh() and ns.Roster.MyRank() == 0
+        and ns.Roster.RankOf(ns.me) == 0
+end
+local function LocalOrMember(guild)
+    return U.IsMemberGuild(guild) or U.GuildKey(guild) == GuildKey()
+end
+local function GuildName(guild)
+    return type(guild) == "string" and guild ~= "" and #guild <= 96 and guild == U.Trim(guild)
+        and not guild:find("[~|%c]") and not ns.Codec.LongGuild(guild)
 end
 local function NativeRole(name)
     if not ns.Roster.Fresh() then return end
@@ -102,7 +117,7 @@ local function Certificate(raw)
     if not p then return end
     local issued, expires = Int(p[8], 1, 4102444800), Int(p[9], 1, 4102444800)
     local rank, pk = Int(p[7], 0, 30), Ed.FromB64(p[5])
-    if p[1] ~= ns.group or p[2] ~= ns.faction or not U.IsMemberGuild(p[3]) or not Name(p[4])
+    if p[1] ~= ns.group or p[2] ~= ns.faction or not LocalOrMember(p[3]) or not Name(p[4])
         or not Name(p[10]) or not pk or #pk ~= 32 or not issued or not expires
         or expires <= issued or expires - issued > C.AUTH_TTL or not rank
         or (p[6] ~= "leader" and p[6] ~= "officer" and p[6] ~= "rank" and p[6] ~= "member")
@@ -125,7 +140,7 @@ end
 local function Current(c)
     local root = c and Root(c.guild)
     local now = ns.ServerTime()
-    if not root or c.expires <= now or c.issued > now + 30 then return false end
+    if not root or not LocalOrMember(c.guild) or c.expires <= now or c.issued > now + 30 then return false end
     if c.approvedRoot and c.approvedRoot ~= root.public then return false end
     local s = Store()
     local list = s.certs[U.GuildKey(c.guild)]
@@ -313,7 +328,8 @@ end
 -- (KT) и т. п. не принимается; confirmed — его явно подтвердил офицер здесь же
 -- (/chillzone accept или ответ на свой /chillzone link): тогда отметка об отзыве снимается.
 local function Pin(guild, name, public, confirmed)
-    if not U.IsMemberGuild(guild) or not Name(name) then return false end
+    if not GuildName(guild) or not Name(name) then return false end
+    if not LocalOrMember(guild) and not (confirmed and S.CanManageUnion()) then return false end
     local pk = Ed.FromB64(public)
     if not pk or #pk ~= 32 then return false end
     local s, gk = Store(), U.GuildKey(guild)
@@ -437,12 +453,13 @@ end
 -- Свой сертификат гильдии — при смене и раз в AUTH_ANNOUNCE; в промежутке его по запросу
 -- (KQ) отдаёт автор, а новые сертификаты рассылает выдавший их офицер.
 function S.Say()
-    if not identity or not ns.IsMember() or not ns.Roster.Fresh() then return end
+    if not identity or not ns.MyGuild() or not ns.Roster.Fresh() then return end
     lastHello = ns.Now()
     keys[ns.myKey] = { name = ns.me, public = identity.public, at = lastHello }
     local mine = S.MyCertificate()
     -- "~0": сертификата у меня нет. Издатель, у которого он уже есть, пришлёт его шёпотом.
-    ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0"), { prio = ns.Comm.PRIO_BOOTSTRAP, key = "identity" })
+    ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0") .. (ns.IsMember() and "" or "~u"),
+        { prio = ns.Comm.PRIO_BOOTSTRAP, key = "identity" })
     if mine and (not lastSaid or lastSaid.raw ~= mine.raw or lastHello - lastSaid.at >= C.AUTH_ANNOUNCE) then
         lastSaid = { raw = mine.raw, at = lastHello }
         ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(mine.raw), { key = "my-credential" })
@@ -478,11 +495,17 @@ function S.IntroduceWire(target, wire, force)
     if raw then S.Introduce(target, raw, force) end
 end
 function S.Roots() return Store() and Store().roots or {} end
-function S.ShareTrust()
+function S.ShareTrust(bootstrap)
     if not S.CanAdmin() then return false end
     if ns.Census then ns.Census.SendHello() end
-    -- Наравне с чатом: корни должны уйти раньше сертификатов и конвертов, поставленных следом.
-    for _, root in pairs(S.Roots()) do ShareRoot(root.guild, root, true) end
+    -- При первом входе корни и состав обгоняют чат; обычная догоняющая рассылка
+    -- остаётся наравне с ним, как и сертификаты.
+    local priority = bootstrap and ns.Comm.PRIO_BOOTSTRAP or true
+    for _, root in pairs(S.Roots()) do ShareRoot(root.guild, root, priority) end
+    for _, p in pairs(Store().policies) do
+        if p.expires > ns.ServerTime() then ns.Comm.Send("GUILD", p.wire,
+            { prio = priority, key = "union:" .. U.GuildKey(p.guild) }) end
+    end
     return true
 end
 local function Forget(guild, public)
@@ -591,22 +614,34 @@ function S.SendPolicies(target)
     end
 end
 local function BuildPolicies()
-    local c, root = S.MyCertificate(), Authority()
+    local c = S.MyCertificate()
     local signingIdentity = identity
-    if not c or not root or not U.IsMainGuild(c.guild) then return end
+    if not c or not S.CanManageUnion() or c.role ~= "leader" or c.rank ~= 0
+        or ns.ServerTime() - c.issued > C.AUTH_ROLE_TTL then return end
     local now, s = ns.ServerTime(), Store()
-    for gk, entry in pairs(S.Roots()) do
+    for gk, entry in pairs(s.union) do
         local previous = s.policies[gk]
         if not policySigning[gk] and (not previous or now - previous.issued >= C.AUTH_RENEW) then
+            local revision = (entry.revision or 0) + 1
             local body = Pack("GUILDROOT", { ns.group, ns.faction, entry.guild, entry.name, entry.public, now,
-                math.min(now + C.AUTH_TTL, c.expires) })
+                math.min(now + C.AUTH_TTL, c.expires), entry.active and "1" or "0", revision })
             policySigning[gk] = true
             local queued = Job(function() return Ed.Sign(signingIdentity.seed, body, signingIdentity.pk) end, function(sig)
                 policySigning[gk] = nil
-                if not sig or identity ~= signingIdentity or not Authority() or Root(entry.guild) ~= entry then return end
+                if not sig or identity ~= signingIdentity or not S.CanManageUnion() or not Current(c)
+                    or s.union[gk] ~= entry then return end
                 local wire = "KA~" .. Ed.ToB64(c.raw) .. "~" .. Ed.ToB64(body) .. "~" .. Ed.ToB64(sig)
-                s.policies[gk] = { wire = wire, issued = now, expires = math.min(now + C.AUTH_TTL, c.expires), guild = entry.guild }
-                ns.Comm.Send("GUILD", wire, { key = "root-policy:" .. gk, guard = S.CanAdmin })
+                entry.revision, entry.issued = revision, now
+                s.policies[gk] = { wire = wire, issued = now, revision = revision,
+                    expires = math.min(now + C.AUTH_TTL, c.expires), guild = entry.guild }
+                ns.Fire("UNION_POLICY", entry.guild, wire)
+                ns.Comm.Send("GUILD", wire, { key = "root-policy:" .. gk, guard = S.CanManageUnion })
+                -- Подключаемая гильдия пока не зарегистрирована у реле. Её представитель
+                -- получает решение напрямую; удалённая получает отзыв тем же путём.
+                if entry.contact then
+                    ns.Comm.Send("WHISPER", wire, { target = entry.contact, prio = true,
+                        key = "union-contact:" .. gk, guard = S.CanManageUnion })
+                end
             end)
             if not queued then policySigning[gk] = nil end
         end
@@ -617,30 +652,80 @@ ns.Comm.On("KA", function(msg, sender, dist)
     if #msg > 3000 or not Budget("n:" .. Peer(sender), C.AUTH_NEW_PER_MIN) then return end
     local encodedCert, encodedBody, encodedSig = msg:match("^KA~([%w_-]+)~([%w_-]+)~([%w_-]+)$")
     local raw, body, sig = encodedCert and Ed.FromB64(encodedCert), encodedBody and Ed.FromB64(encodedBody), encodedSig and Ed.FromB64(encodedSig)
-    local p = body and Unpack(body, "GUILDROOT", 7, 500)
+    local p = body and Unpack(body, "GUILDROOT", 9, 600)
     local issued, expires = p and Int(p[6], 1, 4102444800), p and Int(p[7], 1, 4102444800)
     local pk = p and Ed.FromB64(p[5])
     if not raw or not p or not sig or #sig ~= 64 or p[1] ~= ns.group or p[2] ~= ns.faction
-        or not U.IsMemberGuild(p[3]) or not Name(p[4]) or not pk or #pk ~= 32
+        or not GuildName(p[3]) or U.IsMainGuild(p[3]) or not Name(p[4]) or not pk or #pk ~= 32
         or not issued or not expires or expires <= ns.ServerTime() or issued > ns.ServerTime() + 30
-        or expires - issued > C.AUTH_TTL then return end
+        or expires <= issued or expires - issued > C.AUTH_TTL or (p[8] ~= "0" and p[8] ~= "1")
+        or not Int(p[9], 1, 9007199254740991) then return end
     Job(function()
         local c = VerifyCertificate(raw)
-        if not c or not U.IsMainGuild(c.guild) or not c.canIssue or (c.role ~= "leader" and c.role ~= "officer") or expires > c.expires then return end
+        if not c or not U.IsMainGuild(c.guild) or c.role ~= "leader" or c.rank ~= 0
+            or issued < c.issued or issued - c.issued > C.AUTH_ROLE_TTL or expires > c.expires then return end
         if Ed.Verify(c.pk, body, sig) then return c end
     end, function(issuer)
         if not issuer or not Current(issuer) or expires <= ns.ServerTime() then return end
         local s, gk = Store(), U.GuildKey(p[3])
-        local old = s.policies[gk]
-        if old and old.issued > issued then return end
-        if not Pin(p[3], p[4], p[5]) then return end
-        s.policies[gk] = { wire = msg, issued = issued, expires = expires, guild = p[3] }
+        local old, revision = s.union[gk], tonumber(p[9])
+        if old and (old.issued > issued or (old.issued == issued and (old.revision or 0) >= revision)) then return end
+        local entry = { guild = p[3], name = p[4], public = p[5], active = p[8] == "1", issued = issued, revision = revision }
+        s.union[gk] = entry
+        if entry.active and not Pin(p[3], p[4], p[5]) then s.union[gk] = old; return end
+        s.policies[gk] = { wire = msg, issued = issued, revision = revision, expires = expires, guild = p[3] }
+        ns.Fire("UNION_POLICY", p[3], msg)
+        ns.Fire("UNION")
+        ns.Fire("AUTH_ROOT", p[3])
+        -- Репортёры разносят решения по своей гильдии, включая её исключение.
+        if dist == "WHISPER" then ns.Comm.Send("GUILD", msg, { key = "union:" .. gk }) end
     end)
 end)
+local function Admit(guild, name, public, contact)
+    if not S.CanManageUnion() or U.IsMainGuild(guild) then return end
+    local s, gk = Store(), U.GuildKey(guild)
+    local old = s.union[gk]
+    s.union[gk] = { guild = guild, name = name, public = public, active = true,
+        issued = old and old.issued or 0, revision = old and old.revision or 0, contact = contact }
+    s.policies[gk] = nil
+    BuildPolicies()
+    ns.Fire("UNION")
+end
+function S.UnionGuilds()
+    local list = { { guild = C.MAIN_GUILD, main = true } }
+    for _, entry in pairs(Store() and Store().union or {}) do
+        if entry.active then list[#list + 1] = { guild = entry.guild } end
+    end
+    table.sort(list, function(a, b) return U.GuildKey(a.guild) < U.GuildKey(b.guild) end)
+    return list
+end
+function S.UnionRequests()
+    local list = {}
+    if not S.CanManageUnion() then return list end
+    for _, p in pairs(pending) do
+        if ns.Now() <= p.untilAt then list[#list + 1] = { guild = p.guild, contact = p.sender } end
+    end
+    table.sort(list, function(a, b) return U.GuildKey(a.guild) < U.GuildKey(b.guild) end)
+    return list
+end
+function S.RemoveGuild(guild)
+    if not S.CanManageUnion() or U.IsMainGuild(guild) then return false end
+    local s, gk = Store(), U.GuildKey(guild)
+    local old = s and s.union[gk]
+    if not old or not old.active then return false end
+    s.union[gk] = { guild = old.guild, name = old.name, public = old.public, active = false,
+        issued = old.issued, revision = old.revision, contact = old.contact }
+    s.policies[gk] = nil
+    BuildPolicies()
+    ns.Fire("UNION")
+    ns.Fire("AUTH_ROOT", guild)
+    return true
+end
 function S.Link(name)
     local root = ns.MyGuild() and Root(ns.MyGuild())
     local key = U.Key(name)
-    if not S.CanAdmin() or not identity or not root or not key or ns.Roster.RankOf(name) ~= nil then return false end
+    if not S.CanAdmin() or not identity or not root or not key or ns.Roster.RankOf(name) ~= nil
+        or (U.IsMainGuild(ns.MyGuild()) and not S.CanManageUnion()) then return false end
     serial = serial + 1
     local nonce = tostring(ns.ServerTime()) .. "." .. serial
     outgoing[key] = { nonce = nonce, untilAt = ns.Now() + 180 }
@@ -659,26 +744,30 @@ function S.Accept(name)
     local key = U.Key(name)
     local p, root = pending[key], ns.MyGuild() and Root(ns.MyGuild())
     if not S.CanAdmin() or not p or not root or ns.Now() > p.untilAt then return false end
+    if U.IsMainGuild(ns.MyGuild()) and not S.CanManageUnion() then return false end
     if not Pin(p.guild, p.name, p.public, true) then return false end
     pending[key] = nil
     Confirmed(p.guild, p.public)
     ns.Comm.Send("WHISPER", "KL~R~" .. p.nonce .. "~" .. ns.MyGuild() .. "~" .. root.name .. "~" .. root.public,
         { target = name, prio = ns.Comm.PRIO_CONTROL, guard = S.CanAdmin })
     S.Introduce(name)
+    Admit(p.guild, p.name, p.public, name)
+    ns.Fire("UNION")
     ns.Print(ns.L.AUTH_PAIRED, U.Display(name), p.guild)
     return true
 end
 ns.Comm.On("KL", function(msg, sender, dist)
     if dist ~= "WHISPER" or not S.CanAdmin() or not Budget("l:" .. Peer(sender), 30) then return end
     local mode, nonce, guild, name, public = msg:match("^KL~([HR])~([%d%.]+)~([^~]+)~([^~]+)~([%w_-]+)$")
-    if not mode or #msg > 250 or #nonce > 40 or not U.IsMemberGuild(guild) or U.GuildKey(guild) == GuildKey()
+    if not mode or #msg > 250 or #nonce > 40 or not GuildName(guild) or U.GuildKey(guild) == GuildKey()
         or not Name(name) or #public ~= 43 or not Ed.FromB64(public) then return end
     local key = U.Key(sender)
     if mode == "H" then
         local total = 0; for _ in pairs(pending) do total = total + 1 end
         if total >= 16 and not pending[key] then return end
-        pending[key] = { nonce = nonce, guild = guild, name = name, public = public, untilAt = ns.Now() + 180 }
+        pending[key] = { nonce = nonce, guild = guild, name = name, public = public, sender = sender, untilAt = ns.Now() + 180 }
         ns.Print(ns.L.AUTH_REQUEST, U.Display(sender), guild)
+        ns.Fire("UNION")
     else
         local p = outgoing[key]
         if not p or p.nonce ~= nonce or ns.Now() > p.untilAt then return end
@@ -686,6 +775,7 @@ ns.Comm.On("KL", function(msg, sender, dist)
             outgoing[key] = nil
             Confirmed(guild, public)
             S.Introduce(sender)
+            Admit(guild, name, public, sender)
             ns.Print(ns.L.AUTH_PAIRED, U.Display(sender), guild)
         end
     end
@@ -698,7 +788,7 @@ end)
 ns.Comm.On("K1", function(msg, sender, dist)
     if dist ~= "GUILD" or not NativeRole(sender) then return end
     local public, flag = msg:match("^K1~([%w_-]+)(.*)$")
-    if flag ~= "" and flag ~= "~0" then return end
+    if flag ~= "" and flag ~= "~0" and flag ~= "~u" and flag ~= "~0~u" then return end
     local raw = Ed.FromB64(public)
     if not raw or #raw ~= 32 then return end
     local k = U.Key(sender)
@@ -706,7 +796,7 @@ ns.Comm.On("K1", function(msg, sender, dist)
     -- У участника нет сертификата, а у меня, активного издателя, он есть: первый KP до него
     -- не дошёл (лимит, ещё не было корня). Issue свежий сертификат заново не выдаёт.
     -- Пока выданный сертификат ещё ждёт в очереди или очередь выдачи полна — не дублировать.
-    local issuerRoot = flag == "~0" and Authority()
+    local issuerRoot = flag:find("~0", 1, true) and Authority()
     if issuerRoot and (not resent[k] or ns.Now() - resent[k] >= 60)
         and ns.Comm.Queued("credential:" .. k, true) == 0 and IssueRoom() > 0 then
         local held = S.Member(ns.MyGuild(), sender)
@@ -720,11 +810,22 @@ ns.Comm.On("K1", function(msg, sender, dist)
     -- После перезагрузки имя то же. Ответить на объявление ключа, чтобы вошедший узнал
     -- репортёра-офицера раньше, чем примет RG, и корень гильдии раньше, чем офицер возьмётся
     -- за /chillzone trust init.
-    if S.CanAdmin() and ns.Now() - lastNativeHello >= 5 then
-        lastNativeHello = ns.Now()
-        local root = Root(ns.MyGuild())
-        if root then ShareRoot(root.guild, root) end
-        if ns.Census then ns.Census.SendHello() end
+    if S.CanAdmin() and flag ~= "" then nativeUnionPending = true end
+    if S.CanAdmin() and not nativeTrustPending then
+        nativeTrustPending = true
+        ns.After(math.max(0, 5 - (ns.Now() - lastNativeHello)), "доверие новым участникам", function()
+            nativeTrustPending = false
+            if not S.CanAdmin() then return end
+            lastNativeHello = ns.Now()
+            if nativeUnionPending then
+                nativeUnionPending = false
+                S.ShareTrust(true)
+            else
+                local root = Root(ns.MyGuild())
+                if root then ShareRoot(root.guild, root) end
+                if ns.Census then ns.Census.SendHello() end
+            end
+        end)
     end
 end)
 ns.Comm.On("KP", function(msg, sender, dist)
@@ -803,7 +904,7 @@ function S.Open(wire, sender, done, viaGuild)
     if not fp or #fp ~= FP_LEN or not stamp or not sequence or not sig or #sig ~= 64 then return false end
     local kind = inner:sub(1, 2)
     local guild = inner:match("^M1~[ACL]~([^~]+)~") or inner:match("^R1~([^~]+)~")
-    if (kind ~= "M1" and kind ~= "R1") or not guild then return false end
+    if (kind ~= "M1" and kind ~= "R1") or not guild or not U.IsMemberGuild(guild) then return false end
     local function Check(c)
         local now = ns.ServerTime()
         if not c or not c.approvedRoot or not Current(c) or U.GuildKey(guild) ~= U.GuildKey(c.guild) or stamp > now + 30
@@ -829,7 +930,7 @@ function S.Open(wire, sender, done, viaGuild)
         local accepted = Job(function() return Ed.Verify(c.pk, body, sig) end, function(valid)
             local callbacks = verifyPending[wire] or {}
             verifyPending[wire] = nil
-            if not valid or not Current(c) then S.stats.rejected = S.stats.rejected + 1; return end
+            if not valid or not Current(c) or not U.IsMemberGuild(guild) then S.stats.rejected = S.stats.rejected + 1; return end
             if not Budget("a:" .. c.key, C.AUTH_AUTHOR_PER_MIN) then return end
             local id = c.public .. ":" .. c.key .. ":" .. seq
             local later = ns.ServerTime()
@@ -899,7 +1000,7 @@ local function Sweep(restore)
     end
 end
 local function Tick()
-    if not identity or not ns.IsMember() or not ns.Roster.Fresh() then return end
+    if not identity or not ns.MyGuild() or not ns.Roster.Fresh() then return end
     local now = ns.Now()
     if S.CanAdmin() and now - lastPolicy >= 30 then
         lastPolicy = now
@@ -923,6 +1024,7 @@ ns.On("LOGIN", function()
         ns.store.guilds, ns.store.relays, ns.store.manual = {}, {}, {}
     end
     s = Store()
+    s.union = type(s.union) == "table" and s.union or {}
     s.roots, s.certs, s.policies, s.delegations, s.retired = s.roots or {}, s.certs or {}, s.policies or {}, s.delegations or {}, s.retired or {}
     s.verified = type(s.verified) == "table" and s.verified or {}
     s.replay = type(s.replay) == "table" and s.replay or {}
@@ -957,9 +1059,11 @@ ns.On("GUILD_CHANGED", function()
     S.Say()
 end)
 ns.Command("link", function(name)
+    if U.IsMainGuild(ns.MyGuild()) and not S.CanManageUnion() then ns.Print(ns.L.UNION_ONLY_LEADER); return end
     if not S.Link(U.Trim(name)) then ns.Print(ns.L.AUTH_NEED_OFFICER) end
 end, "соединить гильдии: /chillzone link Имя Фамилия (глава или офицер)")
 ns.Command("accept", function(name)
+    if U.IsMainGuild(ns.MyGuild()) and not S.CanManageUnion() then ns.Print(ns.L.UNION_ONLY_LEADER); return end
     if not S.Accept(U.Trim(name)) then ns.Print(ns.L.AUTH_NEED_OFFICER) end
 end, "подтвердить проверенное имя: /chillzone accept Имя Фамилия")
 ns.Command("trust", function(arg)

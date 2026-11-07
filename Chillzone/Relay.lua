@@ -25,6 +25,14 @@ local known = {} -- [Key] = { key, name, verified, asked, down }: реле, о �
 local reporters = {}
 local regOf = {} -- (я реле) [Key репортёра] = guildKey
 local claims = {} -- (я реле) [guildKey] = { name, key, t }: кому отказано при живой аренде
+-- Решение главы доходит до действующего репортёра даже после исключения гильдии:
+-- обычный RP от неё уже не пройдёт проверку членства.
+ns.On("UNION_POLICY", function(guild, wire)
+	if not U.IsMainGuild(ns.MyGuild()) then return end
+	local held = reporters[U.GuildKey(guild)]
+	if held then ns.Comm.Send("WHISPER", wire, { target = held.name, prio = true,
+		key = "union-reporter:" .. U.GuildKey(guild) }) end
+end)
 local seen = {} -- [ключ дедупа] = время
 local rate = {} -- [Key автора] = { n, t0 }
 local hold = {} -- сообщения, пока ни одно реле не ответило

@@ -62,14 +62,23 @@ function Who.Brackets(levels, maxLevel)
 	return out
 end
 
--- Что ищет раунд по g-"...": сначала Config.GUILD_TOKEN, затем гильдии EXTRA_GUILDS, в
--- названии которых его нет. У каждого запроса свои диапазоны уровней.
+-- Сначала подсказка Config.GUILD_TOKEN, затем известные гильдии объединения и
+-- названия из J2. Подсказка не даёт доступа: контакты проверяются серверным /who.
 function Who.Targets()
 	local C = ns.Config
-	local out, token = { C.GUILD_TOKEN }, U.Fold(C.GUILD_TOKEN)
-	for _, g in ipairs(C.EXTRA_GUILDS or {}) do
-		if not U.Fold(g):find(token, 1, true) then out[#out + 1] = g end
+	local out, extra, seen, token = { C.GUILD_TOKEN }, {}, {}, U.Fold(C.GUILD_TOKEN)
+	local function Add(g)
+		if type(g) ~= "string" then return end
+		local key = U.GuildKey(g)
+		if not seen[key] and not key:find(token, 1, true) then
+			seen[key], extra[#extra + 1] = true, g
+		end
 	end
+	for _, entry in ipairs(ns.Security.UnionGuilds()) do Add(entry.guild) end
+	local route = ns.Recruit and ns.Recruit.Route()
+	for guild in pairs(route and route.byName or {}) do Add(guild) end
+	table.sort(extra, function(a, b) return U.Fold(a) < U.Fold(b) end)
+	for _, guild in ipairs(extra) do out[#out + 1] = guild end
 	return out
 end
 
@@ -161,7 +170,7 @@ local function OnAnswer()
 			name = U.Normal(name)
 			local nameRealm = name:match("%-([^%-]+)$")
 			local key = U.Key(name)
-			if key and U.IsMemberGuild(guild) and (not nameRealm or U.GroupOf(nameRealm) == ns.group) then
+			if key and U.IsRecruitGuild(guild) and (not nameRealm or U.GroupOf(nameRealm) == ns.group) then
 				level = tonumber(level)
 				if level and level >= 1 and level <= 255 then levels[#levels + 1] = level; maxLevel = math.max(maxLevel, level) end
 				if not byKey[key] and #Who.found < Who.MAX_FOUND then

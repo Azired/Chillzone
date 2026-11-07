@@ -14,6 +14,11 @@ local function Build()
 	c.R = w:Client({ first = "Новый", surname = "Игрок", guild = "Другая гильдия", level = 27 })
 	c.H = w:Client({ first = "Враг", surname = "Ордынский", guild = "Чиллзон Север", faction = "Horde" })
 	w:Run(8)
+	-- Набор проверяется в уже подключённую гильдию; протокол допуска — в test_union.
+	for _, cl in ipairs({ c.O, c.M, c.K, c.R }) do
+		cl.ns.store.security.union[cl.ns.Util.GuildKey("Чиллзон Север")] = { active = true }
+		cl.ns.Fire("ROSTER", cl.ns.Roster.report)
+	end
 	return w, c
 end
 
@@ -25,6 +30,12 @@ end
 local function Request(w, c, target)
 	Search(w, c)
 	local contact = c.R.ns.Recruit.NextContact(target or "Чиллзон Север")
+	-- /who отвечает раньше адресного J2: дождаться офицера через реальную очередь.
+	for _ = 1, 10 do
+		if contact then break end
+		w:Run(1)
+		contact = c.R.ns.Recruit.NextContact(target or "Чиллзон Север")
+	end
 	T.ok(contact)
 	T.ok(c.R.ns.Recruit.Ask(contact, "Привет! Хочу вступить."))
 	w:Run(5)
@@ -292,10 +303,13 @@ T.test("заявки: поиск ограничивает частоту, про
 	Errors(c)
 end)
 
-T.test("заявки: поиск находит гильдию из EXTRA_GUILDS следующим запросом", function()
+T.test("заявки: поиск находит подключённую гильдию следующим запросом", function()
 	local w, c = Build()
 	w:Guild("Запомни Навсегда")
 	c.Z = w:Client({ first = "Зоя", surname = "Навсегдашняя", guild = "Запомни Навсегда", rank = 0 })
+	for _, cl in ipairs({ c.R, c.Z }) do
+		cl.ns.store.security.union[cl.ns.Util.GuildKey(c.Z.guild)] = { guild = c.Z.guild, active = true }
+	end
 	w:Run(8)
 	T.ok(c.R.ns.Who.Search())
 	w:Run(11)

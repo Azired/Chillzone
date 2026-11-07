@@ -8,6 +8,10 @@ local function Setup()
 	w:Guild("Орден Чиллзона")
 	local g = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0 })
 	w:Run(2)
+	-- Эти тесты проверяют отчёты уже подключённых гильдий, отдельно от протокола допуска.
+	for _, guild in ipairs({ "Орден Чиллзона", "Чиллзон Север", "Чиллзон Юг" }) do
+		g.ns.store.security.union[g.ns.Util.GuildKey(guild)] = { active = true }
+	end
 	return w, g, g.ns
 end
 

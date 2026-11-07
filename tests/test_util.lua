@@ -19,8 +19,8 @@ end)
 T.test("util: правило своей гильдии", function()
 	local _, U = fresh()
 	T.ok(U.IsMemberGuild("Чиллзон"), "Чиллзон")
-	T.ok(U.IsMemberGuild("ЧИЛЛЗОН Север"), "ЧИЛЛЗОН Север")
-	T.ok(U.IsMemberGuild("Орден Чиллзона"), "Орден Чиллзона")
+	T.no(U.IsMemberGuild("ЧИЛЛЗОН Север"), "без решения главы не участник")
+	T.no(U.IsMemberGuild("Орден Чиллзона"), "название не даёт членства")
 	T.ok(U.IsMemberGuild("чиллзон"), "строчные")
 	T.no(U.IsMemberGuild("Chillzone"), "латиница")
 	T.no(U.IsMemberGuild("Чилзон"), "одна л")
@@ -31,22 +31,25 @@ T.test("util: правило своей гильдии", function()
 	T.no(U.IsMainGuild("Чиллзон Север"), "не главная")
 end)
 
-T.test("util: белый список GUILDS", function()
+T.test("util: сохранённый состав объединения", function()
 	local ns, U = fresh()
-	ns.Config.GUILDS = { "Чиллзон", "Чиллзон Север" }
+	ns.store = { security = { union = { [U.GuildKey("Чиллзон Север")] = { active = true },
+		[U.GuildKey("Другая гильдия")] = { active = true } } } }
 	T.ok(U.IsMemberGuild("чиллзон север"), "в списке")
+	T.ok(U.IsMemberGuild("Другая гильдия"), "любое название")
 	T.no(U.IsMemberGuild("Орден Чиллзона"), "не в списке")
-	T.ok(U.IsMemberGuild("Запомни Навсегда"), "EXTRA_GUILDS белый список не отсекает")
+	T.no(U.IsMemberGuild("Запомни Навсегда"), "без решения главы не участник")
 end)
 
-T.test("util: гильдии EXTRA_GUILDS без токена в названии", function()
+T.test("util: добавленная гильдия без токена в названии", function()
 	local ns, U = fresh()
+	ns.store = { security = { union = { [U.GuildKey("Запомни Навсегда")] = { active = true } } } }
 	T.ok(U.IsMemberGuild("Запомни Навсегда"), "Запомни Навсегда")
 	T.ok(U.IsMemberGuild("ЗАПОМНИ НАВСЕГДА"), "без учёта регистра")
 	T.no(U.IsMemberGuild("Запомни"), "только название целиком")
 	T.no(U.IsMemberGuild("Запомни Навсегда 2"), "не подстрока")
 	T.no(U.IsMainGuild("Запомни Навсегда"), "не главная")
-	ns.Config.EXTRA_GUILDS = {}
+	ns.store.security.union = {}
 	T.no(U.IsMemberGuild("Запомни Навсегда"), "без списка не подходит")
 end)
 
