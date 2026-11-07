@@ -76,22 +76,71 @@ end
 ---------------------------------------------------------------------------
 -- Вывод
 ---------------------------------------------------------------------------
+-- Вкладки чата игры, которые сейчас открыты: { { name, frame } } по номеру окна. Закрытое окно
+-- (не показано и не пристыковано) пропускаем: строки в нём никто не увидит. Журнал боя — тоже:
+-- это особое окно игры. Окна только читаем, ничего в них не меняем (taint).
+function Chat.Windows()
+	local out = {}
+	local info = GetChatWindowInfo or FCF_GetChatWindowInfo
+	if type(info) ~= "function" then return out end
+	local combat = rawget(_G, "COMBATLOG") or rawget(_G, "ChatFrame2")
+	for i = 1, (tonumber(NUM_CHAT_WINDOWS) or 10) do
+		local f = rawget(_G, "ChatFrame" .. i)
+		if type(f) == "table" and type(f.AddMessage) == "function" and f ~= combat then
+			local ok, name, _, _, _, _, _, shown, _, docked = pcall(info, i)
+			if ok and type(name) == "string" and name ~= "" and (shown or docked or rawget(f, "isDocked")) then
+				out[#out + 1] = { name = name, frame = f }
+			end
+		end
+	end
+	return out
+end
+
 local function WindowByName(name)
 	if type(name) ~= "string" or name == "" then return nil end
-	local info = GetChatWindowInfo or FCF_GetChatWindowInfo
-	for i = 1, (tonumber(NUM_CHAT_WINDOWS) or 10) do
-		local f = _G["ChatFrame" .. i]
-		if type(f) == "table" and type(f.AddMessage) == "function" and type(info) == "function" then
-			local ok, n = pcall(info, i)
-			if ok and type(n) == "string" and U.Fold(n) == U.Fold(name) then return f end
-		end
+	for _, w in ipairs(Chat.Windows()) do
+		if U.Fold(w.name) == U.Fold(name) then return w end
 	end
 	return nil
 end
 
+-- Выбранная вкладка: название (nil — основное окно) и открыта ли она сейчас.
+function Chat.Window()
+	local name = ns.char and ns.char.chatWindow
+	if not name then return nil, true end
+	return name, WindowByName(name) ~= nil
+end
+
+local windowWarned = false -- уже сказали, что выбранной вкладки нет
+
+-- Куда писать копии строк: name — название вкладки, nil или "" — основное окно. Вкладку
+-- ищем без учёта регистра, запоминаем её название как в игре. false — такой вкладки нет.
+function Chat.SetWindow(name)
+	windowWarned = false
+	if not name or name == "" then
+		ns.char.chatWindow = false
+		return true
+	end
+	local w = WindowByName(name)
+	if not w then return false end
+	ns.char.chatWindow = w.name
+	return true
+end
+
 function Chat.Frame()
 	local name = ns.char and ns.char.chatWindow
-	return (name and WindowByName(name)) or DEFAULT_CHAT_FRAME
+	if not name then return DEFAULT_CHAT_FRAME end
+	local w = WindowByName(name)
+	if w then
+		windowWarned = false
+		return w.frame
+	end
+	-- Вкладку закрыли или переименовали: строки идут в основное окно, говорим об этом один раз.
+	if not windowWarned then
+		windowWarned = true
+		ns.Print(L.CHAT_WINDOW_GONE, name)
+	end
+	return DEFAULT_CHAT_FRAME
 end
 
 -- Метка канала в чате игры: ссылка addon:Chillzone:chan:<tier>, цветом канала.
@@ -459,19 +508,17 @@ ns.Command("chat", function(arg)
 	ns.Print(ns.char.chatOn and L.CHAT_ON or L.CHAT_OFF)
 end, L.HELP_CHAT_TOGGLE)
 
+-- То же выбирают в настройках окна (UI.lua).
 ns.Command("window", function(arg)
 	arg = U.Trim(arg)
-	if arg == "" then
-		ns.char.chatWindow = false
-		ns.Print(L.CHAT_WINDOW_MAIN)
+	if not Chat.SetWindow(arg) then
+		local names = {}
+		for _, w in ipairs(Chat.Windows()) do names[#names + 1] = "«" .. w.name .. "»" end
+		ns.Print(L.CHAT_WINDOW_MISSING, arg, table.concat(names, ", "))
 		return
 	end
-	if not WindowByName(arg) then
-		ns.Print(L.CHAT_WINDOW_MISSING, arg)
-		return
-	end
-	ns.char.chatWindow = arg
-	ns.Print(L.CHAT_WINDOW_SET, arg)
+	local name = Chat.Window()
+	if name then ns.Print(L.CHAT_WINDOW_SET, name) else ns.Print(L.CHAT_WINDOW_MAIN) end
 end, L.HELP_WINDOW)
 
 ns.Command("ignore", function(arg)
