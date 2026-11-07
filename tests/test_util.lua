@@ -36,6 +36,18 @@ T.test("util: белый список GUILDS", function()
 	ns.Config.GUILDS = { "Чиллзон", "Чиллзон Север" }
 	T.ok(U.IsMemberGuild("чиллзон север"), "в списке")
 	T.no(U.IsMemberGuild("Орден Чиллзона"), "не в списке")
+	T.ok(U.IsMemberGuild("Запомни Навсегда"), "EXTRA_GUILDS белый список не отсекает")
+end)
+
+T.test("util: гильдии EXTRA_GUILDS без токена в названии", function()
+	local ns, U = fresh()
+	T.ok(U.IsMemberGuild("Запомни Навсегда"), "Запомни Навсегда")
+	T.ok(U.IsMemberGuild("ЗАПОМНИ НАВСЕГДА"), "без учёта регистра")
+	T.no(U.IsMemberGuild("Запомни"), "только название целиком")
+	T.no(U.IsMemberGuild("Запомни Навсегда 2"), "не подстрока")
+	T.no(U.IsMainGuild("Запомни Навсегда"), "не главная")
+	ns.Config.EXTRA_GUILDS = {}
+	T.no(U.IsMemberGuild("Запомни Навсегда"), "без списка не подходит")
 end)
 
 T.test("util: Cut не режет букву пополам", function()

@@ -292,6 +292,35 @@ T.test("заявки: поиск ограничивает частоту, про
 	Errors(c)
 end)
 
+T.test("заявки: поиск находит гильдию из EXTRA_GUILDS следующим запросом", function()
+	local w, c = Build()
+	w:Guild("Запомни Навсегда")
+	c.Z = w:Client({ first = "Зоя", surname = "Навсегдашняя", guild = "Запомни Навсегда", rank = 0 })
+	w:Run(8)
+	T.ok(c.R.ns.Who.Search())
+	w:Run(11)
+	T.eq(c.R.whoQueries[1], 'g-"Чиллзон"')
+	local function Has(guild)
+		for _, g in ipairs(c.R.ns.Recruit.Guilds()) do
+			if g.name == guild then return true end
+		end
+		return false
+	end
+	T.ok(Has("Чиллзон Север"))
+	T.no(Has("Запомни Навсегда"), "по токену не находится")
+	T.ok(c.R.ns.Who.missing, "раунд не закончен")
+	T.ok(c.R.ns.Who.Search())
+	w:Run(11)
+	T.eq(c.R.whoQueries[2], 'g-"Запомни Навсегда"')
+	T.ok(Has("Запомни Навсегда"))
+	T.ok(Has("Чиллзон Север"), "найденное раньше остаётся")
+	T.no(c.R.ns.Who.missing, "раунд закончен")
+	T.ok(c.R.ns.Who.Search())
+	T.eq(c.R.whoQueries[3], 'g-"Чиллзон"', "новый раунд")
+	w:Run(2)
+	Errors(c)
+end)
+
 T.test("заявки: обычный участник направляет к офицеру, скрытие ничего не отправляет", function()
 	local w, c = Build()
 	local R = c.M.ns.Recruit
