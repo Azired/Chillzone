@@ -344,11 +344,16 @@ end
 local function RenderCard(c)
 	card:SetShown(c ~= nil)
 	if not c then return end
+	local requestsHeight = ns.RecruitPane.RenderRequests(cardChild)
+	w.title:ClearAllPoints()
+	w.title:SetPoint("TOPLEFT", 0, -requestsHeight)
+	w.updated:ClearAllPoints()
+	w.updated:SetPoint("TOPRIGHT", 0, -requestsHeight - 5)
 	w.title:SetText(c.guild)
 	if c.main then w.title:SetTextColor(1, 0.82, 0) else w.title:SetTextColor(1, 1, 1) end
 	w.marks:SetText(c.marks)
 	w.updated:SetText(c.updated)
-	local y = 28
+	local y = requestsHeight + 28
 	w.conflict:SetShown(c.conflict and true or false)
 	if c.conflict then
 		Place(w.conflict, 0, y)
