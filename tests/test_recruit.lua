@@ -260,7 +260,7 @@ T.test("заявки: окно отправляет отредактирован
 	f.send:GetScript("OnClick")(f.send)
 	w:Run(5)
 	T.eq(c.O.ns.Recruit.requests[1].text, "Мой текст")
-	c.O.ns.UI.Toggle("census")
+	c.O.ns.UI.Toggle("requests")
 	local rows = c.O.ns.RecruitPane.requestRows
 	T.ok(rows[1]:IsShown())
 	local tip = {}
