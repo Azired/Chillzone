@@ -29,7 +29,7 @@ local RGB = {
 Chat.stats = { sent = 0, shown = 0, dupes = 0, refused = 0, limited = 0 }
 -- Почему своя строка не подписана (Security.Seal): что сказать игроку.
 local SEAL_FAILED = {
-	nocert = L.AUTH_NOT_READY, busy = L.CHAT_SEAL_BUSY, failed = L.CHAT_SEAL_FAILED, long = L.CHAT_SEAL_LONG,
+	busy = L.CHAT_SEAL_BUSY, failed = L.CHAT_SEAL_FAILED, long = L.CHAT_SEAL_LONG,
 }
 
 local seen = {} -- [Key#id#text] = время
@@ -256,7 +256,7 @@ function Chat.Send(tier, text)
 		return false
 	end
 	local mine = ns.Security.MyCertificate()
-	if not mine then ns.Print(L.AUTH_NOT_READY); return false end
+	if not mine then ns.Print("%s", ns.Security.NotReadyReason()); return false end
 	-- Получатели проверяют уровень по сертификату (Security.Level), а не по званию в ростере:
 	-- роль в сертификате подтверждена лишь AUTH_ROLE_TTL после выдачи. Строку с устаревшей
 	-- ролью они отклонили бы молча — лучше сказать об этом здесь.
@@ -288,7 +288,7 @@ function Chat.Send(tier, text)
 	local function Failed(why)
 		if told then return end
 		told = true
-		ns.Print(SEAL_FAILED[why] or L.CHAT_SEAL_FAILED)
+		ns.Print("%s", why == "nocert" and ns.Security.NotReadyReason() or SEAL_FAILED[why] or L.CHAT_SEAL_FAILED)
 	end
 	local queued = 0
 	for _, part in ipairs(parts) do

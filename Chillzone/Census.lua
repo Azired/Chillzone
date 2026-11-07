@@ -127,7 +127,7 @@ function Census.SendHello()
 	if not ns.IsMember() then return end
 	local R = ns.Relay
 	local hello = Codec.EncodeHello(ns.VERSION, ns.char.shareZones, R and R.IAmRelay() or false)
-	ns.Comm.Send("GUILD", hello, { key = "hello" })
+	ns.Comm.Send("GUILD", hello, { prio = ns.Comm.PRIO_CONTROL, key = "hello" })
 end
 
 ns.Comm.On("H1", function(msg, sender, dist)

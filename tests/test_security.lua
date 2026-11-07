@@ -485,6 +485,69 @@ T.test("security: the guild root is set by hand once, a late officer cannot spli
     for _, cl in ipairs({ V, B, O, N }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": no errors") end
 end)
 
+T.test("security: известный корень без сертификата не отправляет главу снова делать init", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local O = w:Client({ first = "Олег", surname = "Опытный", guild = "Чиллзон Север", rank = 1 })
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    w:Run(30)
+    w:Init(O)
+    w:Run(60)
+    T.ok(V.ns.Security.MyCertificate(), "глава получил сертификат от корневого офицера")
+    O:Logout()
+    V.clockSkew = V.ns.Config.AUTH_TTL + 1
+    T.eq(V.ns.Security.MyCertificate(), nil, "сертификат и делегирование истекли")
+    V:Slash("/cz1", "строка без сертификата")
+    T.eq(V:Saw("офицер задаёт его один раз"), 0, "известный корень не предлагают создать заново")
+    T.eq(V:Saw(O:Name()), 1, "подсказка называет корень")
+    T.eq(V:Saw("правом выдачи"), 1, "подсказка объясняет, кто может выдать сертификат")
+    V:Slash("/chillzone", "trust init")
+    T.eq(V:Saw("правом выдачи"), 2, "отказ init тоже объясняет, как получить сертификат")
+    T.eq(V.ns.Security.Roots()[V.ns.Util.GuildKey(V.guild)].name, O:Name(), "корень не изменён")
+    T.eq(#V.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("security: подсказка без корня и ожидание собственного сертификата различаются", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    w:Run(30)
+    V:Slash("/cz1", "строка до корня")
+    T.eq(V:Saw("офицер задаёт его один раз"), 1, "без корня init уместен")
+    V.ns.On("AUTH_ROOT", function()
+        V:Slash("/cz1", "строка до сертификата")
+    end)
+    w:Init(V)
+    T.eq(V:Saw("Сертификат ещё готовится"), 1, "корневой офицер ждёт свою подпись")
+    T.eq(V:Saw("офицер задаёт его один раз"), 1, "после init старую подсказку не повторяют")
+    w:Run(10)
+    T.ok(V.ns.Security.MyCertificate(), "сертификат появился автоматически")
+    V:Slash("/cz1", "строка с сертификатом")
+    w:Run(2)
+    T.eq(V:Saw("строка с сертификатом"), 1, "после выдачи чат работает")
+    T.eq(#V.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("security: потерянный ключ корневого персонажа не выглядит как ожидание сертификата", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    w:Run(30)
+    w:Init(V)
+    w:Run(15)
+    local db = V.ns.db
+    V:Logout()
+    db.securityKeys = nil
+    local restored = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, db = db })
+    w:Run(30)
+    T.eq(restored.ns.Security.MyCertificate(), nil, "новый ключ не совпадает с сертификатом")
+    restored:Slash("/cz1", "строка с новым ключом")
+    T.eq(restored:Saw("не совпадает с корнем"), 1, "подсказка явно сообщает о несовпадении ключей")
+    restored:Slash("/chillzone", "trust init")
+    T.eq(restored:Saw("не совпадает с корнем"), 2, "повторный init тоже объясняет проблему ключа")
+    T.eq(#restored.ns.db.errors, 0, "без ошибок")
+end)
+
 T.test("security: verified credentials return after a reload without signature checks", function()
     local w, c = Build()
     local db = c.G.ns.db
@@ -677,4 +740,123 @@ T.test("security: a member who missed their own credential gets it again after K
     w:Run(75)
     T.ok(B.ns.Security.MyCertificate(), "the issuer whispered it back after K1 ~0")
     T.eq(#B.ns.db.errors, 0, "no hidden errors")
+end)
+
+T.test("security: выдача продолжается, если корень и первый запасной онлайн без аддона", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон")
+    w:Guild("Чиллзон Север")
+    local P = w:Client({ first = "Peepo", surname = "Ignore", guild = "Чиллзон Север", rank = 1 })
+    local A = w:Client({ first = "Alex", surname = "Первый", guild = "Чиллзон Север", rank = 1 })
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    local G = w:Client({ first = "Глава", surname = "Основной", guild = "Чиллзон", rank = 0 })
+    w:Run(30)
+    w:Init(P, G)
+    w:Run(70)
+    T.ok(A.ns.Security.MyCertificate().canIssue, "первый запасной получил делегирование")
+    T.ok(V.ns.Security.MyCertificate().canIssue, "глава тоже получил делегирование")
+    w:Pair(V, G)
+    -- Персонажи остаются в игре и в ростере, но их аддоны больше не исполняются.
+    for _, cl in ipairs({ P, A }) do
+        cl.handlers = {}
+        for i = #w.timers, 1, -1 do
+            if w.timers[i].client == cl then table.remove(w.timers, i) end
+        end
+    end
+    w:Run(185)
+    local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+    V.ns.Roster.Scan()
+    w:Run(90)
+    local cert = N.ns.Security.MyCertificate()
+    T.ok(cert, "работающий запасной выдал сертификат новичку")
+    T.eq(cert.issuerName, V:Name(), "не отвечающие аддоны не блокируют выбор издателя")
+    N:Slash("/cz1", "связь после остановки издателей")
+    w:Run(90)
+    T.eq(G:Saw("связь после остановки издателей"), 1, "сертификат позволяет писать в другую гильдию")
+    local db = P.ns.db
+    P:Logout()
+    local returned = w:Client({ first = "Peepo", surname = "Ignore", guild = "Чиллзон Север", rank = 1, db = db })
+    local B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 3 })
+    V.ns.Roster.Scan()
+    w:Run(90)
+    T.eq(B.ns.Security.MyCertificate().issuerName, returned:Name(), "вернувшийся корень снова выдаёт сертификаты")
+    for _, cl in ipairs({ V, G, N, returned, B }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
+end)
+
+T.test("security: поток чата не задерживает выдачу сертификата новичку", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    w:Run(30)
+    w:Init(V)
+    w:Run(30)
+    T.ok(V.ns.Security.MyCertificate(), "корень готов к выдаче")
+    local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+    V.ns.Roster.Scan()
+    for i = 1, 23 do
+        V:Slash("/cz1", ("текущий разговор "):rep(6) .. i)
+        w:Run(2)
+    end
+    T.ok(N.ns.Security.MyCertificate(), "корень и сертификат дошли до следующего минутного запроса")
+    N:Slash("/cz1", "новичок тоже пишет")
+    w:Run(30)
+    T.eq(V:Saw("новичок тоже пишет"), 1, "новичок отправил подписанное сообщение")
+    for _, cl in ipairs({ V, N }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
+end)
+
+T.test("security: новый ключ корневого персонажа не блокирует действующее делегирование", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local P = w:Client({ first = "Peepo", surname = "Ignore", guild = "Чиллзон Север", rank = 1 })
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    w:Run(30)
+    w:Init(P)
+    w:Run(70)
+    T.ok(V.ns.Security.MyCertificate().canIssue, "у главы есть действующее делегирование")
+    local db, public = P.ns.db, P.ns.Security.MyCertificate().public
+    P:Logout()
+    db.securityKeys = nil
+    local changed = w:Client({ first = "Peepo", surname = "Ignore", guild = "Чиллзон Север", rank = 1, db = db })
+    local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+    V.ns.Roster.Scan()
+    w:Run(120)
+    local cert = N.ns.Security.MyCertificate()
+    T.ok(cert, "запасной продолжает выдачу, пока корень восстанавливает ключ")
+    T.eq(cert.issuerName, V:Name(), "ключ с тем же именем не выдаёт себя за корневой")
+    T.eq(V.ns.Security.Roots()[V.ns.Util.GuildKey(V.guild)].public, public, "корень доверия не заменён")
+    changed:Slash("/cz1", "персонаж с новым ключом")
+    w:Run(30)
+    T.eq(N:Saw("персонаж с новым ключом"), 1, "сам персонаж тоже получил сертификат от запасного")
+    for _, cl in ipairs({ V, changed, N }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
+end)
+
+T.test("security: опрос корня обгоняет выдачу и повышает приоритет уже ожидающего ответа", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    w:Run(30)
+    w:Init(V)
+    w:Run(30)
+    local O = w:Client({ first = "Олег", surname = "Опытный", guild = "Чиллзон Север", rank = 1 })
+    local dispatch, blocked = O.ns.Comm.Dispatch, true
+    O.ns.Comm.Dispatch = function(msg, ...)
+        if blocked and msg:sub(1, 2) == "KT" then return end
+        return dispatch(msg, ...)
+    end
+    V.ns.Roster.Scan()
+    w:Run(30)
+    local gk = V.ns.Util.GuildKey(V.guild)
+    T.eq(O.ns.Security.Roots()[gk], nil, "вошедший офицер пропустил первые объявления корня")
+    -- Очередь выдачи, затем ещё не отправленное очередное объявление того же корня.
+    for i = 1, 40 do
+        V.ns.Comm.Send("GUILD", "ZZ~" .. i, { prio = V.ns.Comm.PRIO_BOOTSTRAP })
+    end
+    V.ns.Security.ShareTrust()
+    blocked = false
+    T.ok(O.ns.Security.Init(), "офицер начал десятисекундный опрос")
+    w:Run(12)
+    local root = O.ns.Security.Roots()[gk]
+    T.eq(root and root.name, V:Name(), "ответ пришёл до окончания опроса, второй корень не создан")
+    T.eq(root.public, V.ns.Security.Roots()[gk].public, "ключ корня совпадает")
+    for _, cl in ipairs({ V, O }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
 end)

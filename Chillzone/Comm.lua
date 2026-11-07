@@ -13,6 +13,10 @@ Comm.SEND_INTERVAL = 1.2
 Comm.PARTS_RELAY = 4
 Comm.MAX_QUEUE = 200
 Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько (блокировка) — выбрасывается
+-- Подключение гильдий обгоняет выдачу сертификатов, выдача — обычный чат.
+-- Прежний prio=true соответствует уровню 1.
+Comm.PRIO_BOOTSTRAP = 2
+Comm.PRIO_CONTROL = 3
 
 -- Ответы игры «не сейчас»: AddonMessageThrottle (3), ChannelThrottle (8), GeneralError (9),
 -- AddOnMessageLockdown (11). Сообщение остаётся на месте, очередь ждёт всё дольше.
@@ -85,18 +89,38 @@ local function Finish(job, ok, why)
 	if job.done then ns.SafeCall("send done", job.done, ok, why) end
 end
 
+local function Priority(prio)
+	return prio == true and 1 or (type(prio) == "number" and prio or 0)
+end
+
+local function Enqueue(job)
+	if job.prio then
+		local pos = 1
+		while queue[pos] and Priority(queue[pos].prio) >= Priority(job.prio) do pos = pos + 1 end
+		table.insert(queue, pos, job)
+	else
+		queue[#queue + 1] = job
+	end
+end
+
 -- В очередь. opts: target (шёпот), key (новое заменяет ещё не начатое с тем же ключом),
--- prio (вперёд обычных), logged (текст игрока), done(ok, why).
+-- prio (true или числовой приоритет, больше — раньше), logged (текст игрока), done(ok, why).
 function Comm.Send(dist, payload, opts)
 	opts = opts or {}
 	if type(payload) ~= "string" or payload == "" then return false end
 	if dist == "WHISPER" and not opts.target then return false end
 	local now = ns.Now()
 	if opts.key then
-		for _, job in ipairs(queue) do
+		for i, job in ipairs(queue) do
 			if job.key == opts.key and job.i == 1 then
 				job.parts, job.at, job.target, job.done = Codec.Pack(payload, NewId()), now, opts.target, opts.done
 				job.guard = opts.guard
+				-- Ответ на срочный запрос мог заменить ещё не отправленное объявление.
+				if Priority(opts.prio) > Priority(job.prio) then
+					table.remove(queue, i)
+					job.prio = opts.prio
+					Enqueue(job)
+				end
 				return true
 			end
 		end
@@ -105,13 +129,7 @@ function Comm.Send(dist, payload, opts)
 		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1,
 		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done, guard = opts.guard,
 	}
-	if job.prio then
-		local pos = 1
-		while queue[pos] and queue[pos].prio do pos = pos + 1 end
-		table.insert(queue, pos, job)
-	else
-		queue[#queue + 1] = job
-	end
+	Enqueue(job)
 	Comm.stats.queued = Comm.stats.queued + 1
 	-- Переполнение: выбрасывается самое старое обычное, ещё не начатое.
 	while #queue > Comm.MAX_QUEUE do
@@ -179,7 +197,7 @@ function Comm.Pump()
 	end
 end
 
--- Срочное (чат) прямо сейчас, не дожидаясь насоса: до n кусков.
+-- Срочное прямо сейчас, не дожидаясь насоса: до n кусков в порядке приоритета.
 function Comm.Flush(n)
 	if Comm.InLockdown() or ns.Now() < waitUntil then return end
 	for _ = 1, n or 1 do
