@@ -1020,6 +1020,8 @@ end)
 -- Сертификаты и делегирования на диске: при входе (restore) отметки проверки снимаются
 -- без криптографии; в остальное время — уборка истёкшего. Сертификат без отметки или
 -- с отметкой другого корня выбрасывается: заново он придёт от выдавшего или по KQ.
+-- Каталог KA без ревизии остался от 0.8: в нём 7 полей, новые клиенты его не примут,
+-- а рассылать его по GUILD и шёпотом пришлось бы до конца срока, неделю.
 local function Sweep(restore)
     local s, now = Store(), ns.ServerTime()
     for _, part in ipairs({ { s.certs, "" }, { s.delegations, "@" } }) do
@@ -1046,7 +1048,8 @@ local function Sweep(restore)
         if next(marks) == nil then s.verified[gk] = nil end
     end
     for gk, p in pairs(s.policies) do
-        if type(p) ~= "table" or type(p.expires) ~= "number" or p.expires <= now then s.policies[gk] = nil end
+        if type(p) ~= "table" or type(p.expires) ~= "number" or p.expires <= now
+            or type(p.revision) ~= "number" then s.policies[gk] = nil end
     end
 end
 local function Tick()

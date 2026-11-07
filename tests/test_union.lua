@@ -280,3 +280,48 @@ T.test("union: представителю не в игре решение не �
     T.eq(whispers.n, 2, "через полчаса глава пробует снова")
     T.eq(#k.ns.db.errors, 0)
 end)
+
+T.test("union: каталоги KA из 0.8 удаляются при входе и не рассылаются", function()
+    local w, k, o, v = Build()
+    w:Pair(v, k)
+    w:Run(60)
+    local U = o.ns.Util
+    local gk, old = U.GuildKey(v.guild), U.GuildKey("Старая гильдия")
+    T.ok(o.ns.store.security.policies[gk], "действующий каталог у офицера")
+    -- Запись 0.8: те же поля, но без ревизии; сам каталог в 7 полей новые клиенты не примут.
+    local legacy = "KA~c3RhcnlpLXNlcnQ~c3RhcnlqLWthdGFsb2c~c3RhcmF5YS1wb2RwaXM"
+    local now = o.ns.ServerTime()
+    o.ns.store.security.policies[old] = { wire = legacy, issued = now - 60, expires = now + 3 * 86400, guild = "Старая гильдия" }
+    local db = o.ns.db
+    o:Logout()
+    local back = w:Client({ first = "Офицер", surname = "Главный", guild = "Чиллзон", rank = 1, db = db })
+    w:Run(1)
+    local policies = back.ns.store.security.policies
+    T.eq(policies[old], nil, "каталог 0.8 удалён при входе")
+    T.ok(policies[gk], "каталог с ревизией сохранился")
+    back.ns.Security.SendPolicies(v:Name())
+    back.ns.Security.ShareTrust()
+    w:Run(10)
+    local sent = 0
+    for _, e in ipairs(w.log) do if e.msg:find(legacy, 1, true) then sent = sent + 1 end end
+    T.eq(sent, 0, "каталог 0.8 никому не ушёл")
+    T.eq(#back.ns.db.errors, 0)
+end)
+
+T.test("union: игрок неподключённой гильдии видит, почему ему предложено вступить", function()
+    local w, k, _, v = Build()
+    local loner = w:Client({ first = "Одинокий", surname = "Странник" })
+    w:Run(5)
+    local L = v.ns.L
+    v:Slash("/chillzone")
+    T.eq(v.ns.UI.Current(), "join")
+    T.eq(v.ns.RecruitPane.frames.intro:GetText(), L.RECRUIT_UNCONNECTED:format(v.guild), "своя гильдия названа")
+    loner:Slash("/chillzone")
+    T.eq(loner.ns.UI.Current(), "join")
+    T.eq(loner.ns.RecruitPane.frames.intro:GetText(), L.RECRUIT_INTRO, "без гильдии — обычное вступление")
+    w:Pair(v, k)
+    w:Run(60)
+    v.ns.UI.Render()
+    T.no(v.ns.UI.Current() == "join", "после подключения экрана вступления нет")
+    for _, c in ipairs({ v, loner }) do T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок") end
+end)
