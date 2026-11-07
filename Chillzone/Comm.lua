@@ -94,18 +94,27 @@ local function Priority(prio)
 	return prio == true and 1 or (type(prio) == "number" and prio or 0)
 end
 
-local function Enqueue(job)
-	if job.prio then
-		local pos = 1
-		while queue[pos] and Priority(queue[pos].prio) >= Priority(job.prio) do pos = pos + 1 end
-		table.insert(queue, pos, job)
-	else
-		queue[#queue + 1] = job
+local function BeforeIndex(key, prio)
+	if not key then return end
+	for i, pending in ipairs(queue) do
+		if pending.key == key and Priority(pending.prio) == Priority(prio) then return i end
 	end
+end
+
+local function Enqueue(job, before)
+	local pos = #queue + 1
+	if job.prio then
+		pos = 1
+		while queue[pos] and Priority(queue[pos].prio) >= Priority(job.prio) do pos = pos + 1 end
+	end
+	local target = BeforeIndex(before, job.prio)
+	if target and target < pos then pos = target end
+	table.insert(queue, pos, job)
 end
 
 -- В очередь. opts: target (шёпот), key (новое заменяет ещё не начатое с тем же ключом),
 -- prio (true или числовой приоритет, больше — раньше), logged (текст игрока), done(ok, why).
+-- before — перед заданием с этим ключом того же приоритета, даже если оно уже отправляется.
 function Comm.Send(dist, payload, opts)
 	opts = opts or {}
 	if type(payload) ~= "string" or payload == "" then return false end
@@ -117,10 +126,12 @@ function Comm.Send(dist, payload, opts)
 				job.parts, job.at, job.target, job.done = Codec.Pack(payload, NewId()), now, opts.target, opts.done
 				job.guard = opts.guard
 				-- Ответ на срочный запрос мог заменить ещё не отправленное объявление.
-				if Priority(opts.prio) > Priority(job.prio) then
+				local promoted = Priority(opts.prio) > Priority(job.prio)
+				if promoted then job.prio = opts.prio end
+				local target = BeforeIndex(opts.before, job.prio)
+				if promoted or (target and target < i) then
 					table.remove(queue, i)
-					job.prio = opts.prio
-					Enqueue(job)
+					Enqueue(job, opts.before)
 				end
 				return true
 			end
@@ -130,7 +141,7 @@ function Comm.Send(dist, payload, opts)
 		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1,
 		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done, guard = opts.guard,
 	}
-	Enqueue(job)
+	Enqueue(job, opts.before)
 	Comm.stats.queued = Comm.stats.queued + 1
 	-- Переполнение: выбрасывается самое старое обычное, ещё не начатое.
 	while #queue > Comm.MAX_QUEUE do

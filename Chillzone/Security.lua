@@ -295,10 +295,11 @@ end
 -- priority: корень перед сертификатом уходит с приоритетом сертификата и прямо перед ним
 -- (ещё не отправленное объявление того же корня поднимается в очереди). Без priority —
 -- фоновое повторное объявление, которое не обгоняет чат.
-local function ShareRoot(guild, root, priority)
+-- before — ключ сертификата: KT должен обогнать и уже ожидающий или отправляемый KP.
+local function ShareRoot(guild, root, priority, before)
     if root and S.CanAdmin() then
         ns.Comm.Send("GUILD", "KT~" .. guild .. "~" .. root.name .. "~" .. root.public,
-            { prio = priority, key = "root:" .. U.GuildKey(guild), guard = S.CanAdmin })
+            { prio = priority, key = "root:" .. U.GuildKey(guild), before = before, guard = S.CanAdmin })
     end
 end
 -- Снять с ключа public отметку об отзыве (см. Forget).
@@ -383,8 +384,9 @@ local function Issue(name, public)
         if not c then return end
         Keep(Approve(c, root.public))
         -- Корень — раньше сертификата: без корня новичок отбросит KP, а повторно его не выдадут.
-        ShareRoot(root.guild, root, true)
-        ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = "credential:" .. key, guard = S.CanAdmin })
+        local queuedKey = "credential:" .. key
+        ShareRoot(root.guild, root, true, queuedKey)
+        ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = queuedKey, guard = S.CanAdmin })
     end)
     if not started then issuing[key] = nil end
     return started
@@ -461,11 +463,12 @@ function S.Introduce(target, raw, force)
     if not force and introduced[key] and now - introduced[key] < C.AUTH_INTRODUCE then return end
     introduced[key] = now
     local wire = "KP~" .. Ed.ToB64(raw)
+    local queuedKey = "kp:" .. key
     if target == "GUILD" then
-        ShareRoot(c.guild, Root(c.guild), true)
-        ns.Comm.Send("GUILD", wire, { prio = true, key = "kp:" .. key })
+        ShareRoot(c.guild, Root(c.guild), true, queuedKey)
+        ns.Comm.Send("GUILD", wire, { prio = true, key = queuedKey })
     else
-        ns.Comm.Send("WHISPER", wire, { target = target, prio = true, key = "kp:" .. key })
+        ns.Comm.Send("WHISPER", wire, { target = target, prio = true, key = queuedKey })
     end
 end
 -- То же для готового пакета S1: сертификат его автора, если он у меня есть.
@@ -709,8 +712,9 @@ ns.Comm.On("K1", function(msg, sender, dist)
         local held = S.Member(ns.MyGuild(), sender)
         if held and held.public == public then
             resent[k] = ns.Now()
-            ShareRoot(issuerRoot.guild, issuerRoot, true)
-            ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(held.raw), { target = sender, prio = true, key = "kp-own:" .. k })
+            local queuedKey = "kp-own:" .. k
+            ShareRoot(issuerRoot.guild, issuerRoot, true, queuedKey)
+            ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(held.raw), { target = sender, prio = true, key = queuedKey })
         end
     end
     -- После перезагрузки имя то же. Ответить на объявление ключа, чтобы вошедший узнал
@@ -750,8 +754,9 @@ ns.Comm.On("KQ", function(msg, sender, dist)
     if dist == "GUILD" then
         if c.key ~= ns.myKey and not (ns.Census and ns.Census.Forwarding()) then return end
         served[key] = now
-        ShareRoot(c.guild, Root(c.guild), true)
-        ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = "kp:" .. key })
+        local queuedKey = "kp:" .. key
+        ShareRoot(c.guild, Root(c.guild), true, queuedKey)
+        ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = queuedKey })
         return
     end
     if not Budget("q:" .. Peer(sender), 20) then return end

@@ -863,6 +863,54 @@ T.test("security: опрос корня обгоняет выдачу и пов�
     for _, cl in ipairs({ V, O }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
 end)
 
+for _, started in ipairs({ false, true }) do
+    local partial = started
+    T.test("security: потеря первого KT — повторный KP " .. (partial and "уже начат" or "ещё ожидает"), function()
+        local w = Wow.World()
+        w:Guild("Чиллзон Север")
+        local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+        w:Run(30)
+        w:Init(V)
+        w:Run(150)
+        while V.ns.Comm.QueueSize() > 0 do V.ns.Comm.Pump(); w:Run(0.1) end
+        -- Фиксируем очередь: только проверяемая повторная отправка, без фоновых объявлений.
+        w.timers = {}
+        local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+        V.ns.Roster.Scan(); N.ns.Roster.Scan()
+        local send, lost = V.env.C_ChatInfo.SendAddonMessage, false
+        V.env.C_ChatInfo.SendAddonMessage = function(prefix, msg, ...)
+            if not lost and msg:sub(1, 3) == "KT~" then lost = true; return 0 end
+            return send(prefix, msg, ...)
+        end
+        local dispatch, rootsAtKP = N.ns.Comm.Dispatch, {}
+        local gk = N.ns.Util.GuildKey(N.guild)
+        N.ns.Comm.Dispatch = function(msg, ...)
+            if msg:sub(1, 3) == "KP~" then rootsAtKP[#rootsAtKP + 1] = N.ns.Security.Roots()[gk] ~= nil end
+            return dispatch(msg, ...)
+        end
+        local raw = V.ns.Security.MyCertificate().raw
+        V.ns.Security.Introduce("GUILD", raw, true)
+        V.ns.Comm.Flush(1)
+        w:Run(0.1)
+        T.ok(lost, "первое объявление корня потерялось")
+        T.eq(N.ns.Security.Roots()[gk], nil, "новичок ещё не знает корень")
+        if partial then V.ns.Comm.Flush(1); w:Run(0.1) end
+        -- Как при повторном Q1: корни объявляются ещё раз, затем тот же сертификат.
+        V.ns.Security.ShareTrust()
+        V.ns.Security.Introduce("GUILD", raw, true)
+        for _ = 1, 30 do
+            if V.ns.Comm.QueueSize() == 0 then break end
+            V.ns.Comm.Flush(1); w:Run(0.1)
+        end
+        w:Run(1)
+        T.eq(V.ns.Comm.Queued("kp:"), 0, "проверяемые сертификаты отправлены")
+        T.ok(#rootsAtKP > 0, "сертификат действительно доставлен транспортом")
+        for _, known in ipairs(rootsAtKP) do T.ok(known, "при получении каждого KP корень уже известен") end
+        T.ok(N.ns.Security.Member(V.guild, V:Name()), "повторный сертификат сохранён и проверен")
+        for _, cl in ipairs({ V, N }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
+    end)
+end
+
 T.test("security: массовая выдача сертификатов не задерживает чат издателя", function()
     local w = Wow.World()
     w:Guild("Чиллзон Север")
