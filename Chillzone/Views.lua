@@ -269,7 +269,7 @@ local ROLE_ORDER = { leader = 0, officer = 1, member = 2, active = 3 }
 function Views.ChatLine(e, channel, showTime)
 	local link = "|Hplayer:" .. (U.TellName(e.s) or "?") .. "|h[" .. Views.Name(e.s, e.c) .. "]|h"
 	local guild = ""
-	if not ns.Chat.GUILD_CHANNELS[channel] and e.g then guild = " " .. GREY .. "<" .. Codec.Plain(e.g) .. ">|r" end
+	if not ns.Chat.GUILD_CHANNELS[channel] and e.g then guild = " " .. GREY .. "<" .. ns.Chat.GuildTag(e.g) .. ">|r" end
 	local stamp = (showTime and date) and (GREY .. date("%H:%M", e.t or 0) .. "|r ") or ""
 	return stamp .. link .. guild .. ": " .. Codec.SanitizeChat(e.x)
 end
