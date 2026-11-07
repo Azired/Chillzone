@@ -460,9 +460,10 @@ function S.Say()
     keys[ns.myKey] = { name = ns.me, public = identity.public, at = lastHello }
     local mine = S.MyCertificate()
     -- K1 понимает и 0.8; новый запрос состава идёт отдельно, чтобы старый издатель не потерял ключ.
+    -- UQ раньше K1: приоритетный каталог не должен прерывать уже начатую выдачу KP.
+    if needUnion then ns.Comm.Send("GUILD", "UQ~1", { prio = ns.Comm.PRIO_BOOTSTRAP, key = "union-query" }) end
     ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0"),
         { prio = ns.Comm.PRIO_BOOTSTRAP, key = "identity" })
-    if needUnion then ns.Comm.Send("GUILD", "UQ~1", { prio = ns.Comm.PRIO_BOOTSTRAP, key = "union-query" }) end
     if mine and (not lastSaid or lastSaid.raw ~= mine.raw or lastHello - lastSaid.at >= C.AUTH_ANNOUNCE) then
         lastSaid = { raw = mine.raw, at = lastHello }
         ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(mine.raw), { key = "my-credential" })
