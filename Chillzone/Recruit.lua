@@ -18,7 +18,8 @@ local Recruit = {
 }
 ns.Recruit = Recruit
 local routeAsked, dnc, answered, whispers, requestAt, lineTimes, verifyTried = {}, {}, {}, {}, {}, {}, {}
-local lastAsk, lastRoute = -math.huge, -math.huge
+local focusTried = {}
+local lastAsk, lastRoute, routeLater = -math.huge, -math.huge, false
 
 local function Field(s) return Codec.Plain(s):gsub("[~;=/]", "") end
 local function Whisper(name, text)
@@ -56,6 +57,13 @@ function Recruit.Route()
 	return r and ns.Now() - r.t <= Recruit.ROUTE_KEEP and r or nil
 end
 
+-- Мест нет, только если подсказка прямо назвала ноль; неизвестное число мест — не ноль.
+function Recruit.HasSpace(guild)
+	local route = Recruit.Route()
+	local hint = route and route.byName[U.GuildKey(guild)]
+	return not hint or hint.free ~= 0
+end
+
 -- Глава и офицеры гильдии в игре: их назвала подсказка J2, а /who нашёл в этой гильдии.
 -- Кто отключил обращения, сюда не попадает.
 function Recruit.Officers(guild)
@@ -73,17 +81,30 @@ end
 function Recruit.Guilds()
 	local out, by, route = {}, {}, Recruit.Route()
 	if not ns.Who.Fresh() then return out end
-	for _, p in ipairs(Recruit.found) do
-		local key = U.GuildKey(p.guild)
+	local function Add(name)
+		local key = U.GuildKey(name)
 		if not by[key] then
 			local hint = route and route.byName[key]
-			local g = { name = p.guild, members = {}, free = hint and hint.free }
+			local g = { name = name, members = {}, free = hint and hint.free }
 			by[key], out[#out + 1] = g, g
 		end
-		by[key].members[#by[key].members + 1] = p
+		return by[key]
+	end
+	for _, p in ipairs(Recruit.found) do
+		local g = Add(p.guild)
+		g.members[#g.members + 1] = p
+	end
+	-- Гильдия с местами из подсказки J2 видна сразу, даже если ни один её участник не попал
+	-- в выдачу /who: следующий щелчок ищет её офицера или её саму (NextSearch).
+	for _, hint in pairs(route and route.byName or {}) do
+		if hint.free > 0 and type(hint.name) == "string" and hint.name ~= "" then Add(hint.name) end
 	end
 	for _, g in ipairs(out) do g.officers = Recruit.Officers(g.name) end
+	-- Сначала гильдии со свободными местами, затем те, о которых подсказки ещё нет, внизу
+	-- заполненные: их офицеры видны, но писать им не предлагаем.
+	local function Tier(g) return g.free == nil and 2 or (g.free > 0 and 1 or 3) end
 	table.sort(out, function(a, b)
+		if Tier(a) ~= Tier(b) then return Tier(a) < Tier(b) end
 		if (#a.officers > 0) ~= (#b.officers > 0) then return #a.officers > 0 end
 		if (a.free or -1) ~= (b.free or -1) then return (a.free or -1) > (b.free or -1) end
 		if #a.officers ~= #b.officers then return #a.officers > #b.officers end
@@ -94,7 +115,7 @@ function Recruit.Guilds()
 end
 
 -- Следующий офицер гильдии, которому ещё не писали (без guild — любой гильдии). Рядовых
--- не предлагаем: без офицеров в подсказке писать некому.
+-- не предлагаем: без офицеров в подсказке писать некому. В заполненную гильдию не пишем.
 function Recruit.NextContact(guild)
 	if not guild then
 		for _, g in ipairs(Recruit.Guilds()) do
@@ -103,38 +124,77 @@ function Recruit.NextContact(guild)
 		end
 		return nil
 	end
+	if not Recruit.HasSpace(guild) then return nil end
 	for _, p in ipairs(Recruit.Officers(guild)) do
 		if not Recruit.asked[U.Key(p.name)] then return p end
 	end
 	return nil
 end
 
--- Офицер, которого назвала подсказка J2, но не нашёл поиск по гильдии: /who отдаёт 50 строк,
--- а в большой гильдии в игре сотни. Его проверяет отдельный запрос по имени, по одному
--- на щелчок; одно имя проверяем не чаще раза за раунд поиска.
-function Recruit.Unverified()
+-- Что делать для гильдии из подсказки J2, пока новичку в ней некому написать.
+-- Офицер, которого назвала подсказка, но не нашёл /who (в большой гильдии в игре сотни,
+-- а выдача — 50 строк), проверяется запросом по имени; одно имя — раз за раунд.
+-- Гильдия, чьих участников общий поиск показал не всех, ищется по своему названию.
+local function GuildStep(name, hint)
+	if Recruit.NextContact(name) then return nil end
+	local now = ns.Now()
+	for _, contact in ipairs(hint.contacts) do
+		local key, at = U.Key(contact), verifyTried[U.Key(contact)]
+		if key and not Found(contact, name) and not dnc[key] and not Recruit.asked[key]
+			and not (at and now - at <= ns.Who.ROUND_TTL) then return "verify", contact end
+	end
+	local gk, at = U.GuildKey(name), focusTried[U.GuildKey(name)]
+	-- Запрос по GUILD_TOKEN уже был первым в раунде: тот же текст ничего нового не даст.
+	if gk ~= U.Fold(ns.Config.GUILD_TOKEN) and not ns.Who.Covered(name)
+		and not (at and now - at <= ns.Who.ROUND_TTL) then return "guild", name end
+	return nil
+end
+
+-- Что сделает следующий щелчок «Найти гильдии»: "verify", имя офицера, гильдия;
+-- "guild", название, гильдия; nil — обычный раунд поиска. Сначала гильдии со свободными
+-- местами (больше мест — раньше), даже если /who их ещё не находил; затем раунд.
+-- Офицеров заполненных гильдий не проверяем: писать им всё равно не предлагаем.
+function Recruit.NextSearch()
 	local route = Recruit.Route()
 	if not route or not ns.Who.Fresh() or ns.IsMember() then return nil end
-	local now = ns.Now()
-	for _, g in ipairs(Recruit.Guilds()) do
-		local hint = route.byName[U.GuildKey(g.name)]
-		for _, name in ipairs(hint and hint.contacts or {}) do
-			local key, at = U.Key(name), verifyTried[U.Key(name)]
-			if key and not Found(name, g.name) and not dnc[key] and not Recruit.asked[key]
-				and not (at and now - at <= ns.Who.ROUND_TTL) then return name end
+	local hints = {}
+	for _, hint in pairs(route.byName) do
+		if type(hint.name) == "string" and hint.name ~= "" then hints[#hints + 1] = hint end
+	end
+	table.sort(hints, function(a, b)
+		if a.free ~= b.free then return a.free > b.free end
+		return U.GuildKey(a.name) < U.GuildKey(b.name)
+	end)
+	for _, hint in ipairs(hints) do
+		if hint.free > 0 then
+			local kind, arg = GuildStep(hint.name, hint)
+			if kind then return kind, arg, hint end
 		end
 	end
 	return nil
 end
 
--- Щелчок «Найти гильдии»: сначала проверка названного офицера, потом обычный поиск.
+-- Щелчок «Найти гильдии»: один запрос /who, какой выбрал NextSearch. Запрос без ответа
+-- (тайм-аут, чужой /who) не засчитывается: следующий щелчок повторит его.
+local function Retry(tried, key)
+	return function()
+		if tried[key] then tried[key] = nil; Changed() end
+	end
+end
 function Recruit.Search()
-	local name = Recruit.Unverified()
-	if not name then return ns.Who.Search() end
-	if not ns.Who.Verify(name) then return false end
-	verifyTried[U.Key(name)] = ns.Now()
-	ns.Log("вступление: проверка офицера %s через /who", U.Display(name))
-	return true
+	local kind, arg, hint = Recruit.NextSearch()
+	if kind == "verify" then
+		if not ns.Who.Verify(arg, Retry(verifyTried, U.Key(arg))) then return false end
+		verifyTried[U.Key(arg)] = ns.Now()
+		ns.Log("вступление: проверка офицера %s гильдии %s через /who", U.Display(arg), hint.name)
+		return true
+	elseif kind == "guild" then
+		if not ns.Who.SearchGuild(arg, Retry(focusTried, U.GuildKey(arg))) then return false end
+		focusTried[U.GuildKey(arg)] = ns.Now()
+		ns.Log("вступление: поиск гильдии %s (мест %d) через /who", arg, hint.free)
+		return true
+	end
+	return ns.Who.Search()
 end
 
 function Recruit.OnRoute(msg, sender, dist, ctx)
@@ -154,7 +214,7 @@ function Recruit.OnRoute(msg, sender, dist, ctx)
 			for name in names:gmatch("[^/]+") do
 				if #contacts < 2 and #name <= 120 then contacts[#contacts + 1] = name end
 			end
-			r.byName[U.GuildKey(guild)], n = { free = free, contacts = contacts }, n + 1
+			r.byName[U.GuildKey(guild)], n = { name = Codec.Plain(guild), free = free, contacts = contacts }, n + 1
 		end
 	end
 	-- Ответы разных участников складываются: каждый точно знает офицеров только своей гильдии.
@@ -176,6 +236,10 @@ function Recruit.OnRoute(msg, sender, dist, ctx)
 	if dnc[key] and Recruit.pending and U.Key(Recruit.pending.name) == key then
 		Recruit.Cancel()
 		ns.Print(L.RECRUIT_DNC, U.Display(sender))
+	elseif Recruit.pending and not Recruit.HasSpace(Recruit.pending.guild) then
+		local guild = Recruit.pending.guild
+		Recruit.Cancel()
+		ns.Print(L.RECRUIT_FULL, guild)
 	end
 	Changed()
 	return true
@@ -247,7 +311,8 @@ function Recruit.Message(contact)
 end
 
 function Recruit.Prompt(contact)
-	if ns.IsMember() or not contact or not Found(contact.name, contact.guild) or dnc[U.Key(contact.name)] then return false end
+	if ns.IsMember() or not contact or not Recruit.HasSpace(contact.guild)
+		or not Found(contact.name, contact.guild) or dnc[U.Key(contact.name)] then return false end
 	Recruit.pending = contact
 	AskRoute(contact.name, true)
 	ns.RecruitPane.ShowDialog(contact, Recruit.Message(contact))
@@ -255,7 +320,7 @@ function Recruit.Prompt(contact)
 end
 
 function Recruit.Ask(contact, message)
-	if ns.IsMember() or not contact or not Found(contact.name, contact.guild) then return false end
+	if ns.IsMember() or not contact or not Recruit.HasSpace(contact.guild) or not Found(contact.name, contact.guild) then return false end
 	local key, now = U.Key(contact.name), ns.Now()
 	if dnc[key] or Recruit.asked[key] then return false end
 	if now - lastAsk < Recruit.ASK_COOLDOWN then ns.Print(L.RECRUIT_WAIT); return false end
@@ -267,14 +332,18 @@ function Recruit.Ask(contact, message)
 	-- Очередь метаданных проверяем до обычного шёпота: полный буфер не создаёт дублей текста.
 	local ok = ns.Comm.Send("WHISPER", ("J3~%s~%d~%s"):format(Field(contact.guild), UnitLevel("player") or 0, Field(class)), {
 		target = contact.name, prio = true,
-		guard = function() return not ns.IsMember() and not dnc[key] and Found(contact.name, contact.guild) ~= nil end,
+		guard = function()
+			return not ns.IsMember() and not dnc[key] and Recruit.HasSpace(contact.guild) and Found(contact.name, contact.guild) ~= nil
+		end,
 	})
 	if not ok then return false end
 	-- J3 остаётся прежним для совместимости. JT содержит именно текст просьбы:
 	-- его можно передать офицерам, не читая обычную личную переписку новичка.
 	ns.Comm.Send("WHISPER", ("JT~1~%s~%d~%s~%s"):format(Field(contact.guild), UnitLevel("player") or 0, Field(class), message), {
 		target = contact.name, prio = true, logged = true,
-		guard = function() return not ns.IsMember() and not dnc[key] and Found(contact.name, contact.guild) ~= nil end,
+		guard = function()
+			return not ns.IsMember() and not dnc[key] and Recruit.HasSpace(contact.guild) and Found(contact.name, contact.guild) ~= nil
+		end,
 	})
 	SendChatMessage(message, "WHISPER", nil, U.TellName(contact.name))
 	lastAsk, Recruit.asked[key] = now, now
@@ -467,20 +536,36 @@ end
 ns.RegisterEvent("CHAT_MSG_WHISPER", Recruit.OnWhisper)
 -- Аддон есть не у каждого найденного, а офицеров своей гильдии знает только её участник.
 -- Поэтому J1 уходит нескольким: сначала по одному из гильдий, чьих офицеров ещё не знаем,
--- затем ещё участникам тех же гильдий. Гильдии с известными офицерами не спрашиваем.
+-- затем ещё участникам тех же гильдий. Гильдии с известными офицерами и заполненные по
+-- подсказке не спрашиваем; гильдии с местами — первыми. Если пауза между пачками ещё
+-- не прошла, пачка уходит после неё: иначе участники, найденные поиском по названию
+-- гильдии сразу после общего, ждали бы следующего щелчка.
 local function AskRoutes()
 	local now = ns.Now()
-	if ns.IsMember() or now - lastRoute < Recruit.ROUTE_GAP then return end
-	local need, tried, sent = {}, {}, 0
+	if ns.IsMember() then return end
+	if now - lastRoute < Recruit.ROUTE_GAP then
+		if not routeLater then
+			routeLater = true
+			ns.After(Recruit.ROUTE_GAP - (now - lastRoute), "вступление: J1", function()
+				routeLater = false
+				AskRoutes()
+			end)
+		end
+		return
+	end
+	local need, sent = {}, 0
 	for _, g in ipairs(Recruit.Guilds()) do
-		if #g.officers == 0 then need[U.GuildKey(g.name)] = true end
+		if #g.officers == 0 and g.free ~= 0 then need[#need + 1] = g end
 	end
 	for pass = 1, 2 do
-		for _, p in ipairs(Recruit.found) do
-			local gk, at = U.GuildKey(p.guild), routeAsked[U.Key(p.name)]
-			if sent < Recruit.ROUTE_ASKS and need[gk] and (pass == 2 or not tried[gk])
-				and not (at and now - at <= Recruit.ROUTE_FRESH) and AskRoute(p.name) then
-				sent, tried[gk], lastRoute = sent + 1, true, now
+		for _, g in ipairs(need) do
+			local asked = false
+			for _, p in ipairs(g.members) do
+				local at = routeAsked[U.Key(p.name)]
+				if sent < Recruit.ROUTE_ASKS and (pass == 2 or not asked)
+					and not (at and now - at <= Recruit.ROUTE_FRESH) and AskRoute(p.name) then
+					sent, asked, lastRoute = sent + 1, true, now
+				end
 			end
 		end
 	end
@@ -489,7 +574,7 @@ end
 ns.On("WHO", function(list)
 	Recruit.found = list
 	-- Пустой список — новый раунд поиска: проверенные по имени офицеры из него выпали.
-	if #list == 0 then verifyTried = {} end
+	if #list == 0 then verifyTried, focusTried = {}, {} end
 	AskRoutes()
 	Changed()
 end)
@@ -497,6 +582,7 @@ ns.On("GUILD_CHANGED", function()
 	Recruit.Cancel()
 	Recruit.found, Recruit.asked, Recruit.replied, Recruit.replyNames, Recruit.requests, Recruit.route = {}, {}, {}, {}, {}, nil
 	routeAsked, dnc, answered, whispers, requestAt, lineTimes, answerTimes, verifyTried = {}, {}, {}, {}, {}, {}, {}, {}
+	focusTried = {}
 	Changed()
 end)
 ns.On("ROSTER", function() Prune(); Changed() end)
