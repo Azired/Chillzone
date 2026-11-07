@@ -74,121 +74,93 @@ T.test("slash: управление только через /chillzone, алиа
 		c:Slash(cmd, "settings")
 		T.same(sent[#sent], { "A", "settings" }, cmd .. " не перехватывает слово команды")
 		c:Slash(cmd, "")
-		T.eq(c.ns.UI.Current(), "chat")
-		T.eq(c.ns.ChatPane.Current(), "A")
-		T.ok(c.ns.ChatPane.frames.box:HasFocus())
+		T.eq(c.ns.UI.Current(), "settings", "пустая команда не меняет вкладку")
 	end
 	T.eq(#sent, 3)
 	T.eq(#c.ns.db.errors, 0)
 end)
 
-T.test("slash: пробел переключает все алиасы и переносит вставленный текст", function()
+T.test("slash: все алиасы оставляют ввод в игровом чате до Enter", function()
 	local w, c = SlashClient()
 	local aliases = { ["/cz"] = "A", ["/чз"] = "A", ["/чиллзон"] = "A",
-		["/cz1"] = "A", ["/чз1"] = "A", ["/cz2"] = "C", ["/чз2"] = "C", ["/cz3"] = "L", ["/чз3"] = "L", ["/ЧЗ2"] = "C" }
-	local opens, open = 0, c.ns.UI.OpenChat
-	c.ns.UI.OpenChat = function(...) opens = opens + 1; return open(...) end
+		["/cz1"] = "A", ["/чз1"] = "A", ["/cz2"] = "C", ["/чз2"] = "C", ["/cz3"] = "L", ["/чз3"] = "L" }
+	local sent = {}
+	c.ns.Chat.Send = function(tier, text) sent[#sent + 1] = { tier, text } end
 	for cmd, tier in pairs(aliases) do
-		local game = c.env.ChatFrame2EditBox
-		game:Show(); game:SetFocus(); game:SetText(cmd)
-		game.scripts.OnTextChanged(game, true)
-		w:Run(0)
-		T.ok(game:HasFocus(), cmd .. " ждёт пробела")
-		game:SetText(cmd .. " ")
-		game.scripts.OnTextChanged(game, true)
-		game:SetText(cmd .. " привет " .. LINK)
-		game.scripts.OnTextChanged(game, true)
-		w:Run(0)
-		T.eq(c.ns.ChatPane.Current(), tier, cmd)
-		local box = c.ns.ChatPane.frames.box
-		T.ok(box:HasFocus(), cmd .. " переводит курсор")
-		T.eq(box:GetText(), "привет " .. LINK, cmd .. " переносит текст и ссылку")
-		T.eq(game:GetText(), cmd .. " привет " .. LINK, "аддон не меняет текст игрового поля")
-		box:SetText(""); box.scripts.OnTextChanged(box, true)
+		for i = 1, 2 do
+			local game = c.env["ChatFrame" .. i .. "EditBox"]
+			game:Show(); game:SetFocus()
+			for _, text in ipairs({ cmd, cmd .. " ", cmd .. " привет " .. LINK }) do
+				game:SetText(text)
+				local changed = game.scripts.OnTextChanged
+				if changed then changed(game, true) end
+				w:Run(0)
+				T.ok(game:HasFocus(), cmd .. " сохраняет фокус в игровом поле")
+				T.eq(game:GetText(), text, "текст и ссылка остаются в игровом поле")
+				T.eq(c.ns.UI.Current(), nil, "набор команды не открывает окно")
+			end
+			local before = #sent
+			c:Slash(cmd, "привет " .. LINK)
+			game:ClearFocus(); game:Hide()
+			w:Run(0)
+			T.eq(#sent, before + 1, "Enter отправляет ровно один раз")
+			T.same(sent[#sent], { tier, "привет " .. LINK }, cmd)
+			T.eq(c.ns.UI.Current(), nil, "отправка не открывает окно")
+		end
 	end
-	T.eq(opens, 10, "по одному переключению, несмотря на несколько изменений текста")
-	T.eq(c.ns.Chat.stats.sent, 0, "переключение ничего не отправляет")
 	T.eq(#c.ns.db.errors, 0)
 end)
 
-T.test("slash: отмена, чужие команды и программный текст не крадут фокус", function()
+T.test("slash: отмена и исправление команды не открывают окно", function()
 	local w, c = SlashClient()
 	local game = c.env.ChatFrame1EditBox
-	for _, text in ipairs({ "/chillzone settings ", "/cz4 ", "/czfoo ", "/cast Заклинание ", "текст /cz " }) do
-		game:Show(); game:SetFocus(); game:SetText(text)
-		game.scripts.OnTextChanged(game, true)
-		w:Run(0)
-		T.ok(game:HasFocus(), text)
-	end
-	game:SetText("/cz "); game.scripts.OnTextChanged(game, false)
-	w:Run(0)
-	T.ok(game:HasFocus(), "программная установка не переключает")
-	game.scripts.OnTextChanged(game, true)
+	game:Show(); game:SetFocus(); game:SetText("/cz ")
+	local changed = game.scripts.OnTextChanged
+	if changed then changed(game, true) end
 	game:SetText("/cast Заклинание")
-	w:Run(0)
-	T.ok(game:HasFocus(), "исправленная команда отменяет отложенное переключение")
-	game:SetText("/cz "); game.scripts.OnTextChanged(game, true)
-	game:ClearFocus(); game:Hide()
-	w:Run(0)
-	T.eq(c.ns.UI.Current(), nil, "закрытое поле не открывает окно позже")
-end)
-
-T.test("slash: недоступный канал не заменяется чатом своей гильдии", function()
-	local w, c = SlashClient(3)
-	local game = c.env.ChatFrame1EditBox
-	game:Show(); game:SetFocus(); game:SetText("/чз2 ")
-	game.scripts.OnTextChanged(game, true)
 	w:Run(0)
 	T.ok(game:HasFocus())
 	T.eq(c.ns.UI.Current(), nil)
-	T.ok(c:Saw("можно писать только с нужным рангом") > 0)
-	game:SetText("/чз2 сообщение"); game.scripts.OnTextChanged(game, true)
+	game:SetText("/cz ")
+	if changed then changed(game, true) end
+	game:ClearFocus(); game:Hide()
 	w:Run(0)
-	T.eq(c:Saw("можно писать только с нужным рангом"), 1, "отказ не повторяется при каждом символе")
-	c:Slash("/cz3", "")
 	T.eq(c.ns.UI.Current(), nil)
 end)
 
-T.test("slash: пустой переход сохраняет черновик и не пишет в игровое поле", function()
+T.test("slash: пустые команды дают подсказку без отправки и открытия окна", function()
 	local w, c = SlashClient()
-	c.ns.UI.OpenChat("A", true)
-	local box = c.ns.ChatPane.frames.box
-	box:SetText("черновик "); box.scripts.OnTextChanged(box, true)
-	local game = c.env.ChatFrame1EditBox
-	game:Show(); game:SetFocus(); game:SetText("/cz ")
-	game.scripts.OnTextChanged(game, true)
-	local function Forbidden() error("запись в игровое поле") end
-	game.SetText, game.SetAttribute, game.Hide, game.ClearFocus, game.SetScript = Forbidden, Forbidden, Forbidden, Forbidden, Forbidden
-	w:Run(0)
-	T.ok(box:HasFocus())
-	T.eq(box:GetText(), "черновик ")
+	local sent = 0
+	c.ns.Chat.Send = function() sent = sent + 1 end
+	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон", "/cz1", "/чз1", "/cz2", "/чз2", "/cz3", "/чз3" }) do
+		for _, text in ipairs({ "", "   " }) do
+			local before = c:Saw(c.ns.L.CHAT_USAGE)
+			c:Slash(cmd, text)
+			w:Run(0)
+			T.eq(c:Saw(c.ns.L.CHAT_USAGE), before + 1, cmd .. " показывает подсказку")
+			T.eq(c.ns.UI.Current(), nil, cmd .. " не открывает окно")
+		end
+	end
+	T.eq(sent, 0)
 	T.eq(#c.ns.db.errors, 0)
 end)
 
-T.test("slash: Enter до таймера отправляет один раз, геймпад не теряет ввод, бой допускает переход", function()
-	local w, c = SlashClient()
+T.test("slash: недоступный канал отклоняет отправку без открытия окна", function()
+	local w, c = SlashClient(3)
 	local game = c.env.ChatFrame1EditBox
-	game:Show(); game:SetFocus(); game:SetText("/cz сообщение")
-	game.scripts.OnTextChanged(game, true)
-	local sent = 0
-	c.ns.Chat.Send = function() sent = sent + 1 end
-	c:Slash("/cz", "сообщение")
-	game:ClearFocus(); game:Hide()
+	game:Show(); game:SetFocus(); game:SetText("/чз2 ")
+	local changed = game.scripts.OnTextChanged
+	if changed then changed(game, true) end
 	w:Run(0)
-	T.eq(sent, 1)
-	T.eq(c.ns.UI.Current(), nil, "переход после отправки отменён")
-	game:Show(); game:SetFocus(); game:SetText("/cz ")
-	local gamepad = c.ns.ChatPane.Gamepad
-	c.ns.ChatPane.Gamepad = function() return true end
-	game.scripts.OnTextChanged(game, true)
+	T.ok(game:HasFocus())
+	T.eq(c.ns.UI.Current(), nil)
+	T.eq(c:Saw("можно писать только с нужным рангом"), 0, "при наборе ещё нет отказа")
+	c:Slash("/чз2", "сообщение офицерам")
+	c:Slash("/cz3", "сообщение главам")
 	w:Run(0)
-	T.ok(game:HasFocus(), "геймпад")
-	c.ns.ChatPane.Gamepad = gamepad
-	c.combat = true
-	game.scripts.OnTextChanged(game, true)
-	w:Run(0)
-	T.eq(c.ns.ChatPane.Current(), "A")
-	T.ok(c.ns.ChatPane.frames.box:HasFocus())
+	T.eq(c:Saw("можно писать только с нужным рангом"), 2)
+	T.eq(c.ns.Chat.stats.sent, 0)
+	T.eq(c.ns.UI.Current(), nil)
 	T.eq(#c.ns.db.errors, 0)
 end)
 
