@@ -96,6 +96,49 @@ T.test("migration: корни и версия 0.8 от офицера не за�
     Errors(c)
 end)
 
+-- Системные строки, которые увидел игрок: событие прошло через фильтры чата.
+local function Shown(client)
+    local box = { n = 0 }
+    local fire = client.Fire
+    client.Fire = function(self, event, text, ...)
+        local result = fire(self, event, text, ...)
+        if event == "CHAT_MSG_SYSTEM" then
+            local hidden = false
+            for _, fn in ipairs(self.filters["CHAT_MSG_SYSTEM"] or {}) do
+                if fn(nil, "CHAT_MSG_SYSTEM", text) then hidden = true end
+            end
+            if not hidden then box.n = box.n + 1 end
+        end
+        return result
+    end
+    return box
+end
+
+T.test("migration: главного корня нет в игре — каталог просим раз в полчаса и молча", function()
+    local w, c = Build()
+    c.k:Logout(); c.o:Logout()
+    c.n = w:Client({ first = "Новый", surname = "Северный", guild = c.v.guild, rank = 3 })
+    local shown = Shown(c.n)
+    c.v.ns.Roster.Scan()
+    w:Run(150)
+    T.ok(c.n.ns.Security.MyCertificate())
+    T.no(c.n.ns.IsMember(), "каталога ещё нет")
+    local function Probes()
+        local n = 0
+        for _, e in ipairs(w.log) do
+            if e.from == c.n:Name() and e.target == c.k:Name() and e.msg:find("^RP~") then n = n + 1 end
+        end
+        return n
+    end
+    T.eq(Probes(), 1, "главный корень спрошен")
+    w:Run(25 * 60)
+    T.eq(Probes(), 1, "после «нет такого игрока» не чаще раза в полчаса")
+    w:Run(10 * 60)
+    T.eq(Probes(), 2, "через полчаса — снова")
+    T.eq(shown.n, 0, "строки «нет такого игрока» скрыты")
+    Errors(c)
+end)
+
 T.test("migration: старый офицер и каталог не отменяют исключение главы после перезапуска", function()
     local w, c = Build()
     local gk = c.k.ns.Util.GuildKey(c.v.guild)

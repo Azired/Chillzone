@@ -627,13 +627,16 @@ end
 -- Контакт гильдии получает решение шёпотом при каждой подписи. Другой персонаж этого же
 -- аккаунта со мной в игре не бывает: решение он найдёт в общих SavedVariables. Контакт,
 -- о котором сервер ответил «нет такого игрока», пропускается на C.UNION_CONTACT_RETRY.
+-- То же для главного корня, у которого новая установка просит каталог 0.8 (см. Tick).
 local contactAway = {}
+local probeKey
 local function Reachable(name)
     local k = U.Key(name)
     if not k or k == ns.myKey or (ns.db and ns.db.chars and ns.db.chars[k]) then return false end
     return not contactAway[k] or ns.Now() - contactAway[k] >= C.UNION_CONTACT_RETRY
 end
 function S.UnionContact(key)
+    if probeKey and key == probeKey then return true end
     for _, entry in pairs(Store() and Store().union or {}) do
         if entry.contact and U.Key(entry.contact) == key then return true end
     end
@@ -880,8 +883,9 @@ end)
 ns.Comm.On("KT", function(msg, sender, dist)
     if dist ~= "GUILD" or not ns.Roster.Fresh() or not ns.Roster.IsOfficerRank(ns.Roster.RankOf(sender)) then return end
     local guild, name, public = msg:match("^KT~([^~]+)~([^~]+)~([%w_-]+)$")
-    -- Корень от своего настоящего офицера даёт только известный ключ, а не членство.
-    if not guild or not Pin(guild, name, public, false, true) then return end
+    -- Только корни гильдий объединения и своей. Корень посторонней гильдии, записанный заранее,
+    -- Pin потом не заменяет: настоящий корень при её подключении был бы отвергнут.
+    if guild then Pin(guild, name, public) end
 end)
 local function NativeTrustReply(union)
     if not S.CanAdmin() then return end
@@ -1121,8 +1125,11 @@ local function Tick()
     -- У новой установки среди 0.8 ещё нет состава, поэтому обычный выбор реле закрыт.
     -- Старое RP с настоящим своим сертификатом запрашивает подписанный каталог у
     -- уже доверенного главного корня. Нативный KT сам по себе членства не даёт.
+    -- Персонажу своего аккаунта не шепчем, корню не в игре — не чаще C.UNION_CONTACT_RETRY.
     local mainRoot, mine = Root(C.MAIN_GUILD), S.MyCertificate()
-    if not Store().governed and not ns.IsMember() and mainRoot and mine and now - lastLegacyProbe >= 120 then
+    local probing = not Store().governed and not ns.IsMember() and mainRoot and mine
+    probeKey = probing and U.Key(mainRoot.name) or nil
+    if probing and Reachable(mainRoot.name) and now - lastLegacyProbe >= 120 then
         lastLegacyProbe = now
         S.Introduce(mainRoot.name)
         ns.Comm.Send("WHISPER", "RP~" .. mine.fp, { target = mainRoot.name,

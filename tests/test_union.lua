@@ -325,3 +325,82 @@ T.test("union: игрок неподключённой гильдии видит
     T.no(v.ns.UI.Current() == "join", "после подключения экрана вступления нет")
     for _, c in ipairs({ v, loner }) do T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок") end
 end)
+
+-- Системные строки, которые увидел игрок: событие прошло через фильтры чата.
+local function Shown(client)
+    local box = { n = 0 }
+    local fire = client.Fire
+    client.Fire = function(self, event, text, ...)
+        local result = fire(self, event, text, ...)
+        if event == "CHAT_MSG_SYSTEM" then
+            local hidden = false
+            for _, fn in ipairs(self.filters["CHAT_MSG_SYSTEM"] or {}) do
+                if fn(nil, "CHAT_MSG_SYSTEM", text) then hidden = true end
+            end
+            if not hidden then box.n = box.n + 1 end
+        end
+        return result
+    end
+    return box
+end
+
+T.test("union: офицер не подкладывает корень посторонней гильдии", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон")
+    w:Guild("Северный союз")
+    w:Guild("Новая гильдия")
+    local k = w:Client({ first = "Король", surname = "Первый", guild = "Чиллзон", rank = 0 })
+    local o = w:Client({ first = "Офицер", surname = "Главный", guild = "Чиллзон", rank = 1 })
+    local v = w:Client({ first = "Вера", surname = "Верная", guild = "Северный союз", rank = 0 })
+    local vo = w:Client({ first = "Ваня", surname = "Офицер", guild = "Северный союз", rank = 1 })
+    local vm = w:Client({ first = "Варя", surname = "Рядовая", guild = "Северный союз", rank = 3 })
+    local n = w:Client({ first = "Нина", surname = "Новая", guild = "Новая гильдия", rank = 0 })
+    w:Run(30)
+    w:Init(k, v, n)
+    w:Pair(v, k)
+    w:Run(90)
+    T.ok(vm.ns.IsMember())
+    local U, gk = k.ns.Util, k.ns.Util.GuildKey("Новая гильдия")
+    -- Офицеры шлют своим гильдиям корень гильдии, которой нет в объединении.
+    local fake = vm.ns.store.security.roots[U.GuildKey("Северный союз")].public
+    o.ns.Comm.Send("GUILD", "KT~Новая гильдия~" .. o:Name() .. "~" .. fake)
+    vo.ns.Comm.Send("GUILD", "KT~Новая гильдия~" .. vo:Name() .. "~" .. fake)
+    w:Run(5)
+    T.eq(k.ns.store.security.roots[gk], nil, "у главы корень не записан")
+    T.eq(#k.ns.Security.KnownGuilds(), 0, "и не появился среди известных")
+    T.eq(vm.ns.store.security.roots[gk], nil, "у участника другой гильдии тоже")
+    w:Pair(n, k)
+    w:Run(90)
+    for _, c in ipairs({ k, o, vm }) do
+        T.ok(c.ns.Util.IsMemberGuild("Новая гильдия"), c:Name() .. ": настоящая гильдия подключена")
+        T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок")
+    end
+end)
+
+T.test("union: второй персонаж главы не шепчет главе, пока его гильдию не добавили", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон")
+    w:Guild("Северный союз")
+    local alt = w:Client({ first = "Альт", surname = "Северный", guild = "Северный союз", rank = 0 })
+    w:Run(30)
+    w:Init(alt)
+    w:Run(15)
+    local db = alt.ns.db
+    alt:Logout()
+    local k = w:Client({ first = "Король", surname = "Первый", guild = "Чиллзон", rank = 0, db = db })
+    w:Run(30)
+    w:Init(k)
+    w:Run(15)
+    k:Logout()
+    local back = w:Client({ first = "Альт", surname = "Северный", guild = "Северный союз", rank = 0, db = db })
+    local shown, from = Shown(back), #w.log
+    w:Run(20 * 60)
+    local whispers = 0
+    for i = from + 1, #w.log do
+        if w.log[i].from == back:Name() and w.log[i].target == k:Name() then whispers = whispers + 1 end
+    end
+    T.no(back.ns.IsMember(), "гильдия ещё не добавлена")
+    T.eq(whispers, 0, "главе на том же аккаунте не шепчем")
+    T.eq(shown.n, 0, "строк «нет такого игрока» нет")
+    T.eq(#back.ns.db.errors, 0)
+end)
