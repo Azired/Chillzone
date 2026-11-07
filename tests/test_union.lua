@@ -173,3 +173,110 @@ T.test("union: новый глава подписывает состав, нов
         T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок")
     end
 end)
+
+-- Корень гильдии в хранилище клиента, как после подключения в прежней версии.
+local function KnowRoot(client, owner)
+    local gk = owner.ns.Util.GuildKey(owner.guild)
+    local root = owner.ns.Security.Roots()[gk]
+    client.ns.store.security.roots[gk] = { guild = root.guild, name = root.name, public = root.public }
+end
+
+-- Сколько раз глава шепнул решение контакту гильдии.
+local function CountContact(client)
+    local box, send = { n = 0 }, client.ns.Comm.Send
+    client.ns.Comm.Send = function(dist, msg, opts)
+        if dist == "WHISPER" and opts and type(opts.key) == "string" and opts.key:find("^union%-contact:") then
+            box.n = box.n + 1
+        end
+        return send(dist, msg, opts)
+    end
+    return box
+end
+
+T.test("union: глава добавляет известную гильдию без запроса связи, со вторым щелчком", function()
+    local w, k, o, v = Build()
+    T.eq(#k.ns.Security.KnownGuilds(), 0, "чужой корень сам в списке не появляется")
+    KnowRoot(k, v); KnowRoot(o, v); KnowRoot(v, k)
+    T.eq(#o.ns.Security.KnownGuilds(), 0, "офицеру список не показывается")
+    T.no(o.ns.Security.AddKnown(v.guild), "офицер не добавляет известную гильдию")
+    local known = k.ns.Security.KnownGuilds()
+    T.eq(#known, 1)
+    T.eq(known[1].guild, v.guild)
+    T.eq(known[1].root, v:Name(), "показан корень гильдии")
+    k.ns.UI.Toggle("union")
+    local action
+    for _, row in ipairs(k.ns.UnionPane.frames.rows) do
+        if row:IsShown() and row.entry.known and row.entry.guild == v.guild then action = row.action end
+    end
+    T.ok(action, "известная гильдия показана на вкладке")
+    action.scripts.OnClick()
+    T.no(k.ns.Util.IsMemberGuild(v.guild), "первый щелчок только просит подтверждение")
+    T.eq(action:GetText(), k.ns.L.UNION_CONFIRM_ADD)
+    action.scripts.OnClick()
+    T.ok(k.ns.Util.IsMemberGuild(v.guild), "второй щелчок добавляет")
+    w:Run(30)
+    T.ok(v.ns.IsMember(), "корень гильдии получил решение шёпотом")
+    T.ok(o.ns.Util.IsMemberGuild(v.guild), "главная гильдия получила решение")
+    T.eq(#k.ns.Security.KnownGuilds(), 0, "добавленная гильдия ушла из списка известных")
+    T.no(k.ns.Security.AddKnown(v.guild), "повторно не добавляется")
+    for _, c in ipairs({ k, o, v }) do T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок") end
+end)
+
+T.test("union: глава с одним аккаунтом подключает гильдию своего второго персонажа", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон")
+    w:Guild("Северный союз")
+    local alt = w:Client({ first = "Альт", surname = "Северный", guild = "Северный союз", rank = 0 })
+    local member = w:Client({ first = "Рядовой", surname = "Северный", guild = "Северный союз", rank = 3 })
+    w:Run(30)
+    w:Init(alt)
+    w:Run(15)
+    local db = alt.ns.db
+    alt:Logout()
+    -- Тот же игрок входит главой «Чиллзон»: SavedVariables у персонажей аккаунта общие.
+    local k = w:Client({ first = "Король", surname = "Первый", guild = "Чиллзон", rank = 0, db = db })
+    w:Run(30)
+    w:Init(k)
+    w:Run(15)
+    local known = k.ns.Security.KnownGuilds()
+    T.eq(#known, 1, "корень гильдии второго персонажа уже известен аккаунту")
+    T.eq(known[1].guild, "Северный союз")
+    local whispers = CountContact(k)
+    T.ok(k.ns.Security.AddKnown("Северный союз"))
+    w:Run(25 * 60)
+    T.eq(whispers.n, 0, "второму персонажу того же аккаунта решение не шепчется")
+    T.no(member.ns.IsMember(), "пока второй персонаж не вошёл, гильдия решения не знает")
+    k:Logout()
+    local back = w:Client({ first = "Альт", surname = "Северный", guild = "Северный союз", rank = 0, db = db })
+    w:Run(5)
+    T.ok(back.ns.IsMember(), "подписанный состав уже в общем хранилище")
+    w:Run(120)
+    T.ok(member.ns.IsMember(), "второй персонаж раздал состав своей гильдии")
+    for _, c in ipairs({ back, member }) do T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок") end
+end)
+
+T.test("union: представителю не в игре решение не шепчется каждые 10 минут", function()
+    local w, k, _, v = Build()
+    w:Pair(v, k)
+    w:Run(60)
+    T.ok(v.ns.IsMember())
+    v:Logout()
+    local whispers = CountContact(k)
+    -- Следующая подпись — через AUTH_RENEW после прежней; шаг мелкий, чтобы застать ответ сервера.
+    for _ = 1, 15 * 60 do
+        if whispers.n > 0 then break end
+        w:Run(1)
+    end
+    T.eq(whispers.n, 1, "переподписанное решение ушло представителю")
+    w:Run(2)
+    local hidden = false
+    for _, fn in ipairs(k.filters["CHAT_MSG_SYSTEM"] or {}) do
+        if fn(nil, "CHAT_MSG_SYSTEM", ("No player named '%s' is currently playing."):format(v:Name())) then hidden = true end
+    end
+    T.ok(hidden, "строка «нет такого игрока» про контакт скрыта")
+    w:Run(25 * 60)
+    T.eq(whispers.n, 1, "после ответа «нет такого игрока» контакт пропускается")
+    w:Run(20 * 60)
+    T.eq(whispers.n, 2, "через полчаса глава пробует снова")
+    T.eq(#k.ns.db.errors, 0)
+end)

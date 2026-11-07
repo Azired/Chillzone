@@ -614,6 +614,24 @@ function S.SendPolicies(target)
         end
     end
 end
+-- Контакт гильдии получает решение шёпотом при каждой подписи. Другой персонаж этого же
+-- аккаунта со мной в игре не бывает: решение он найдёт в общих SavedVariables. Контакт,
+-- о котором сервер ответил «нет такого игрока», пропускается на C.UNION_CONTACT_RETRY.
+local contactAway = {}
+local function Reachable(name)
+    local k = U.Key(name)
+    if not k or k == ns.myKey or (ns.db and ns.db.chars and ns.db.chars[k]) then return false end
+    return not contactAway[k] or ns.Now() - contactAway[k] >= C.UNION_CONTACT_RETRY
+end
+function S.UnionContact(key)
+    for _, entry in pairs(Store() and Store().union or {}) do
+        if entry.contact and U.Key(entry.contact) == key then return true end
+    end
+    return false
+end
+function S.ContactAway(key)
+    if S.UnionContact(key) then contactAway[key] = ns.Now() end
+end
 local function BuildPolicies()
     local c = S.MyCertificate()
     local signingIdentity = identity
@@ -639,7 +657,7 @@ local function BuildPolicies()
                 ns.Comm.Send("GUILD", wire, { key = "root-policy:" .. gk, guard = S.CanManageUnion })
                 -- Подключаемая гильдия пока не зарегистрирована у реле. Её представитель
                 -- получает решение напрямую; удалённая получает отзыв тем же путём.
-                if entry.contact then
+                if entry.contact and Reachable(entry.contact) then
                     ns.Comm.Send("WHISPER", wire, { target = entry.contact, prio = true,
                         key = "union-contact:" .. gk, guard = S.CanManageUnion })
                 end
@@ -708,6 +726,37 @@ function S.UnionRequests()
     end
     table.sort(list, function(a, b) return U.GuildKey(a.guild) < U.GuildKey(b.guild) end)
     return list
+end
+-- Гильдии, чей корень уже лежит в хранилище, но которых нет в составе: подключённые до
+-- CHZUNION1 и гильдии других персонажей аккаунта (SavedVariables общие для персонажей одной
+-- группы реалмов и фракции). Чужой корень сюда со стороны не попадёт: Pin принимает его
+-- только от своей гильдии, из подписанного состава или по запросу связи, принятому главой.
+function S.KnownGuilds()
+    local list, s = {}, Store()
+    if not s or not S.CanManageUnion() then return list end
+    local requested = {}
+    for _, p in pairs(pending) do
+        if ns.Now() <= p.untilAt then requested[U.GuildKey(p.guild)] = true end
+    end
+    for gk, root in pairs(s.roots) do
+        local entry = s.union[gk]
+        if not (entry and entry.active) and not requested[gk] and GuildName(root.guild)
+            and not U.IsMainGuild(root.guild) and Name(root.name) then
+            list[#list + 1] = { guild = root.guild, root = root.name }
+        end
+    end
+    table.sort(list, function(a, b) return U.GuildKey(a.guild) < U.GuildKey(b.guild) end)
+    return list
+end
+-- Добавить известную гильдию без запроса связи. Решение получает её корневой офицер, когда
+-- он в игре вместе с главой, или персонаж этого аккаунта из неё — через SavedVariables.
+function S.AddKnown(guild)
+    if not S.CanManageUnion() or type(guild) ~= "string" or U.IsMainGuild(guild) then return false end
+    local s, gk = Store(), U.GuildKey(guild)
+    local root, entry = s and s.roots[gk], s and s.union[gk]
+    if not root or (entry and entry.active) or not GuildName(root.guild) or not Name(root.name) then return false end
+    Admit(root.guild, root.name, root.public, root.name)
+    return true
 end
 function S.RemoveGuild(guild)
     if not S.CanManageUnion() or U.IsMainGuild(guild) then return false end

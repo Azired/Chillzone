@@ -4,7 +4,8 @@ local L, S = ns.L, ns.Security
 local P = {}
 ns.UnionPane = P
 local pane, child, input, message
-local rows, removing = {}, nil
+-- confirming: "add:Гильдия" или "remove:Гильдия" — какой кнопке нужен второй щелчок.
+local rows, confirming = {}, nil
 
 local function Button(parent, text, width, fn)
     local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
@@ -60,6 +61,9 @@ function P.Render()
         list[#list + 1] = { guild = r.guild, contact = r.contact, request = true }
     end
     for _, r in ipairs(S.UnionGuilds()) do list[#list + 1] = r end
+    for _, r in ipairs(S.KnownGuilds()) do
+        list[#list + 1] = { guild = r.guild, root = r.root, known = true }
+    end
     for i, item in ipairs(list) do
         local row = rows[i]
         if not row then
@@ -73,13 +77,18 @@ function P.Render()
             row.action = Button(row, "", 180, function()
                 if not S.CanManageUnion() then return end
                 local entry = row.entry
+                local key = (entry.known and "add:" or "remove:") .. entry.guild
                 if entry.request then
                     if not S.Accept(entry.contact) then message:SetText(L.UNION_ACCEPT_FAILED) end
-                elseif removing == entry.guild then
-                    S.RemoveGuild(entry.guild)
-                    removing = nil
+                elseif confirming ~= key then
+                    confirming = key
+                elseif entry.known then
+                    confirming = nil
+                    message:SetText(S.AddKnown(entry.guild) and L.UNION_KNOWN_ADDED:format(entry.guild)
+                        or L.UNION_KNOWN_FAILED)
                 else
-                    removing = entry.guild
+                    S.RemoveGuild(entry.guild)
+                    confirming = nil
                 end
                 P.Render()
             end)
@@ -87,9 +96,18 @@ function P.Render()
             rows[i] = row
         end
         row.entry = item
-        row.label:SetText(item.request and L.UNION_REQUEST:format(item.guild, ns.Util.Display(item.contact)) or item.guild)
+        local label, action = item.guild, L.UNION_REMOVE
+        if item.request then
+            label, action = L.UNION_REQUEST:format(item.guild, ns.Util.Display(item.contact)), L.UNION_ADD
+        elseif item.known then
+            label = L.UNION_KNOWN:format(item.guild, ns.Util.Display(item.root))
+            action = confirming == "add:" .. item.guild and L.UNION_CONFIRM_ADD or L.UNION_ADD
+        elseif confirming == "remove:" .. item.guild then
+            action = L.UNION_CONFIRM_REMOVE
+        end
+        row.label:SetText(label)
         row.action:SetShown(not item.main)
-        row.action:SetText(item.request and L.UNION_ADD or (removing == item.guild and L.UNION_CONFIRM_REMOVE or L.UNION_REMOVE))
+        row.action:SetText(action)
         row:Show()
     end
     for i = #list + 1, #rows do rows[i]:Hide() end
@@ -102,5 +120,5 @@ function P.Show()
 end
 function P.Hide()
     if pane then pane:Hide(); input:ClearFocus() end
-    removing = nil
+    confirming = nil
 end
