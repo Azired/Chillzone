@@ -99,11 +99,17 @@ function Chat.Tag(tier)
 	return "|c" .. Chat.TIER_COLOR[tier] .. "|H" .. Chat.TAG_LINK .. tier .. "|h[" .. L["TIER_" .. tier] .. "]|h|r"
 end
 
+-- Короткая метка гильдии только в строках чата; полное имя хранится в истории.
+function Chat.GuildTag(guild)
+	local name = Codec.Plain(guild or "?")
+	return L.CHAT_GUILD_TAGS[U.Fold(name)] or name
+end
+
 function Chat.Format(tier, guild, sender, class, text)
 	local name = U.Display(sender)
 	local color = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
 	if color and color.colorStr then name = "|c" .. color.colorStr .. name .. "|r" end
-	local g = Codec.Plain(guild or "?")
+	local g = Chat.GuildTag(guild)
 	return Chat.Tag(tier) .. " |cff999999<" .. g .. ">|r |Hplayer:" .. (U.TellName(sender) or "?") .. "|h[" .. name .. "]|h: " .. Codec.SanitizeChat(text)
 end
 
