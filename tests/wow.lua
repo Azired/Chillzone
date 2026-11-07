@@ -417,6 +417,15 @@ local function Env(c)
 	env.ChatFrame1EditBox = NewFrame(c, "ChatFrame1EditBox")
 	env.ChatFrame2EditBox = NewFrame(c, "ChatFrame2EditBox")
 	env.DEFAULT_CHAT_FRAME = { editBox = env.ChatFrame1EditBox, AddMessage = function(_, text) c.printed[#c.printed + 1] = text end }
+	-- Вкладки чата: 1 — основное окно, 2 — журнал боя; ещё вкладки заводит Client:ChatWindow.
+	env.ChatFrame1 = env.DEFAULT_CHAT_FRAME
+	env.ChatFrame2 = NewFrame(c, "ChatFrame2")
+	env.COMBATLOG = env.ChatFrame2
+	c.windows = { { name = "Общий", shown = true, docked = 1 }, { name = "Журнал боя", docked = 2 } }
+	env.GetChatWindowInfo = function(i)
+		local win = c.windows[i] or { name = "" }
+		return win.name, 14, 1, 1, 1, 0, win.shown == true, false, win.docked
+	end
 	env.NUM_CHAT_WINDOWS = 2
 	env.SlashCmdList = {}
 	env.UISpecialFrames = {}
@@ -494,6 +503,20 @@ function Client:Logout()
 			break
 		end
 	end
+end
+
+-- Вкладка чата игры номер i (3 и дальше) с названием name, пристыкованная к основному окну;
+-- closed — вкладку закрыли, название у окна осталось. Строки вкладки — в lines возвращённого окна.
+function Client:ChatWindow(i, name, closed)
+	local key, env = "ChatFrame" .. i, self.env
+	local f = rawget(env, key)
+	if not f then
+		f = NewFrame(self, key)
+		env[key], self.stubs[key] = f, true
+	end
+	if i > env.NUM_CHAT_WINDOWS then env.NUM_CHAT_WINDOWS = i end
+	self.windows[i] = { name = name, shown = not closed, docked = not closed and i or nil }
+	return f
 end
 
 -- Строки, которые клиент вывел в чат и которые содержат text.
