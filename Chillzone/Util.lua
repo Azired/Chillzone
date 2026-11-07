@@ -81,6 +81,34 @@ function U.Hash(s)
 end
 
 ---------------------------------------------------------------------------
+-- Версии аддона
+---------------------------------------------------------------------------
+
+-- «0.9.0» → { 0, 9, 0 }: от двух до четырёх чисел через точку, в каждом не больше четырёх
+-- цифр. Иначе nil: сборки с хвостом («0.9.0-dev») и мусор ни с чем не сравниваются.
+function U.ParseVersion(s)
+	if type(s) ~= "string" or not s:find("^%d+%.%d+[%.%d]*$") or s:find("%.%.") or s:find("%.$") then return nil end
+	local out = {}
+	for n in s:gmatch("%d+") do
+		if #n > 4 or #out == 4 then return nil end
+		out[#out + 1] = tonumber(n)
+	end
+	return out
+end
+
+-- Версия a новее b. Сравниваются числа по порядку, недостающие — нули (0.9 = 0.9.0).
+-- Нераспознанная версия не новее и не старше никакой.
+function U.VersionNewer(a, b)
+	local x, y = U.ParseVersion(a), U.ParseVersion(b)
+	if not x or not y then return false end
+	for i = 1, 4 do
+		local p, q = x[i] or 0, y[i] or 0
+		if p ~= q then return p > q end
+	end
+	return false
+end
+
+---------------------------------------------------------------------------
 -- Гильдии
 ---------------------------------------------------------------------------
 function U.IsMemberGuild(guild)

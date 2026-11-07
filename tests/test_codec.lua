@@ -48,11 +48,29 @@ end)
 T.test("codec: отчёт прежней версии без связных читается", function()
 	local _, Codec = fresh()
 	local r = sample()
-	local s = Codec.EncodeReport(r):gsub("~[^~]*$", "")
+	local s = Codec.EncodeReport(r):gsub("~[^~]*~[^~]*$", "")
 	local d = Codec.DecodeReport(s)
 	T.ok(d, "декодировался")
 	T.eq(#d.veterans, 0, "связных нет")
 	T.eq(#d.officers, 2, "офицеры на месте")
+end)
+
+T.test("codec: версия репортёра в отчёте", function()
+	local _, Codec = fresh()
+	local r = sample()
+	r.version = "0.9.0"
+	local s = Codec.EncodeReport(r)
+	T.eq(#Codec.Split(s, "~"), 22, "версия — последнее, 22-е поле")
+	T.same(Codec.DecodeReport(s), r, "round-trip с версией")
+	-- Отчёт 0.8.0: 21 поле, версии нет.
+	local old = Codec.DecodeReport((s:gsub("~[^~]*$", "")))
+	T.ok(old, "отчёт 0.8.0 читается")
+	T.eq(old.version, nil, "у отчёта 0.8.0 версии нет")
+	T.eq(#old.veterans, 1, "связные на месте")
+	-- Поля, которые добавят после версии, не мешают.
+	T.eq(Codec.DecodeReport(s .. "~x~y").version, "0.9.0", "лишние поля в конце не мешают")
+	r.version = "1.0~5"
+	T.eq(Codec.DecodeReport(Codec.EncodeReport(r)).version, "1.05", "разделитель из версии вычищен")
 end)
 
 T.test("codec: невозможный отчёт отклоняется", function()

@@ -17,6 +17,7 @@ local ICON_KING = "|TInterface\\GroupFrame\\UI-Group-LeaderIcon:14|t"
 local ICON_OFFICER = "|TInterface\\GroupFrame\\UI-Group-AssistantIcon:12|t"
 local GOLD, GREY, RED, WHITE = "|cffffd100", "|cff999999", "|cffff4040", "|cffffffff"
 local GREEN = "|cff40ff40"
+local ORANGE = "|cffff9933"
 
 function Views.Ago(seconds)
 	seconds = math.max(0, math.floor(seconds or 0))
@@ -130,6 +131,13 @@ function Views.GuildCard(s)
 		card.staleNote = L.CARD_STALE
 	end
 	return card
+end
+
+-- Заголовок окна: «Chillzone», а если вышла версия новее (Update.Available) — с просьбой обновиться.
+function Views.Title()
+	local v = ns.Update.Available()
+	if not v then return "Chillzone" end
+	return "Chillzone " .. ORANGE .. "(" .. L.UPDATE_TITLE:format(v) .. ")|r"
 end
 
 ---------------------------------------------------------------------------

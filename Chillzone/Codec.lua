@@ -3,12 +3,16 @@
 --
 -- Отчёт:  R1~guild~total~online~leader~leaderOn~leaderDays~leaderClass~leaderLevel~users
 --            ~zones~classes~levels~ranks~officers~inact7~inact30~avg10~faction~st
+--            ~veterans~version
 --   zones    "m1453=20,tМёртвые копи=3" (m = uiMapID, t = текст зоны) — только по согласию
 --   classes  "WA=4,MA=2" (двухбуквенные коды классов)
 --   levels   7 чисел: 1-9, 10-19, ..., 50-59, 60+
 --   ranks    "Глава=1,Офицер=3,..." по порядку рангов
 --   officers "имя:онлайн:дней:класс:уровень:ранг,..."
 --   st       серверное время отчёта, base36
+--   veterans связные, как officers (с 0.2)
+--   version  версия аддона репортёра (после 0.8.0). Новые поля идут только в конец:
+--            старые клиенты читают первые 21 поле и остальные не замечают.
 -- Кусок:  C<id>:<i>:<n>:<piece>                (аддон-сообщение не длиннее 255 байт)
 -- Привет: H1~<версия>~<флаги>                  (z — делится зонами, r — ретранслятор)
 -- Запрос: Q1~
@@ -204,6 +208,7 @@ function Codec.EncodeReport(r)
 		r.faction == "Horde" and "H" or "A",
 		Codec.Base36(r.st) or "",
 		concat(veterans, ","), -- с 0.2: связные (звание Config.RELAY_RANK)
+		clean(r.version):sub(1, 16), -- после 0.8.0: версия аддона репортёра (Update.lua)
 	}, "~")
 end
 
@@ -263,6 +268,7 @@ function Codec.DecodeReport(s)
 		avgLevel = (num(f[18]) or 0) / 10,
 		faction = f[19] == "H" and "Horde" or "Alliance",
 		st = unBase36(f[20]),
+		version = f[22] and f[22] ~= "" and f[22]:sub(1, 16) or nil,
 	}
 end
 

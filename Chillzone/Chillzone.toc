@@ -24,6 +24,7 @@ Roster.lua
 libs\Ed25519.lua
 Security.lua
 Data.lua
+Update.lua
 Census.lua
 Relay.lua
 Chat.lua

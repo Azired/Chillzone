@@ -143,6 +143,7 @@ local DB_DEFAULTS = {
 	realms = {},
 	log = {},
 	errors = {},
+	versions = {}, -- версии новее моей, которые называли другие игроки (Update.lua)
 }
 
 local CHAR_DEFAULTS = {
