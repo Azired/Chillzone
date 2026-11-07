@@ -303,6 +303,7 @@ function Chat.Send(tier, text)
 				seen[ns.myKey .. "#" .. id .. "#" .. textPart] = now
 				Chat.Show(tier, guild, ns.me, class, textPart)
 				Chat.stats.sent = Chat.stats.sent + 1
+				ns.SafeCall("guild mirror", ns.GuildChat.Mirror, tier, textPart)
 			end)
 			if not ok then
 				Failed(why)
