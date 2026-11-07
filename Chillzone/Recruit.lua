@@ -337,7 +337,8 @@ function Recruit.OnJoinRequest(msg, sender, dist, ctx)
 	for i = #lineTimes, 1, -1 do if now - lineTimes[i] >= 60 then table.remove(lineTimes, i) end end
 	if #lineTimes < 6 then
 		lineTimes[#lineTimes + 1] = now
-		ns.Print(L.RECRUIT_RECEIVED, U.Display(sender), req.guild)
+		local officer = ns.RecruitSync and ns.RecruitSync.IsOfficer()
+		ns.Print(officer and L.RECRUIT_RECEIVED or L.RECRUIT_RECEIVED_MEMBER, U.Display(sender), req.guild)
 	end
 	Changed()
 	return true
