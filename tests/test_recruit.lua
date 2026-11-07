@@ -89,8 +89,39 @@ T.test("заявки: не беспокоить закрывает уже отк
 	T.no(R.pending)
 	T.no(c.R.ns.RecruitPane.frames.dialog:IsShown())
 	T.no(R.Ask(contact, "не должно уйти"))
-	T.eq(R.NextContact("Чиллзон Север").name, c.M.ns.me)
+	T.no(R.NextContact("Чиллзон Север"), "рядовой не предлагается вместо офицера")
 	T.eq(#c.O.ns.Recruit.requests, 0)
+	Errors(c)
+end)
+
+T.test("заявки: поиск показывает офицеров, рядовым просьба не уходит", function()
+	local w, c = Build()
+	c.R:Slash("/chillzone")
+	Search(w, c)
+	local R, U = c.R.ns.Recruit, c.R.ns.Util
+	local asked = {}
+	for _, entry in ipairs(w.log) do
+		if entry.from == "Новый Игрок" and entry.msg:find("J1~1", 1, true) then asked[entry.target] = true end
+	end
+	T.ok(asked[c.K:Name()], "J1 участнику второй гильдии")
+	T.ok(asked[c.O:Name()] and asked[c.M:Name()], "J1 нескольким из гильдии без известных офицеров")
+	-- Ответы J2 складываются: ответ Короля (своя гильдия без контактов) не стирает офицеров Севера.
+	local officers = R.Officers("Чиллзон Север")
+	T.eq(#officers, 1, "только глава, рядовой Миша не офицер")
+	T.eq(U.Key(officers[1].name), U.Key(c.O:Name()))
+	T.eq(#R.Officers("Чиллзон"), 0, "Король не адресат")
+	local guilds = R.Guilds()
+	T.eq(guilds[1].name, "Чиллзон Север", "гильдия с офицерами — первой")
+	T.ok(guilds[1].free and guilds[2].free, "места известны для обеих гильдий")
+	local rows = c.R.ns.RecruitPane.guildRows
+	T.ok(rows[1].sub:GetText():find(U.Display(c.O:Name()), 1, true), "в строке гильдии — имя офицера")
+	T.no(rows[1].sub:GetText():find(U.Display(c.M:Name()), 1, true), "рядового в строке нет")
+	T.ok(rows[2].sub:GetText():find(c.R.ns.L.RECRUIT_OFFICERS_UNKNOWN, 1, true))
+	T.eq(rows[2].ask:GetText(), c.R.ns.L.RECRUIT_NO_OFFICERS, "без офицеров писать некому")
+	T.no(R.NextContact("Чиллзон"))
+	R.asked[U.Key(c.O:Name())] = w.now
+	T.no(R.NextContact("Чиллзон Север"), "после главы рядовому не пишем")
+	T.no(R.NextContact())
 	Errors(c)
 end)
 

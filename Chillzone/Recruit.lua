@@ -1,12 +1,18 @@
 -- Chillzone: вступление через адресный шёпот. Адаптация Olympus Recruit.lua (MIT),
 -- коммит c1064682a74396be4904040b6ee709187019861a. J1/J2 — подсказка маршрута,
--- J3 — просьба выбранному участнику. Они не дают прав в подписанной сети.
+-- J3 — просьба офицеру гильдии. Они не дают прав в подписанной сети.
+-- В отличие от Olympus, просьба уходит только главе или офицеру: рядового, которого
+-- нашёл /who, новичку не предлагаем. Ранг чужой гильдии новичку не виден, поэтому
+-- офицеров называет только подсказка J2, и только найденных /who в этой гильдии.
 local ADDON, ns = ...
 
 local U, L, Codec = ns.Util, ns.L, ns.Codec
 local Recruit = {
 	ASK_COOLDOWN = 20, ROUTE_WAIT = 60, ROUTE_KEEP = 1800, REQUEST_EACH = 600,
 	REQUESTS_SHOWN = 5, RECENT_MAX = 128,
+	-- J1 за один поиск, пауза между такими пачками, повтор тому же участнику,
+	-- офицеров гильдии из всех ответов J2, имён офицеров в строке гильдии.
+	ROUTE_ASKS = 3, ROUTE_GAP = 15, ROUTE_FRESH = 600, ROUTE_CONTACTS = 6, OFFICERS_SHOWN = 3,
 	found = {}, asked = {}, replied = {}, replyNames = {}, requests = {},
 }
 ns.Recruit = Recruit
@@ -48,6 +54,20 @@ function Recruit.Route()
 	return r and ns.Now() - r.t <= Recruit.ROUTE_KEEP and r or nil
 end
 
+-- Глава и офицеры гильдии в игре: их назвала подсказка J2, а /who нашёл в этой гильдии.
+-- Кто отключил обращения, сюда не попадает.
+function Recruit.Officers(guild)
+	local out, seen = {}, {}
+	local route = Recruit.Route()
+	local hint = route and route.byName[U.GuildKey(guild)]
+	for _, name in ipairs(hint and hint.contacts or {}) do
+		local p = Found(name, guild)
+		local key = p and U.Key(p.name)
+		if key and not seen[key] and not dnc[key] then seen[key], out[#out + 1] = true, p end
+	end
+	return out
+end
+
 function Recruit.Guilds()
 	local out, by, route = {}, {}, Recruit.Route()
 	if not ns.Who.Fresh() then return out end
@@ -60,14 +80,19 @@ function Recruit.Guilds()
 		end
 		by[key].members[#by[key].members + 1] = p
 	end
+	for _, g in ipairs(out) do g.officers = Recruit.Officers(g.name) end
 	table.sort(out, function(a, b)
+		if (#a.officers > 0) ~= (#b.officers > 0) then return #a.officers > 0 end
 		if (a.free or -1) ~= (b.free or -1) then return (a.free or -1) > (b.free or -1) end
+		if #a.officers ~= #b.officers then return #a.officers > #b.officers end
 		if #a.members ~= #b.members then return #a.members > #b.members end
 		return a.name < b.name
 	end)
 	return out
 end
 
+-- Следующий офицер гильдии, которому ещё не писали (без guild — любой гильдии). Рядовых
+-- не предлагаем: без офицеров в подсказке писать некому.
 function Recruit.NextContact(guild)
 	if not guild then
 		for _, g in ipairs(Recruit.Guilds()) do
@@ -76,17 +101,8 @@ function Recruit.NextContact(guild)
 		end
 		return nil
 	end
-	local function Available(p)
-		return p and not Recruit.asked[U.Key(p.name)] and not dnc[U.Key(p.name)]
-	end
-	local route = Recruit.Route()
-	local hint = route and route.byName[U.GuildKey(guild)]
-	for _, name in ipairs(hint and hint.contacts or {}) do
-		local p = Found(name, guild)
-		if Available(p) then return p end
-	end
-	for _, p in ipairs(Recruit.found) do
-		if Found(p.name, guild) and Available(p) then return p end
+	for _, p in ipairs(Recruit.Officers(guild)) do
+		if not Recruit.asked[U.Key(p.name)] then return p end
 	end
 	return nil
 end
@@ -109,6 +125,20 @@ function Recruit.OnRoute(msg, sender, dist, ctx)
 				if #contacts < 2 and #name <= 120 then contacts[#contacts + 1] = name end
 			end
 			r.byName[U.GuildKey(guild)], n = { free = free, contacts = contacts }, n + 1
+		end
+	end
+	-- Ответы разных участников складываются: каждый точно знает офицеров только своей гильдии.
+	local old = n > 0 and Recruit.Route()
+	for gk, e in pairs(old and old.byName or {}) do
+		local cur = r.byName[gk]
+		if not cur then
+			r.byName[gk] = e
+		else
+			for _, name in ipairs(e.contacts) do
+				local dup = #cur.contacts >= Recruit.ROUTE_CONTACTS
+				for _, have in ipairs(cur.contacts) do dup = dup or U.Key(have) == U.Key(name) end
+				if not dup then cur.contacts[#cur.contacts + 1] = name end
+			end
 		end
 	end
 	if n > 0 or not Recruit.Route() then Recruit.route = r end
@@ -320,16 +350,30 @@ function Recruit.OnWhisper(text, sender)
 	end
 end
 ns.RegisterEvent("CHAT_MSG_WHISPER", Recruit.OnWhisper)
-ns.On("WHO", function(list)
-	Recruit.found = list
-	if not ns.IsMember() and ns.Now() - lastRoute >= 15 then
-		for _, p in ipairs(list) do
-			if not routeAsked[U.Key(p.name)] or ns.Now() - routeAsked[U.Key(p.name)] > 600 then
-				if AskRoute(p.name) then lastRoute = ns.Now() end
-				break
+-- Аддон есть не у каждого найденного, а офицеров своей гильдии знает только её участник.
+-- Поэтому J1 уходит нескольким: сначала по одному из гильдий, чьих офицеров ещё не знаем,
+-- затем ещё участникам тех же гильдий. Гильдии с известными офицерами не спрашиваем.
+local function AskRoutes()
+	local now = ns.Now()
+	if ns.IsMember() or now - lastRoute < Recruit.ROUTE_GAP then return end
+	local need, tried, sent = {}, {}, 0
+	for _, g in ipairs(Recruit.Guilds()) do
+		if #g.officers == 0 then need[U.GuildKey(g.name)] = true end
+	end
+	for pass = 1, 2 do
+		for _, p in ipairs(Recruit.found) do
+			local gk, at = U.GuildKey(p.guild), routeAsked[U.Key(p.name)]
+			if sent < Recruit.ROUTE_ASKS and need[gk] and (pass == 2 or not tried[gk])
+				and not (at and now - at <= Recruit.ROUTE_FRESH) and AskRoute(p.name) then
+				sent, tried[gk], lastRoute = sent + 1, true, now
 			end
 		end
 	end
+end
+
+ns.On("WHO", function(list)
+	Recruit.found = list
+	AskRoutes()
 	Changed()
 end)
 ns.On("GUILD_CHANGED", function()

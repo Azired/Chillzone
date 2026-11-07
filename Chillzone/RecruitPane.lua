@@ -3,9 +3,9 @@
 local ADDON, ns = ...
 
 local L, U, R = ns.L, ns.Util, ns.Recruit
-local Pane = { frames = {}, requestRows = {} }
+local Pane = { frames = {}, requestRows = {}, guildRows = {} }
 ns.RecruitPane = Pane
-local guildRows, replyRows = {}, {}
+local guildRows, replyRows = Pane.guildRows, {}
 local pane, child, note, requestHeader, requestMore
 
 local function Label(parent, x, y, width, font)
@@ -42,6 +42,15 @@ function Pane.Build(parent)
 	return pane
 end
 
+-- Строка под названием гильдии: офицеры в игре (первые несколько) и свободные места.
+local function GuildLine(g)
+	local names = {}
+	for i = 1, math.min(#g.officers, R.OFFICERS_SHOWN) do names[i] = U.Display(g.officers[i].name) end
+	local list = #names > 0 and table.concat(names, ", ") or L.RECRUIT_OFFICERS_UNKNOWN
+	if #g.officers > R.OFFICERS_SHOWN then list = L.RECRUIT_OFFICERS_MORE:format(list, #g.officers - R.OFFICERS_SHOWN) end
+	return L.RECRUIT_GUILD:format(list, g.free and tostring(g.free) or "?")
+end
+
 function Pane.Render()
 	if not pane then return end
 	local guilds, y = R.Guilds(), 0
@@ -57,7 +66,7 @@ function Pane.Render()
 			row.sub = Label(row, 0, 23, 480)
 			row.ask = Button(row, L.RECRUIT_ASK, 210, function()
 				local p = R.NextContact(row.guild)
-				if p then R.Prompt(p) else ns.Print(L.RECRUIT_NOBODY) end
+				if p then R.Prompt(p) else ns.Print(#R.Officers(row.guild) > 0 and L.RECRUIT_NOBODY or L.RECRUIT_NO_OFFICERS) end
 			end)
 			row.ask:SetPoint("TOPRIGHT", 0, -5)
 			guildRows[i] = row
@@ -66,9 +75,9 @@ function Pane.Render()
 		row:ClearAllPoints()
 		row:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -y)
 		row.title:SetText(ns.Codec.Plain(g.name))
-		row.sub:SetText(L.RECRUIT_GUILD:format(#g.members, g.free and tostring(g.free) or "?"))
+		row.sub:SetText(GuildLine(g))
 		local contact = R.NextContact(g.name)
-		row.ask:SetText(contact and L.RECRUIT_ASK or L.RECRUIT_NOBODY)
+		row.ask:SetText(contact and L.RECRUIT_ASK or (#g.officers > 0 and L.RECRUIT_NOBODY or L.RECRUIT_NO_OFFICERS))
 		row.ask:SetEnabled(contact ~= nil)
 		row:Show()
 		y = y + 54
