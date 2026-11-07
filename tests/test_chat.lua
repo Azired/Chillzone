@@ -53,6 +53,145 @@ local function Errors(c)
 	end
 end
 
+local function SlashClient(rank)
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	local c = w:Client({ first = "Автор", surname = "Чата", guild = "Чиллзон", rank = rank or 0 })
+	return w, c
+end
+
+T.test("slash: управление только через /chillzone, алиасы всегда пишут в чат", function()
+	local _, c = SlashClient()
+	local sent = {}
+	c.ns.Chat.Send = function(tier, text) sent[#sent + 1] = { tier, text } end
+	c:Slash("/chillzone", "settings")
+	T.eq(c.ns.UI.Current(), "settings")
+	c:Slash("/chillzone", "status")
+	T.ok(c:Saw("перепись: репортёр") > 0)
+	c:Slash("/chillzone", "нетакой")
+	T.eq(#sent, 0, "неизвестная команда управления не уходит в чат")
+	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон" }) do
+		c:Slash(cmd, "settings")
+		T.same(sent[#sent], { "A", "settings" }, cmd .. " не перехватывает слово команды")
+		c:Slash(cmd, "")
+		T.eq(c.ns.UI.Current(), "chat")
+		T.eq(c.ns.ChatPane.Current(), "A")
+		T.ok(c.ns.ChatPane.frames.box:HasFocus())
+	end
+	T.eq(#sent, 3)
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("slash: пробел переключает все алиасы и переносит вставленный текст", function()
+	local w, c = SlashClient()
+	local aliases = { ["/cz"] = "A", ["/чз"] = "A", ["/чиллзон"] = "A",
+		["/cz1"] = "A", ["/чз1"] = "A", ["/cz2"] = "C", ["/чз2"] = "C", ["/cz3"] = "L", ["/чз3"] = "L", ["/ЧЗ2"] = "C" }
+	local opens, open = 0, c.ns.UI.OpenChat
+	c.ns.UI.OpenChat = function(...) opens = opens + 1; return open(...) end
+	for cmd, tier in pairs(aliases) do
+		local game = c.env.ChatFrame2EditBox
+		game:Show(); game:SetFocus(); game:SetText(cmd)
+		game.scripts.OnTextChanged(game, true)
+		w:Run(0)
+		T.ok(game:HasFocus(), cmd .. " ждёт пробела")
+		game:SetText(cmd .. " ")
+		game.scripts.OnTextChanged(game, true)
+		game:SetText(cmd .. " привет " .. LINK)
+		game.scripts.OnTextChanged(game, true)
+		w:Run(0)
+		T.eq(c.ns.ChatPane.Current(), tier, cmd)
+		local box = c.ns.ChatPane.frames.box
+		T.ok(box:HasFocus(), cmd .. " переводит курсор")
+		T.eq(box:GetText(), "привет " .. LINK, cmd .. " переносит текст и ссылку")
+		T.eq(game:GetText(), cmd .. " привет " .. LINK, "аддон не меняет текст игрового поля")
+		box:SetText(""); box.scripts.OnTextChanged(box, true)
+	end
+	T.eq(opens, 10, "по одному переключению, несмотря на несколько изменений текста")
+	T.eq(c.ns.Chat.stats.sent, 0, "переключение ничего не отправляет")
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("slash: отмена, чужие команды и программный текст не крадут фокус", function()
+	local w, c = SlashClient()
+	local game = c.env.ChatFrame1EditBox
+	for _, text in ipairs({ "/chillzone settings ", "/cz4 ", "/czfoo ", "/cast Заклинание ", "текст /cz " }) do
+		game:Show(); game:SetFocus(); game:SetText(text)
+		game.scripts.OnTextChanged(game, true)
+		w:Run(0)
+		T.ok(game:HasFocus(), text)
+	end
+	game:SetText("/cz "); game.scripts.OnTextChanged(game, false)
+	w:Run(0)
+	T.ok(game:HasFocus(), "программная установка не переключает")
+	game.scripts.OnTextChanged(game, true)
+	game:SetText("/cast Заклинание")
+	w:Run(0)
+	T.ok(game:HasFocus(), "исправленная команда отменяет отложенное переключение")
+	game:SetText("/cz "); game.scripts.OnTextChanged(game, true)
+	game:ClearFocus(); game:Hide()
+	w:Run(0)
+	T.eq(c.ns.UI.Current(), nil, "закрытое поле не открывает окно позже")
+end)
+
+T.test("slash: недоступный канал не заменяется чатом своей гильдии", function()
+	local w, c = SlashClient(3)
+	local game = c.env.ChatFrame1EditBox
+	game:Show(); game:SetFocus(); game:SetText("/чз2 ")
+	game.scripts.OnTextChanged(game, true)
+	w:Run(0)
+	T.ok(game:HasFocus())
+	T.eq(c.ns.UI.Current(), nil)
+	T.ok(c:Saw("можно писать только с нужным рангом") > 0)
+	game:SetText("/чз2 сообщение"); game.scripts.OnTextChanged(game, true)
+	w:Run(0)
+	T.eq(c:Saw("можно писать только с нужным рангом"), 1, "отказ не повторяется при каждом символе")
+	c:Slash("/cz3", "")
+	T.eq(c.ns.UI.Current(), nil)
+end)
+
+T.test("slash: пустой переход сохраняет черновик и не пишет в игровое поле", function()
+	local w, c = SlashClient()
+	c.ns.UI.OpenChat("A", true)
+	local box = c.ns.ChatPane.frames.box
+	box:SetText("черновик "); box.scripts.OnTextChanged(box, true)
+	local game = c.env.ChatFrame1EditBox
+	game:Show(); game:SetFocus(); game:SetText("/cz ")
+	game.scripts.OnTextChanged(game, true)
+	local function Forbidden() error("запись в игровое поле") end
+	game.SetText, game.SetAttribute, game.Hide, game.ClearFocus, game.SetScript = Forbidden, Forbidden, Forbidden, Forbidden, Forbidden
+	w:Run(0)
+	T.ok(box:HasFocus())
+	T.eq(box:GetText(), "черновик ")
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("slash: Enter до таймера отправляет один раз, геймпад не теряет ввод, бой допускает переход", function()
+	local w, c = SlashClient()
+	local game = c.env.ChatFrame1EditBox
+	game:Show(); game:SetFocus(); game:SetText("/cz сообщение")
+	game.scripts.OnTextChanged(game, true)
+	local sent = 0
+	c.ns.Chat.Send = function() sent = sent + 1 end
+	c:Slash("/cz", "сообщение")
+	game:ClearFocus(); game:Hide()
+	w:Run(0)
+	T.eq(sent, 1)
+	T.eq(c.ns.UI.Current(), nil, "переход после отправки отменён")
+	game:Show(); game:SetFocus(); game:SetText("/cz ")
+	local gamepad = c.ns.ChatPane.Gamepad
+	c.ns.ChatPane.Gamepad = function() return true end
+	game.scripts.OnTextChanged(game, true)
+	w:Run(0)
+	T.ok(game:HasFocus(), "геймпад")
+	c.ns.ChatPane.Gamepad = gamepad
+	c.combat = true
+	game.scripts.OnTextChanged(game, true)
+	w:Run(0)
+	T.eq(c.ns.ChatPane.Current(), "A")
+	T.ok(c.ns.ChatPane.frames.box:HasFocus())
+	T.eq(#c.ns.db.errors, 0)
+end)
+
 T.test("окно: каналы по рангу", function()
 	local _, c = Build({ run = 60 })
 	local function chans(cl) return table.concat(cl.ns.Chat.Channels(), ",") end
@@ -285,12 +424,12 @@ T.test("окно: вкладка «Отладка» — главам и офиц
 	M.ns.UI.Toggle("debug")
 	T.eq(M.ns.UI.Current(), "chat", "рядовому вместо «Отладки» — чат")
 	T.no(M.ns.UI.tabs.debug:IsShown(), "значка у рядового нет")
-	M:Slash("/cz", "diag")
+	M:Slash("/chillzone", "diag")
 	T.ok(M:Saw("только для глав и офицеров") >= 1, "команда рядовому отказывает")
 	T.eq(M.ns.UI.Current(), "chat", "окно осталось на чате")
-	B:Slash("/чз", "diag")
+	B:Slash("/chillzone", "diag")
 	T.ok(B:Saw("только для глав и офицеров") >= 1, "«Ветеран» Севера без флага — тоже нет")
-	V:Slash("/чз", "diag")
+	V:Slash("/chillzone", "diag")
 	T.eq(V.ns.UI.Current(), "debug", "глава Севера видит «Отладку»")
 
 	-- Что видно: реле, через кого шлю, регистрации у реле, отчёты.

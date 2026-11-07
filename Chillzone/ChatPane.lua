@@ -403,6 +403,14 @@ function ChatPane.Focus()
 	if box and shown then box:SetFocus() end
 end
 
+-- Дописать в наш черновик текст, вставленный вместе с короткой командой в чат игры.
+function ChatPane.Insert(text)
+	if box and shown then
+		box:Insert(text)
+		Drafts()[current] = box:GetText()
+	end
+end
+
 ---------------------------------------------------------------------------
 -- Enter при открытом окне — в наше поле (как в Olympus ChatWindow.lua:2721-2766)
 ---------------------------------------------------------------------------

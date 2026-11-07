@@ -1,4 +1,4 @@
--- Chillzone: ядро — события, таймеры, сохранённые данные, кто я, команды /cz.
+-- Chillzone: ядро — события, таймеры, сохранённые данные, кто я, команды /chillzone.
 -- Шина событий и таймеры устроены как в Olympus Core.lua.
 local ADDON, ns = ...
 
@@ -224,8 +224,7 @@ function ns.IsMember()
 end
 
 ---------------------------------------------------------------------------
--- Команды: /cz <команда> [аргументы]. /чз — то же на кириллице (как в ChillZoneUnion).
--- Текст, который не начинается с команды, уходит в общий чат, как /cz1.
+-- Управление: /chillzone <команда> [аргументы]. Короткие алиасы принадлежат чату.
 ---------------------------------------------------------------------------
 local commands, order = {}, {}
 function ns.Command(name, fn, help)
@@ -234,7 +233,7 @@ function ns.Command(name, fn, help)
 end
 
 local statusLines = {}
--- Модули добавляют свои строки в /cz status.
+-- Модули добавляют свои строки в /chillzone status.
 function ns.Status(fn)
 	statusLines[#statusLines + 1] = fn
 end
@@ -243,7 +242,7 @@ ns.Command("help", function()
 	ns.Print(L.HELP_HEADER)
 	for _, name in ipairs(order) do
 		local c = commands[name]
-		if c.help then DEFAULT_CHAT_FRAME:AddMessage("  " .. ns.COLOR .. "/cz " .. name .. "|r — " .. c.help) end
+		if c.help then DEFAULT_CHAT_FRAME:AddMessage("  " .. ns.COLOR .. "/chillzone " .. name .. "|r — " .. c.help) end
 	end
 	DEFAULT_CHAT_FRAME:AddMessage("  " .. ns.COLOR .. "/cz1 /cz2 /cz3|r — " .. L.HELP_CHAT)
 	DEFAULT_CHAT_FRAME:AddMessage("  " .. ns.COLOR .. "/cz текст|r — " .. L.HELP_CHAT_TEXT)
@@ -278,10 +277,7 @@ ns.Command("log", function(arg)
 	for i = 1, math.min(3, #(ns.db.errors or {})) do DEFAULT_CHAT_FRAME:AddMessage("|cffff6060" .. ns.db.errors[i] .. "|r") end
 end, L.HELP_LOG)
 
-SLASH_CHILLZONE1 = "/cz"
-SLASH_CHILLZONE2 = "/chillzone"
-SLASH_CHILLZONE3 = "/чз"
-SLASH_CHILLZONE4 = "/чиллзон"
+SLASH_CHILLZONE1 = "/chillzone"
 SlashCmdList.CHILLZONE = function(msg)
 	if not ns.me then return end
 	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
@@ -291,9 +287,6 @@ SlashCmdList.CHILLZONE = function(msg)
 		name = "help"
 	end
 	local c = commands[name]
-	if not c then
-		ns.SafeCall("/cz текст", ns.Chat.Send, "A", U.Trim(msg))
-		return
-	end
-	ns.SafeCall("/cz " .. name, c.fn, rest)
+	if not c then c = commands.help end
+	ns.SafeCall("/chillzone " .. name, c.fn, rest)
 end

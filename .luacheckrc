@@ -18,9 +18,6 @@ ignore = { "211/ADDON" }
 globals = {
 	"ChillzoneDB",
 	"SLASH_CHILLZONE1",
-	"SLASH_CHILLZONE2",
-	"SLASH_CHILLZONE3",
-	"SLASH_CHILLZONE4",
 	"SlashCmdList",
 }
 

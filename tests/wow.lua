@@ -37,10 +37,10 @@ function World:Run(seconds)
 	self.now = stop
 end
 
--- Офицеры задают корни доверия своих гильдий (/cz trust init): раз на гильдию.
+-- Офицеры задают корни доверия своих гильдий (/chillzone trust init): раз на гильдию.
 function World:Init(...)
 	local list = { ... }
-	for _, c in ipairs(list) do assert(c.ns.Security.Init(), c:Name() .. ": /cz trust init отклонён") end
+	for _, c in ipairs(list) do assert(c.ns.Security.Init(), c:Name() .. ": /chillzone trust init отклонён") end
 	self:Run(12)
 	for _, c in ipairs(list) do
 		local root = c.ns.Security.Roots()[c.ns.Util.GuildKey(c.guild)]
@@ -166,7 +166,13 @@ local function NewFrame(c, name)
 	end
 	function methods.SetScript(self, k, fn) self.scripts[k] = fn end
 	function methods.GetScript(self, k) return self.scripts[k] end
-	function methods.HookScript(self, k, fn) self.scripts[k] = fn end
+	function methods.HookScript(self, k, fn)
+		local original = self.scripts[k]
+		self.scripts[k] = function(...)
+			if original then original(...) end
+			fn(...)
+		end
+	end
 	function methods.IsShown(self) return self.shown end
 	function methods.Show(self)
 		if self.shown then return end
@@ -333,8 +339,10 @@ local function Env(c)
 		c.filters[event] = c.filters[event] or {}
 		table.insert(c.filters[event], fn)
 	end
-	env.DEFAULT_CHAT_FRAME = { AddMessage = function(_, text) c.printed[#c.printed + 1] = text end }
-	env.NUM_CHAT_WINDOWS = 0
+	env.ChatFrame1EditBox = NewFrame(c, "ChatFrame1EditBox")
+	env.ChatFrame2EditBox = NewFrame(c, "ChatFrame2EditBox")
+	env.DEFAULT_CHAT_FRAME = { editBox = env.ChatFrame1EditBox, AddMessage = function(_, text) c.printed[#c.printed + 1] = text end }
+	env.NUM_CHAT_WINDOWS = 2
 	env.SlashCmdList = {}
 	env.UISpecialFrames = {}
 	env.RAID_CLASS_COLORS = {}

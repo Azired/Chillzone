@@ -61,7 +61,7 @@ T.test("security: expired and retired authority credentials fail closed", functi
     T.no(accepted, "retired root cannot regain authority through a cached certificate")
 end)
 
-T.test("security: после /cz trust reset чужой гильдии офицер снова подтверждает её корень", function()
+T.test("security: после /chillzone trust reset чужой гильдии офицер снова подтверждает её корень", function()
     local w, c = Build()
     -- Второй участник Ордена: отзыв (KF) и повторное подтверждение (KU, KT) доходят и до него.
     local D = w:Client({ first = "Дина", surname = "Дальняя", guild = "Орден Чиллзона", rank = 3 })
@@ -99,7 +99,7 @@ T.test("security: после /cz trust reset чужой гильдии офиц�
     w:Run(20)
     for _, cl in ipairs({ c.G, D }) do
         local root = cl.ns.Security.Roots()[gk]
-        T.eq(root and root.public, public, cl:Name() .. ": корень Севера принят по ответу на /cz link")
+        T.eq(root and root.public, public, cl:Name() .. ": корень Севера принят по ответу на /chillzone link")
     end
     -- Связь работает: строка Веры снова доходит до Ордена.
     c.V:Slash("/cz1", "снова на связи")

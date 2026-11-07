@@ -1,6 +1,6 @@
 -- Chillzone: ключи игроков, сертификаты от их гильдий и подпись пакетов от автора до получателя.
 -- Реле только переносят байты; ключи и права заверяют только глава и офицеры гильдии.
--- Корень доверия своей гильдии офицер задаёт вручную, один раз на гильдию: /cz trust init.
+-- Корень доверия своей гильдии офицер задаёт вручную, один раз на гильдию: /chillzone trust init.
 -- Подписанный пакет S1 несёт отпечаток сертификата автора, а сам сертификат приходит
 -- отдельно (KP, по запросу — KQ) и проверяется один раз. Отметка «проверен против корня»
 -- хранится в SavedVariables, поэтому после входа сертификаты не проверяются заново.
@@ -292,9 +292,9 @@ local function Unretire(gk, public)
     list[public] = nil
     if next(list) == nil then Store().retired[gk] = nil end
 end
--- Задать корень гильдии guild. Отозванный ключ (/cz trust reset) из каталога, от офицеров
+-- Задать корень гильдии guild. Отозванный ключ (/chillzone trust reset) из каталога, от офицеров
 -- (KT) и т. п. не принимается; confirmed — его явно подтвердил офицер здесь же
--- (/cz accept или ответ на свой /cz link): тогда отметка об отзыве снимается.
+-- (/chillzone accept или ответ на свой /chillzone link): тогда отметка об отзыве снимается.
 local function Pin(guild, name, public, confirmed)
     if not U.IsMemberGuild(guild) or not Name(name) then return false end
     local pk = Ed.FromB64(public)
@@ -536,7 +536,7 @@ ns.Comm.On("KF", function(msg, sender, dist)
     if guild then Forget(guild, public) end
 end)
 -- KU~гильдия~ключ: офицер своей гильдии явно подтвердил отозванный корень чужой гильдии
--- (/cz accept, /cz link). Принимается от тех же, от кого KF; сам корень приходит следом (KT).
+-- (/chillzone accept, /chillzone link). Принимается от тех же, от кого KF; сам корень приходит следом (KT).
 ns.Comm.On("KU", function(msg, sender, dist)
     if dist ~= "GUILD" or not ns.Roster.Fresh() or not ns.Roster.IsOfficerRank(ns.Roster.RankOf(sender)) then return end
     local guild, public = msg:match("^KU~([^~]+)~([%w_-]+)$")
@@ -613,7 +613,7 @@ function S.Link(name)
     return true
 end
 -- Офицер явно подтвердил корень чужой гильдии: гильдии — сначала что он больше не отозван
--- (KU: прежний /cz trust reset ушёл всем по KF), затем сам корень (KT).
+-- (KU: прежний /chillzone trust reset ушёл всем по KF), затем сам корень (KT).
 local function Confirmed(guild, public)
     ns.Comm.Send("GUILD", "KU~" .. guild .. "~" .. public, { prio = true, key = "unretire:" .. U.GuildKey(guild), guard = S.CanAdmin })
     ShareRoot(guild, Root(guild))
@@ -677,7 +677,7 @@ ns.Comm.On("K1", function(msg, sender, dist)
     end
     -- После перезагрузки имя то же. Ответить на объявление ключа, чтобы вошедший узнал
     -- репортёра-офицера раньше, чем примет RG, и корень гильдии раньше, чем офицер возьмётся
-    -- за /cz trust init.
+    -- за /chillzone trust init.
     if S.CanAdmin() and ns.Now() - lastNativeHello >= 5 then
         lastNativeHello = ns.Now()
         local root = Root(ns.MyGuild())
@@ -914,10 +914,10 @@ ns.On("GUILD_CHANGED", function()
 end)
 ns.Command("link", function(name)
     if not S.Link(U.Trim(name)) then ns.Print(ns.L.AUTH_NEED_OFFICER) end
-end, "соединить гильдии: /cz link Имя Фамилия (глава или офицер)")
+end, "соединить гильдии: /chillzone link Имя Фамилия (глава или офицер)")
 ns.Command("accept", function(name)
     if not S.Accept(U.Trim(name)) then ns.Print(ns.L.AUTH_NEED_OFFICER) end
-end, "подтвердить проверенное имя: /cz accept Имя Фамилия")
+end, "подтвердить проверенное имя: /chillzone accept Имя Фамилия")
 ns.Command("trust", function(arg)
     local cmd, rest = U.Trim(arg or ""):match("^(%S*)%s*(.-)$")
     cmd, rest = U.Fold(cmd or ""), U.Trim(rest or "")
@@ -932,7 +932,7 @@ ns.Command("trust", function(arg)
         if #list == 0 then ns.Print(ns.L.AUTH_NO_ROOTS) end
         for _, root in ipairs(list) do ns.Print(ns.L.AUTH_ROOT_LINE, root.guild, U.Display(root.name)) end
     end
-end, "доверие: /cz trust — корни; /cz trust init — задать корень своей гильдии (один раз); /cz trust reset Гильдия — после утраты ключа")
+end, "доверие: /chillzone trust — корни; /chillzone trust init — задать корень своей гильдии (один раз); /chillzone trust reset Гильдия — после утраты ключа")
 ns.Status(function()
     return ns.L.AUTH_STATUS:format(S.MyCertificate() and ns.L.YES or ns.L.NO, S.stats.verified, S.stats.rejected)
 end)
