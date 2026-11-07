@@ -87,6 +87,9 @@ function U.IsMemberGuild(guild)
 	if type(guild) ~= "string" or guild == "" then return false end
 	local C = ns.Config
 	local f = U.Fold(guild)
+	for _, g in ipairs(C.EXTRA_GUILDS or {}) do
+		if U.Fold(g) == f then return true end
+	end
 	if not f:find(U.Fold(C.GUILD_TOKEN), 1, true) then return false end
 	if C.GUILDS and #C.GUILDS > 0 then
 		for _, g in ipairs(C.GUILDS) do

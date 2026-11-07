@@ -8,6 +8,7 @@ local Who = { COOLDOWN = 10, TIMEOUT = 6, LATE = 30, ROUND_TTL = 900, MAX = 50, 
 ns.Who = Who
 Who.found = {}
 local lastSend, pending, roundAt, step, brackets = -math.huge, nil, nil, 0, nil
+local target = 1
 local byKey = {}
 local hooked, legacyHooked, sending = nil, false, false
 local lateUntil = -math.huge
@@ -61,11 +62,22 @@ function Who.Brackets(levels, maxLevel)
 	return out
 end
 
+-- Что ищет раунд по g-"...": сначала Config.GUILD_TOKEN, затем гильдии EXTRA_GUILDS, в
+-- названии которых его нет. У каждого запроса свои диапазоны уровней.
+function Who.Targets()
+	local C = ns.Config
+	local out, token = { C.GUILD_TOKEN }, U.Fold(C.GUILD_TOKEN)
+	for _, g in ipairs(C.EXTRA_GUILDS or {}) do
+		if not U.Fold(g):find(token, 1, true) then out[#out + 1] = g end
+	end
+	return out
+end
+
 function Who.IsPending() return pending ~= nil end
 function Who.Fresh() return roundAt ~= nil and ns.Now() - roundAt <= Who.ROUND_TTL end
 
 function Who.Reset()
-	pending, roundAt, step, brackets = nil, nil, 0, nil
+	pending, roundAt, step, brackets, target = nil, nil, 0, nil, 1
 	Who.found, byKey, Who.missing = {}, {}, false
 	Who.rangeCapped = nil
 	ns.Fire("WHO", Who.found)
@@ -111,10 +123,11 @@ function Who.Search()
 	if ns.IsMember() then return false end
 	local send = Ready()
 	if not send then return false end
-	if not Who.Fresh() or (brackets and step > #brackets) then Who.Reset() end
-	local query = ('g-"%s"'):format((ns.Config.GUILD_TOKEN:gsub('["%c]', "")))
+	local targets = Who.Targets()
+	if not Who.Fresh() or target > #targets then Who.Reset() end
+	local query = ('g-"%s"'):format((targets[target]:gsub('["%c]', "")))
 	if step > 0 and brackets then query = query .. (" %d-%d"):format(brackets[step][1], brackets[step][2]) end
-	return Send(send, query, { step = step })
+	return Send(send, query, { target = target, step = step })
 end
 
 -- Один игрок по имени (офицер из подсказки J2, которого не нашёл поиск по гильдии). Его
@@ -166,15 +179,16 @@ local function OnAnswer()
 		return
 	end
 	if p.step == 0 then
-		roundAt = ns.Now()
-		Who.missing = capped
+		if p.target == 1 then roundAt = ns.Now() end
 		brackets = capped and Who.Brackets(levels, maxLevel) or {}
 		step = 1
 	else
 		step = p.step + 1
 		Who.rangeCapped = Who.rangeCapped or capped
-		Who.missing = step <= #brackets or Who.rangeCapped or false
 	end
+	-- Диапазоны этого запроса пройдены: следующий щелчок ищет следующую гильдию.
+	if step > #brackets then target, step, brackets = p.target + 1, 0, nil end
+	Who.missing = target <= #Who.Targets() or Who.rangeCapped or false
 	ns.Fire("WHO", Who.found)
 end
 ns.RegisterEvent("WHO_LIST_UPDATE", OnAnswer)
