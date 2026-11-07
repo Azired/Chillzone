@@ -73,6 +73,12 @@ function World:AddOffline(guild, full, rank, level, class, days)
 	g.members[#g.members + 1] = { full = full, rank = rank, level = level or 60, class = class or "WARRIOR", days = days or 3 }
 end
 
+-- Согильдиец в игре без аддона: есть в ростере, но клиента у него нет.
+function World:AddOnline(guild, full, rank, level, class)
+	local g = self.guilds[guild]
+	g.members[#g.members + 1] = { full = full, rank = rank, level = level or 60, class = class or "WARRIOR", online = true }
+end
+
 local CLASS_LOCAL = { WARRIOR = "Воин", MAGE = "Маг", PRIEST = "Жрец", PALADIN = "Паладин", DRUID = "Друид", ROGUE = "Разбойник", HUNTER = "Охотник", WARLOCK = "Чернокнижник", SHAMAN = "Шаман" }
 
 ---------------------------------------------------------------------------
@@ -298,7 +304,9 @@ local function Env(c)
 				rows[#rows + 1] = { full = Stamp(o), rank = o.rank, level = o.level, class = o.class, online = o.online, zone = o.zone, days = 0 }
 			end
 		end
-		for _, m in ipairs(g.members) do rows[#rows + 1] = { full = m.full, rank = m.rank, level = m.level, class = m.class, online = false, days = m.days } end
+		for _, m in ipairs(g.members) do
+			rows[#rows + 1] = { full = m.full, rank = m.rank, level = m.level, class = m.class, online = m.online or false, days = m.days }
+		end
 		return rows
 	end
 	env.GetNumGuildMembers = function()

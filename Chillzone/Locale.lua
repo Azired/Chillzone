@@ -283,6 +283,10 @@ L.TIP_FROM_ROSTER = "из ростера гильдии"
 L.TIP_UPDATED = "обновлено %s"
 L.TIP_LEVEL = "Уровень %s"
 L.TIP_WROTE = "писал %s"
+L.TIP_ADDON_YES = "Аддон Chillzone: есть"
+L.TIP_ADDON_VERSION = "Аддон Chillzone: есть, версия %s"
+L.TIP_ADDON_NO = "Аддон Chillzone: нет"
+L.TIP_ADDON_UNKNOWN = "Аддон Chillzone: неизвестно"
 L.TIP_CLICK_WHISPER = "Щелчок — шёпот"
 
 -- Вступление и входящие заявки
