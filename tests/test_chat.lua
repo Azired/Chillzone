@@ -438,6 +438,11 @@ T.test("окно: «аддона нет» — только после минут
 	w:AddOnline("Чиллзон Север", "Без Аддона-CAMWOWUS2Realm7PvE", 3, 30, "MAGE")
 	local v = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
 	local b = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2 })
+	-- Проверяем приветы в уже подключённой гильдии, отдельно от протокола допуска.
+	for _, client in ipairs({ v, b }) do
+		client.ns.store.security.union[client.ns.Util.GuildKey(client.guild)] = { guild = client.guild, active = true }
+	end
+	v.ns.Roster.Scan() -- в симуляторе Борис добавлен после первого чтения ростера Веры
 	w:Run(20)
 	local key = v.ns.Util.Key
 	T.eq(v.ns.Census.Addon(key("Без Аддона")), nil, "сразу после входа — неизвестно")
