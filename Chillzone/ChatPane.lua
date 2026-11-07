@@ -39,6 +39,10 @@ local ROLE_ICON = {
 	officer = "Interface\\GroupFrame\\UI-Group-AssistantIcon",
 	active = "Interface\\GossipFrame\\GossipGossipIcon",
 }
+-- Отметка «есть аддон» в списке людей — значок Chillzone, как у кнопки у миникарты.
+local ADDON_ICON = "Interface\\Icons\\Spell_Nature_Tranquility"
+local ADDON_SIZE = 12
+local TEXT_RIGHT, TEXT_RIGHT_ADDON = -24, -24 - ADDON_SIZE - 2
 local TIP_LINKS = { item = true, spell = true, enchant = true, quest = true, talent = true }
 
 local pane, list, chatArea, messages, jump, box, prompt, title, scope, count, people, peopleChild, empty
@@ -264,9 +268,16 @@ local function PeopleRow(i)
 	r.text:SetJustifyH("LEFT")
 	r.text:SetWordWrap(false)
 	r.text:SetPoint("LEFT", 20, 0)
-	r.text:SetPoint("RIGHT", -24, 0)
+	r.text:SetPoint("RIGHT", TEXT_RIGHT, 0)
 	r.right = r:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	r.right:SetPoint("RIGHT", -4, 0)
+	-- Своя колонка между именем и уровнем: имя у тех, у кого аддон есть, короче на значок.
+	r.addon = r:CreateTexture(nil, "ARTWORK")
+	r.addon:SetSize(ADDON_SIZE, ADDON_SIZE)
+	r.addon:SetPoint("RIGHT", TEXT_RIGHT + 2, 0)
+	r.addon:SetTexture(ADDON_ICON)
+	if r.addon.SetMask then pcall(r.addon.SetMask, r.addon, "Interface\\CharacterFrame\\TempPortraitAlphaMask") end
+	r.addon:Hide()
 	r:SetScript("OnEnter", function(self)
 		if not self.person then return end
 		ns.SafeCall("person tip", Views.PersonTip, Tooltip(self), self.person)
@@ -289,6 +300,8 @@ function ChatPane.RenderPeople()
 		if p.header then
 			r.person = nil
 			r.icon:Hide()
+			r.addon:Hide()
+			r.text:SetPoint("RIGHT", TEXT_RIGHT, 0)
 			r.text:SetFontObject("GameFontNormalSmall")
 			r.text:SetText(Codec.Plain(p.guild or "?"))
 			r.right:SetText(tostring(p.count or ""))
@@ -303,6 +316,8 @@ function ChatPane.RenderPeople()
 				name = "|cff808080" .. name .. "|r"
 			end
 			r.text:SetText(name)
+			r.addon:SetShown(p.addon == true)
+			r.text:SetPoint("RIGHT", p.addon and TEXT_RIGHT_ADDON or TEXT_RIGHT, 0)
 			r.right:SetText(p.level and p.level > 0 and tostring(p.level) or "")
 			local icon = ROLE_ICON[p.role]
 			if icon then
@@ -637,7 +652,7 @@ function ChatPane.Build(host)
 		end
 	end)
 	pane:Hide()
-	ChatPane.frames = { pane = pane, messages = messages, box = box, keyButton = keyButton, entries = entries, title = title, scope = scope, prompt = prompt, count = count }
+	ChatPane.frames = { pane = pane, messages = messages, box = box, keyButton = keyButton, entries = entries, rows = rows, title = title, scope = scope, prompt = prompt, count = count }
 	return pane
 end
 
@@ -709,6 +724,7 @@ local function Dirty()
 end
 ns.On("DATA", Dirty)
 ns.On("ROSTER", Dirty)
+ns.On("PEERS", function() peopleDirty = true end)
 ns.On("GUILD_CHANGED", function()
 	if shown then ChatPane.Select(current) end
 end)

@@ -144,6 +144,7 @@ function Data.Summary(now)
 				guild = row.guild, r = row.r, mine = row.mine, main = U.IsMainGuild(row.guild),
 				fresh = fresh, recent = recent, age = now - (row.st or now), conflict = row.conflict,
 				online = fresh and row.r.online or nil, total = recent and row.r.total or nil,
+				origin = row.origin,
 			}
 		end
 	end

@@ -319,6 +319,74 @@ T.test("окно: люди справа", function()
 	Errors(c)
 end)
 
+T.test("окно: отметка аддона в списке людей", function()
+	local w, c = Build()
+	w:AddOnline("Чиллзон Север", "Без Аддона-CAMWOWUS2Realm7PvE", 3, 30, "MAGE")
+	c.B.ns.Roster.Scan()
+	c.M:Slash("/cz1", "я с аддоном")
+	w:Run(30)
+	local function find(list, name)
+		for _, p in ipairs(list) do
+			if not p.header and p.name == name then return p end
+		end
+	end
+	-- Своя гильдия — по приветам H1.
+	local guild = c.B.ns.Views.People("G")
+	local vera = find(guild, "Вера Верная")
+	T.ok(vera and vera.addon == true, "согильдиец с аддоном")
+	T.eq(vera.version, c.V.ns.VERSION, "версия из привета")
+	T.eq(find(guild, "Борис Быстрый").addon, true, "я сам")
+	T.eq(find(guild, "Без Аддона").addon, false, "в игре без привета — аддона нет")
+	-- Общий канал: свои — по приветам, чужие — если писали в общий канал или прислали отчёт.
+	local all = c.G.ns.Views.People("A")
+	T.eq(find(all, "Офицер Ордена").addon, nil, "согильдиец не в игре — неизвестно")
+	T.eq(find(all, "Мира Тихая").addon, true, "писала в общий канал")
+	local origin = c.G.ns.Data.Row("Чиллзон").origin
+	T.eq(find(all, origin).addon, true, "прислал отчёт переписи")
+	local other = origin == "Карл Великий" and "Арагорн Светлый" or "Карл Великий"
+	T.eq(find(all, other).addon, nil, "чужой без следов аддона — неизвестно")
+	-- Подсказка.
+	local lines = {}
+	local tt = setmetatable({ AddLine = function(_, t) lines[#lines + 1] = t end }, { __index = function() return function() end end })
+	local function tip(p)
+		lines = {}
+		c.B.ns.Views.PersonTip(tt, p)
+		return table.concat(lines, "\n")
+	end
+	T.ok(tip(vera):find("Аддон Chillzone: есть, версия " .. c.V.ns.VERSION, 1, true), "есть, с версией")
+	T.ok(tip(find(guild, "Без Аддона")):find("Аддон Chillzone: нет", 1, true), "нет")
+	T.ok(tip(find(all, other)):find("Аддон Chillzone: неизвестно", 1, true), "неизвестно")
+	T.eq(c.B.ns.Views.AddonText({ addon = true, version = "|cffff0000x|r" }), "Аддон Chillzone: есть, версия cffff0000xr", "версия — простой текст")
+	-- Значок в строке окна только у тех, у кого аддон есть.
+	c.B.ns.UI.OpenChat("G")
+	c.B.ns.ChatPane.RenderPeople()
+	local marked = {}
+	for _, r in ipairs(c.B.ns.ChatPane.frames.rows) do
+		if r:IsShown() and r.person then marked[r.person.name] = r.addon:IsShown() end
+	end
+	T.eq(marked["Вера Верная"], true, "значок у Веры")
+	T.eq(marked["Без Аддона"], false, "у согильдийца без аддона значка нет")
+	Errors(c)
+end)
+
+T.test("окно: «аддона нет» — только после минуты приветов", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон Север")
+	w:AddOnline("Чиллзон Север", "Без Аддона-CAMWOWUS2Realm7PvE", 3, 30, "MAGE")
+	local v = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	local b = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2 })
+	w:Run(20)
+	local key = v.ns.Util.Key
+	T.eq(v.ns.Census.Addon(key("Без Аддона")), nil, "сразу после входа — неизвестно")
+	local has, version = v.ns.Census.Addon(key(b:Name()))
+	T.ok(has == true and version == b.ns.VERSION, "привет от Бориса")
+	T.eq(v.ns.Census.Addon(key(v:Name())), true, "я сам")
+	w:Run(80)
+	T.eq(v.ns.Census.Addon(key("Без Аддона")), false, "за полторы минуты привета не было")
+	T.eq(v.ns.Census.Addon(key(b:Name())), true, "Борис по-прежнему с аддоном")
+	T.eq(#v.ns.db.errors, 0)
+end)
+
 T.test("окно: Enter при открытом окне и в бою", function()
 	local _, c = Build({ run = 60 })
 	local B = c.B
