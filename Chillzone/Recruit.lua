@@ -1,12 +1,13 @@
 -- Chillzone: вступление через адресный шёпот. Адаптация Olympus Recruit.lua (MIT),
 -- коммит c1064682a74396be4904040b6ee709187019861a. J1/J2 — подсказка маршрута,
--- J3 — просьба выбранному участнику. Они не дают прав в подписанной сети.
+-- J3 — просьба выбранному участнику, JT — явный текст письма для общей очереди.
+-- Они не дают прав в подписанной сети.
 local ADDON, ns = ...
 
 local U, L, Codec = ns.Util, ns.L, ns.Codec
 local Recruit = {
 	ASK_COOLDOWN = 20, ROUTE_WAIT = 60, ROUTE_KEEP = 1800, REQUEST_EACH = 600,
-	REQUESTS_SHOWN = 5, RECENT_MAX = 128,
+	RECENT_MAX = 128,
 	found = {}, asked = {}, replied = {}, replyNames = {}, requests = {},
 }
 ns.Recruit = Recruit
@@ -199,12 +200,19 @@ function Recruit.Ask(contact, message)
 	message = U.Cut(U.Trim(Codec.Plain(message)), 250)
 	if message == "" or ns.Comm.InLockdown() then return false end
 	local _, class = UnitClass("player")
+	if ns.Comm.QueueSize() > ns.Comm.MAX_QUEUE - 2 then ns.Print(L.RECRUIT_QUEUE_FULL); return false end
 	-- Очередь метаданных проверяем до обычного шёпота: полный буфер не создаёт дублей текста.
 	local ok = ns.Comm.Send("WHISPER", ("J3~%s~%d~%s"):format(Field(contact.guild), UnitLevel("player") or 0, Field(class)), {
 		target = contact.name, prio = true,
 		guard = function() return not ns.IsMember() and not dnc[key] and Found(contact.name, contact.guild) ~= nil end,
 	})
 	if not ok then return false end
+	-- J3 остаётся прежним для совместимости. JT содержит именно текст просьбы:
+	-- его можно передать офицерам, не читая обычную личную переписку новичка.
+	ns.Comm.Send("WHISPER", ("JT~1~%s~%d~%s~%s"):format(Field(contact.guild), UnitLevel("player") or 0, Field(class), message), {
+		target = contact.name, prio = true, logged = true,
+		guard = function() return not ns.IsMember() and not dnc[key] and Found(contact.name, contact.guild) ~= nil end,
+	})
 	SendChatMessage(message, "WHISPER", nil, U.TellName(contact.name))
 	lastAsk, Recruit.asked[key] = now, now
 	Recruit.Cancel()
@@ -217,14 +225,24 @@ local function Prune()
 	local now, own = ns.Now(), ns.MyGuild()
 	for i = #Recruit.requests, 1, -1 do
 		local r = Recruit.requests[i]
-		if r.guild ~= own or not ns.IsMember()
-			or (ns.Roster.Fresh() and ns.Roster.RankOf(r.name) ~= nil) then table.remove(Recruit.requests, i) end
+		local joined = ns.Roster.Fresh() and ns.Roster.RankOf(r.name) ~= nil
+		local revoked = ns.Roster.Fresh() and ns.RecruitSync and not ns.RecruitSync.IsOfficer()
+			and r.origin and not ns.IsMe(r.origin)
+		if r.guild ~= own or not ns.IsMember() or joined or revoked then
+			table.remove(Recruit.requests, i)
+			if joined and r.guild == own and ns.IsMember() and ns.RecruitSync then ns.RecruitSync.Joined(r) end
+		end
 	end
 	for key, at in pairs(requestAt) do if now - at >= Recruit.REQUEST_EACH then requestAt[key] = nil end end
 end
 local function Drop(req)
 	for i, r in ipairs(Recruit.requests) do
-		if r == req then table.remove(Recruit.requests, i); Changed(); return true end
+		if r == req then
+			table.remove(Recruit.requests, i)
+			if ns.RecruitSync then ns.RecruitSync.Closed(req) end
+			Changed()
+			return true
+		end
 	end
 	return false
 end
@@ -252,6 +270,7 @@ function Recruit.OnJoinRequest(msg, sender, dist, ctx)
 	local req = { name = U.Normal(sender), guild = ns.MyGuild(), level = level, class = class, t = now,
 		text = w and now - w.t <= 120 and w.text or nil }
 	Recruit.requests[#Recruit.requests + 1] = req
+	if ns.RecruitSync then ns.RecruitSync.Publish(req) end
 	for i = #lineTimes, 1, -1 do if now - lineTimes[i] >= 60 then table.remove(lineTimes, i) end end
 	if #lineTimes < 6 then
 		lineTimes[#lineTimes + 1] = now
@@ -261,6 +280,30 @@ function Recruit.OnJoinRequest(msg, sender, dist, ctx)
 	return true
 end
 ns.Comm.On("J3", Recruit.OnJoinRequest)
+
+-- Новые отправители явно передают письмо отдельно от обычных шёпотов. Пакет может
+-- прийти раньше J3: в нём есть всё необходимое для той же проверки и создания заявки.
+function Recruit.OnText(msg, sender, dist, ctx)
+	if dist ~= "WHISPER" or ctx or not ns.IsMember() or not ns.Roster.Fresh() or #msg > 1000 then return false end
+	local guild, level, class, text = msg:match("^JT~1~([^~]+)~(%d+)~([A-Z]*)~(.*)$")
+	if not guild or U.GuildKey(guild) ~= U.GuildKey(ns.MyGuild()) or #text > 250 then return false end
+	text = U.Trim(Codec.Plain(text))
+	if text == "" then return false end
+	local req
+	for _, candidate in ipairs(Recruit.Requests()) do
+		if U.SameName(candidate.name, sender) and ns.IsMe(candidate.origin) then req = candidate end
+	end
+	if not req then
+		if not Recruit.OnJoinRequest(("J3~%s~%s~%s"):format(guild, level, class), sender, dist) then return false end
+		req = Recruit.requests[#Recruit.requests]
+	end
+	if req.sharedText ~= nil or req.level ~= tonumber(level) or req.class ~= class then return false end
+	req.text, req.sharedText = text, text
+	if ns.RecruitSync then ns.RecruitSync.Publish(req) end
+	Changed()
+	return true
+end
+ns.Comm.On("JT", Recruit.OnText)
 
 function Recruit.CanInvite()
 	return ns.IsMember() and type(CanGuildInvite) == "function" and CanGuildInvite() and true or false
@@ -299,6 +342,40 @@ end
 function Recruit.Dismiss(req) return Current(req) and Drop(req) end
 function Recruit.Requests() Prune(); return Recruit.requests end
 
+-- У одного новичка одна строка, даже если он написал нескольким участникам.
+function Recruit.AddShared(req)
+	for i, old in ipairs(Recruit.requests) do
+		if U.SameName(old.name, req.name) then
+			if old.id == req.id then
+				if (old.rev or 0) >= req.rev then return false end
+				old.text, old.sharedText, old.rev = req.text, req.sharedText, req.rev
+				Changed()
+				return true
+			end
+			if (old.created or 0) > req.created or ((old.created or 0) == req.created and (old.id or "") > req.id) then return false end
+			table.remove(Recruit.requests, i)
+			break
+		end
+	end
+	Recruit.requests[#Recruit.requests + 1] = req
+	Changed()
+	return true
+end
+function Recruit.RemoveShared(name, at)
+	local changed = false
+	for i = #Recruit.requests, 1, -1 do
+		local req = Recruit.requests[i]
+		if U.SameName(req.name, name) and (req.created or 0) <= at then table.remove(Recruit.requests, i); changed = true end
+	end
+	if changed then Changed() end
+end
+function Recruit.KeepLocal()
+	for i = #Recruit.requests, 1, -1 do
+		if not ns.IsMe(Recruit.requests[i].origin) then table.remove(Recruit.requests, i) end
+	end
+	Changed()
+end
+
 function Recruit.OnWhisper(text, sender)
 	if type(issecretvalue) == "function" and (issecretvalue(text) or issecretvalue(sender)) then return end
 	if type(text) ~= "string" or type(sender) ~= "string" then return end
@@ -310,7 +387,11 @@ function Recruit.OnWhisper(text, sender)
 		end
 		if count < 30 or whispers[key] then whispers[key] = { text = U.Cut(Codec.Plain(text), 250), t = now } end
 		for _, req in ipairs(Recruit.requests) do
-			if U.Key(req.name) == key and now - req.t <= 120 then req.text = U.Cut(Codec.Plain(text), 250); Changed() end
+			if U.Key(req.name) == key and now - req.t <= 120 and req.text == nil
+				and (not req.origin or ns.IsMe(req.origin)) then
+				req.text = U.Cut(Codec.Plain(text), 250)
+				Changed()
+			end
 		end
 	elseif Recruit.asked[key] then
 		Recruit.replied[key] = U.Cut(Codec.Plain(text), 250)
@@ -338,7 +419,7 @@ ns.On("GUILD_CHANGED", function()
 	routeAsked, dnc, answered, whispers, requestAt, lineTimes, answerTimes = {}, {}, {}, {}, {}, {}, {}
 	Changed()
 end)
-ns.On("ROSTER", Changed)
+ns.On("ROSTER", function() Prune(); Changed() end)
 ns.Command("nocontact", function(arg)
 	if arg ~= "on" and arg ~= "off" and arg ~= "" then ns.Print(L.HELP_NOCONTACT); return end
 	Recruit.SetNoContact(arg == "on" or (arg == "" and not Recruit.NoContactMe()))

@@ -29,6 +29,7 @@ Chat.lua
 GuildChat.lua
 Who.lua
 Recruit.lua
+RecruitSync.lua
 Views.lua
 ChatPane.lua
 RecruitPane.lua

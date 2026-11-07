@@ -1,4 +1,4 @@
--- Chillzone: экран вступления, собственное окно письма и заявки над карточкой переписи.
+-- Chillzone: экран вступления, собственное окно письма и отдельная вкладка заявок.
 -- Порядок действий — из Olympus Recruit.lua (MIT); игровые popup и поле чата не трогаем.
 local ADDON, ns = ...
 
@@ -6,7 +6,7 @@ local L, U, R = ns.L, ns.Util, ns.Recruit
 local Pane = { frames = {}, requestRows = {} }
 ns.RecruitPane = Pane
 local guildRows, replyRows = {}, {}
-local pane, child, note, requestHeader, requestMore
+local pane, child, note, inbox, inboxChild, inboxHint, inboxEmpty, inboxRefresh
 
 local function Label(parent, x, y, width, font)
 	local f = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
@@ -136,22 +136,43 @@ function Pane.ShowDialog(contact, message)
 	f.box:SetFocus()
 end
 
--- Возвращает высоту блока: карточка переписи начинается сразу под ним.
-function Pane.RenderRequests(parent)
-	local reqs = R.Requests()
-	if not requestHeader then
-		requestHeader = Label(parent, 0, 0, 486, "GameFontNormal")
-		requestMore = Label(parent, 0, 0, 486)
-	end
-	requestHeader:SetShown(#reqs > 0)
-	requestHeader:SetText(L.RECRUIT_REQUESTS:format(#reqs))
-	local y, count = #reqs > 0 and 24 or 0, 0
-	for i = #reqs, math.max(1, #reqs - R.REQUESTS_SHOWN + 1), -1 do
-		count = count + 1
+function Pane.BuildInbox(parent)
+	inbox = CreateFrame("Frame", nil, parent)
+	inbox:SetAllPoints(parent)
+	inboxHint = Label(inbox, 16, 14, 570)
+	inboxRefresh = Button(inbox, L.RECRUIT_REFRESH, 135, function() ns.RecruitSync.RequestSync() end)
+	inboxRefresh:SetPoint("TOPRIGHT", -16, -10)
+	local scroll = CreateFrame("ScrollFrame", nil, inbox, "UIPanelScrollFrameTemplate")
+	scroll:SetPoint("TOPLEFT", 16, -58)
+	scroll:SetPoint("BOTTOMRIGHT", -30, 12)
+	inboxChild = CreateFrame("Frame", nil, scroll)
+	inboxChild:SetSize(740, 10)
+	scroll:SetScrollChild(inboxChild)
+	inboxEmpty = Label(inboxChild, 0, 12, 730, "GameFontDisable")
+	inboxEmpty:SetText(L.RECRUIT_INBOX_EMPTY)
+	inbox:SetScript("OnShow", function() ns.RecruitSync.RequestSync() end)
+	Pane.frames.inbox, Pane.frames.inboxEmpty = inbox, inboxEmpty
+	inbox:Hide()
+end
+
+function Pane.RenderInbox()
+	if not inbox then return end
+	local reqs = {}
+	for _, req in ipairs(R.Requests()) do reqs[#reqs + 1] = req end
+	table.sort(reqs, function(a, b)
+		if a.t ~= b.t then return a.t > b.t end
+		return a.name < b.name
+	end)
+	local shared = ns.RecruitSync.IsOfficer()
+	inboxHint:SetText(shared and (R.CanInvite() and L.RECRUIT_INBOX_SHARED or L.RECRUIT_INBOX_NO_INVITE) or L.RECRUIT_INBOX_PERSONAL)
+	inboxRefresh:SetShown(shared)
+	inboxEmpty:SetShown(#reqs == 0)
+	local y = 0
+	for count, req in ipairs(reqs) do
 		local row = Pane.requestRows[count]
 		if not row then
-			row = CreateFrame("Frame", nil, parent)
-			row:SetSize(486, 78)
+			row = CreateFrame("Frame", nil, inboxChild)
+			row:SetSize(730, 98)
 			row:EnableMouse(true)
 			row:SetScript("OnEnter", function(self)
 				if not self.req then return end
@@ -161,38 +182,35 @@ function Pane.RenderRequests(parent)
 				GameTooltip:Show()
 			end)
 			row:SetScript("OnLeave", function() GameTooltip:Hide() end)
-			row.title = Label(row, 0, 0, 486)
-			row.message = Label(row, 0, 18, 486)
+			row.title = Label(row, 0, 0, 730, "GameFontNormal")
+			row.message = Label(row, 0, 20, 730)
 			row.message:SetHeight(26)
-			row.accept = Button(row, L.RECRUIT_INVITE, 110, function() R.Accept(row.req) end)
-			row.accept:SetPoint("TOPLEFT", 0, -47)
-			row.decline = Button(row, L.RECRUIT_DECLINE, 110, function() R.Decline(row.req) end)
-			row.decline:SetPoint("TOPLEFT", 116, -47)
+			row.source = Label(row, 0, 48, 730, "GameFontDisableSmall")
+			row.accept = Button(row, L.RECRUIT_INVITE, 140, function() R.Accept(row.req) end)
+			row.accept:SetPoint("TOPLEFT", 0, -66)
+			row.decline = Button(row, L.RECRUIT_DECLINE, 130, function() R.Decline(row.req) end)
+			row.decline:SetPoint("TOPLEFT", 148, -66)
 			row.point = Button(row, L.RECRUIT_POINT, 226, function() R.Point(row.req) end)
-			row.point:SetPoint("TOPLEFT", 0, -47)
-			row.dismiss = Button(row, L.RECRUIT_DISMISS, 100, function() R.Dismiss(row.req) end)
-			row.dismiss:SetPoint("TOPRIGHT", 0, -47)
+			row.point:SetPoint("TOPLEFT", 0, -66)
+			row.dismiss = Button(row, L.RECRUIT_DISMISS, 170, function() R.Dismiss(row.req) end)
+			row.dismiss:SetPoint("TOPLEFT", 300, -66)
 			Pane.requestRows[count] = row
 		end
-		local req = reqs[i]
 		row.req = req
 		row:ClearAllPoints()
-		row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -y)
+		row:SetPoint("TOPLEFT", inboxChild, "TOPLEFT", 0, -y)
 		row.title:SetText(L.RECRUIT_REQUEST:format(U.Display(req.name), req.level, L.CLASS[req.class] or "", ns.Views.Ago(ns.Now() - req.t)))
 		row.message:SetText(req.text or L.RECRUIT_NO_TEXT)
+		row.source:SetText(L.RECRUIT_SOURCE:format(U.Display(req.origin or ns.me)))
 		row.accept:SetShown(R.CanInvite())
 		row.decline:SetShown(R.CanInvite())
 		row.point:SetShown(not R.CanInvite() and R.Officer() ~= nil)
+		row.dismiss:SetText(shared and L.RECRUIT_CLOSE or L.RECRUIT_DISMISS)
 		row:Show()
-		y = y + 78
+		y = y + 98
 	end
-	for i = count + 1, #Pane.requestRows do Pane.requestRows[i]:Hide() end
-	requestMore:SetShown(#reqs > R.REQUESTS_SHOWN)
-	if #reqs > R.REQUESTS_SHOWN then
-		requestMore:ClearAllPoints()
-		requestMore:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -y)
-		requestMore:SetText(L.RECRUIT_HIDDEN:format(#reqs - R.REQUESTS_SHOWN))
-		y = y + 28
-	end
-	return y
+	for i = #reqs + 1, #Pane.requestRows do Pane.requestRows[i]:Hide() end
+	inboxChild:SetHeight(math.max(y, 60))
 end
+function Pane.ShowInbox() if inbox then inbox:Show(); Pane.RenderInbox() end end
+function Pane.HideInbox() if inbox then inbox:Hide() end end

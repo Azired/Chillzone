@@ -15,6 +15,7 @@ local ICON = "Interface\\Icons\\Spell_Nature_Tranquility"
 local TABS = {
 	{ key = "chat", text = "TAB_CHAT", icons = { "Interface\\Icons\\UI_Chat", "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "census", text = "TAB_CENSUS", icons = { "Interface\\Icons\\achievement_guildperk_everybodysfriend", "Interface\\Icons\\INV_Misc_Book_09" } },
+	{ key = "requests", text = "TAB_REQUESTS", icons = { "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" } },
 	{ key = "debug", text = "TAB_DEBUG", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" } },
@@ -176,6 +177,13 @@ function UI.Render()
 	if not ns.IsMember() and current ~= "settings" then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
 	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
+	if tabs.requests then
+		local count = #ns.Recruit.Requests()
+		tabs.requests:SetShown(ns.IsMember())
+		tabs.requests.label:SetText(count > 0 and L.TAB_REQUESTS_COUNT:format(count) or L.TAB_REQUESTS)
+		tabs.requests.label:SetTextColor(count > 0 and 1 or 0.8, count > 0 and 0.82 or 0.8, count > 0 and 0 or 0.8)
+	end
+	if current ~= "requests" then ns.RecruitPane.HideInbox() end
 	UI.RenderStatus()
 	if current == "join" then
 		heading:SetText(L.RECRUIT_TITLE)
@@ -208,6 +216,12 @@ function UI.Render()
 		return
 	end
 	settings:Hide()
+	if current == "requests" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.RecruitPane.ShowInbox()
+		return
+	end
 	if current == "census" then
 		scroll:Hide()
 		ns.CensusPane.Show()
@@ -243,9 +257,18 @@ local function SideTab(i, def)
 	bg:SetPoint("TOPLEFT", -3, 11)
 	-- Значок — своя текстура, а не NormalTexture: её не прячет ни нажатие, ни выбор вкладки.
 	local icon = b:CreateTexture(nil, "ARTWORK")
-	icon:SetAllPoints()
+	icon:SetSize(32, 32)
+	icon:SetPoint("LEFT")
 	icon:SetTexture(FirstIcon(def.icons))
 	b.icon = icon
+	if def.key == "requests" then
+		b:SetWidth(132)
+		b.label = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		b.label:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+		b.label:SetWidth(94)
+		b.label:SetJustifyH("LEFT")
+		b.label:SetText(L.TAB_REQUESTS)
+	end
 	b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
 	-- SetCheckedTexture режим наложения не принимает: без ADD чёрная середина рамки закрывает значок.
 	b:SetCheckedTexture("Interface\\Buttons\\CheckButtonHilight")
@@ -347,6 +370,7 @@ local function Create()
 	scroll:SetScrollChild(child)
 	BuildSettings(body)
 	ns.RecruitPane.Build(body)
+	ns.RecruitPane.BuildInbox(body)
 	ns.CensusPane.Build(body)
 	body:Hide()
 
@@ -364,7 +388,7 @@ local function Create()
 			UI.Render()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
-			if current == "census" or current == "kingdom" or current == "join" then UI.Render() else UI.RenderStatus() end
+			if current == "census" or current == "kingdom" or current == "join" or current == "requests" then UI.Render() else UI.RenderStatus() end
 		end
 	end)
 end
@@ -398,7 +422,7 @@ end
 local function Refresh()
 	if not frame or not frame:IsShown() then return end
 	local debugShown = (tabs.debug and tabs.debug:IsShown()) and true or false
-	if current == "census" or current == "kingdom" or current == "debug" or debugShown ~= ns.Debug.Allowed() then
+	if current == "census" or current == "kingdom" or current == "debug" or current == "requests" or debugShown ~= ns.Debug.Allowed() then
 		UI.Render()
 	else
 		UI.RenderStatus()
@@ -486,6 +510,7 @@ end, L.HELP_MINIMAP)
 
 ns.Command("kingdom", function() UI.Toggle("kingdom") end, L.HELP_KINGDOM)
 ns.Command("census", function() UI.Toggle("census") end, L.HELP_CENSUS)
+ns.Command("requests", function() UI.Toggle("requests") end, L.HELP_REQUESTS)
 ns.Command("settings", function() UI.Toggle("settings") end, L.HELP_SETTINGS)
 ns.Command("diag", function()
 	if not ns.Debug.Allowed() then
