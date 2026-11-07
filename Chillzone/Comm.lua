@@ -13,8 +13,9 @@ Comm.SEND_INTERVAL = 1.2
 Comm.PARTS_RELAY = 4
 Comm.MAX_QUEUE = 200
 Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько (блокировка) — выбрасывается
--- Подключение гильдий обгоняет выдачу сертификатов, выдача — обычный чат.
--- Прежний prio=true соответствует уровню 1.
+-- Управление связью (опрос корня, отзыв, соединение, приветствия) идёт первым, объявления
+-- ключей — следом. Сертификаты идут наравне с чатом (prio = true — уровень 1), в порядке
+-- очереди: так поток чата их не задерживает бесконечно, а пачка сертификатов — строки чата.
 Comm.PRIO_BOOTSTRAP = 2
 Comm.PRIO_CONTROL = 3
 
@@ -148,6 +149,16 @@ end
 
 function Comm.QueueSize()
 	return #queue
+end
+
+-- Сколько заданий в очереди (и начатых) с ключом, который начинается с prefix; exact — ровно с этим ключом.
+function Comm.Queued(prefix, exact)
+	local n = 0
+	for _, job in ipairs(queue) do
+		local key = job.key
+		if key and (key == prefix or (not exact and key:sub(1, #prefix) == prefix)) then n = n + 1 end
+	end
+	return n
 end
 
 local function PumpOnce(prioOnly)

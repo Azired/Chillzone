@@ -776,6 +776,8 @@ T.test("security: выдача продолжается, если корень �
     local db = P.ns.db
     P:Logout()
     local returned = w:Client({ first = "Peepo", surname = "Ignore", guild = "Чиллзон Север", rank = 1, db = db })
+    -- Корень успевает объявить ключ: иначе K1 новичка может опередить его, и выдаст запасной.
+    w:Run(20)
     local B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 3 })
     V.ns.Roster.Scan()
     w:Run(90)
@@ -859,4 +861,59 @@ T.test("security: опрос корня обгоняет выдачу и пов�
     T.eq(root and root.name, V:Name(), "ответ пришёл до окончания опроса, второй корень не создан")
     T.eq(root.public, V.ns.Security.Roots()[gk].public, "ключ корня совпадает")
     for _, cl in ipairs({ V, O }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
+end)
+
+T.test("security: массовая выдача сертификатов не задерживает чат издателя", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    local M = {}
+    for i = 1, 25 do M[i] = w:Client({ first = "Игрок" .. i, surname = "Тестовый", guild = "Чиллзон Север", rank = 3 }) end
+    w:Run(30)
+    w:Init(V)
+    w:Run(20)
+    T.ok(V.ns.Security.MyCertificate(), "корень выдал сертификат себе")
+    -- Сертификаты идут наравне с чатом, поэтому издатель держит в очереди лишь несколько.
+    local most = 0
+    V:Slash("/cz1", "строка во время выдачи")
+    for _ = 1, 30 do
+        w:Run(1)
+        most = math.max(most, V.ns.Comm.Queued("credential:"))
+    end
+    T.ok(most <= V.ns.Config.AUTH_ISSUE_QUEUE, "в очереди не больше AUTH_ISSUE_QUEUE сертификатов: " .. most)
+    T.eq(M[1]:Saw("строка во время выдачи"), 1, "строка дошла, не дожидаясь всех сертификатов")
+    w:Run(200)
+    for i = 1, 25 do T.ok(M[i].ns.Security.MyCertificate(), M[i]:Name() .. ": сертификат выдан") end
+    for _, cl in ipairs({ V, M[1], M[25] }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
+end)
+
+T.test("security: повторные объявления корней не обгоняют чат", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон Север")
+    local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+    local M = w:Client({ first = "Миша", surname = "Мирный", guild = "Чиллзон Север", rank = 3 })
+    w:Run(30)
+    w:Init(V)
+    -- Корни десяти союзных гильдий: каждые 30 с офицер объявляет их все заново.
+    local roots = V.ns.Security.Roots()
+    local mine = roots[V.ns.Util.GuildKey(V.guild)]
+    for i = 1, 10 do
+        local guild = "Чиллзон Союз " .. i
+        roots[V.ns.Util.GuildKey(guild)] = { name = "Глава Союза" .. i, public = mine.public, guild = guild }
+    end
+    w:Run(120)
+    local worst = 0
+    for i = 1, 20 do
+        local text = "строка под объявлениями " .. i
+        V:Slash("/cz1", text)
+        local waited = 0
+        while M:Saw(text) == 0 and waited < 60 do
+            w:Run(1)
+            waited = waited + 1
+        end
+        worst = math.max(worst, waited)
+        w:Run(2)
+    end
+    T.ok(worst <= 6, "строка ждёт не дольше нескольких секунд: " .. worst)
+    for _, cl in ipairs({ V, M }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
 end)
