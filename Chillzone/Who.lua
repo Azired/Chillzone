@@ -10,6 +10,9 @@ Who.found = {}
 local lastSend, pending, roundAt, step, brackets = -math.huge, nil, nil, 0, nil
 local target = 1
 local byKey = {}
+-- Гильдии, все участники которых в игре уже в списке: их нашёл запрос без диапазона
+-- уровней, и сервер не обрезал выдачу до 50 строк.
+local covered = {}
 local hooked, legacyHooked, sending = nil, false, false
 local lateUntil = -math.huge
 
@@ -19,8 +22,10 @@ local function HookSearch()
 	if type(hooksecurefunc) ~= "function" then return end
 	local function OtherSearch()
 		if sending then return end
-		if pending then lateUntil = ns.Now() + Who.LATE end
+		local p = pending
+		if p then lateUntil = ns.Now() + Who.LATE end
 		pending, lastSend = nil, ns.Now()
+		if p and p.failed then p.failed() end
 		ns.Fire("RECRUIT")
 	end
 	if C_FriendList and type(C_FriendList.SendWho) == "function" then
@@ -75,10 +80,13 @@ end
 
 function Who.IsPending() return pending ~= nil end
 function Who.Fresh() return roundAt ~= nil and ns.Now() - roundAt <= Who.ROUND_TTL end
+-- В раунде остались запросы: диапазоны уровней или гильдии EXTRA_GUILDS.
+function Who.RoundLeft() return Who.Fresh() and target <= #Who.Targets() end
+function Who.Covered(guild) return Who.Fresh() and covered[U.GuildKey(guild)] == true end
 
 function Who.Reset()
 	pending, roundAt, step, brackets, target = nil, nil, 0, nil, 1
-	Who.found, byKey, Who.missing = {}, {}, false
+	Who.found, byKey, Who.missing, covered = {}, {}, false, {}
 	Who.rangeCapped = nil
 	ns.Fire("WHO", Who.found)
 end
@@ -103,6 +111,7 @@ local function Send(send, query, p)
 		if pending ~= p then return end
 		pending = nil
 		lateUntil = ns.Now() + Who.LATE
+		if p.failed then p.failed() end
 		ns.Print(L.RECRUIT_SEARCH_TIMEOUT)
 		ns.Fire("RECRUIT")
 	end)
@@ -134,11 +143,22 @@ end
 -- строка добавляется в тот же список, только если /who видит его в гильдии Чиллзона;
 -- раунд и диапазоны уровней не сдвигаются. На Forever работает /who "Имя Фамилия",
 -- а n-"Имя Фамилия" ничего не находит. Ранга /who не показывает: его назвал J2.
-function Who.Verify(name)
+-- failed вызывается, если ответа не было: тайм-аут или чужой /who.
+function Who.Verify(name, failed)
 	if ns.IsMember() or not Who.Fresh() or type(name) ~= "string" or name == "" then return false end
 	local send = Ready()
 	if not send then return false end
-	return Send(send, ('"%s"'):format((name:gsub('["%c]', ""))), { verify = true })
+	return Send(send, ('"%s"'):format((name:gsub('["%c]', ""))), { side = "name", failed = failed })
+end
+
+-- Одна гильдия по названию из подсказки J2, где есть свободные места. Под общий запрос
+-- по GUILD_TOKEN попадает вся большая главная гильдия, и её 50 строк заслоняют маленькие
+-- гильдии; под этот — нет. Раунд и диапазоны уровней не сдвигаются.
+function Who.SearchGuild(guild, failed)
+	if ns.IsMember() or not Who.Fresh() or type(guild) ~= "string" or guild == "" then return false end
+	local send = Ready()
+	if not send then return false end
+	return Send(send, ('g-"%s"'):format((guild:gsub('["%c]', ""))), { side = "guild", failed = failed })
 end
 
 local function OnAnswer()
@@ -150,7 +170,7 @@ local function OnAnswer()
 	elseif GetNumWhoResults then count, total = GetNumWhoResults() end
 	count, total = tonumber(Plain(count)) or 0, tonumber(Plain(total)) or 0
 	local capped = count >= Who.MAX or total > count
-	local levels, maxLevel = {}, (GetMaxPlayerLevel and GetMaxPlayerLevel()) or 60
+	local levels, maxLevel, seen = {}, (GetMaxPlayerLevel and GetMaxPlayerLevel()) or 60, {}
 	maxLevel = tonumber(Plain(maxLevel)) or 60
 	for i = 1, math.min(count, Who.MAX) do
 		local name, guild, level, class = Info(i)
@@ -162,6 +182,7 @@ local function OnAnswer()
 			local nameRealm = name:match("%-([^%-]+)$")
 			local key = U.Key(name)
 			if key and U.IsMemberGuild(guild) and (not nameRealm or U.GroupOf(nameRealm) == ns.group) then
+				seen[U.GuildKey(guild)] = true
 				level = tonumber(level)
 				if level and level >= 1 and level <= 255 then levels[#levels + 1] = level; maxLevel = math.max(maxLevel, level) end
 				if not byKey[key] and #Who.found < Who.MAX_FOUND then
@@ -174,7 +195,11 @@ local function OnAnswer()
 			end
 		end
 	end
-	if p.verify then
+	-- Поиск по имени показывает одного игрока, а диапазон уровней — часть гильдии.
+	if not capped and (p.side == "guild" or p.step == 0) then
+		for gk in pairs(seen) do covered[gk] = true end
+	end
+	if p.side then
 		ns.Fire("WHO", Who.found)
 		return
 	end

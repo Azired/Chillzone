@@ -128,7 +128,7 @@ T.test("заявки: поиск показывает офицеров, рядо
 	Errors(c)
 end)
 
-T.test("заявки: заполненная гильдия тоже называет офицеров", function()
+T.test("заявки: заполненная гильдия видна внизу, но просьба в неё не уходит", function()
 	local w, c = Build()
 	c.R:Slash("/chillzone")
 	-- У участников «Чиллзон Север» гильдия заполнена: мест 0.
@@ -148,7 +148,42 @@ T.test("заявки: заполненная гильдия тоже назыв�
 	local north
 	for _, g in ipairs(R.Guilds()) do if g.name == "Чиллзон Север" then north = g end end
 	T.eq(north.free, 0, "мест нет, но офицеры видны")
-	T.ok(R.NextContact("Чиллзон Север"))
+	T.eq(R.Guilds()[#R.Guilds()].name, "Чиллзон Север", "заполненная гильдия — последней")
+	T.no(R.NextContact("Чиллзон Север"))
+	T.no(R.Prompt(officers[1]))
+	T.no(R.Ask(officers[1], "Мест нет, не отправлять."))
+	local L, rows = c.R.ns.L, c.R.ns.RecruitPane.guildRows
+	T.eq(rows[2].title:GetText(), "Чиллзон Север")
+	T.ok(rows[2].sub:GetText():find(U.Display(c.O:Name()), 1, true), "имя офицера видно")
+	T.eq(rows[2].ask:GetText(), L.RECRUIT_NO_PLACES)
+	T.no(R.NextSearch(), "офицеров заполненной гильдии не проверяем")
+	R.route = nil
+	T.ok(R.HasSpace("Чиллзон Север"), "неизвестное число мест — не ноль")
+	w:Run(5)
+	T.eq(#c.O.ns.Recruit.requests, 0)
+	Errors(c)
+end)
+
+T.test("заявки: заполнение гильдии закрывает письмо и блокирует старый контакт", function()
+	local w, c = Build()
+	Search(w, c)
+	local R = c.R.ns.Recruit
+	local contact = R.NextContact("Чиллзон Север")
+	T.ok(contact)
+	-- Адресат отвечает на повторный J1 после своей минутной паузы: мест уже нет.
+	w:Run(61)
+	c.O.ns.Recruit.RouteAnswer = function() return "J2~y~~0~Чиллзон Север=0=" .. c.O:Name() end
+	T.ok(R.Prompt(contact))
+	w:Run(5)
+	T.no(R.pending)
+	T.no(c.R.ns.RecruitPane.frames.dialog:IsShown())
+	T.eq(c.R:Saw(c.R.ns.L.RECRUIT_FULL:format("Чиллзон Север")), 1)
+	T.no(R.Prompt(contact))
+	T.no(R.Ask(contact, "Не отправлять в заполненную гильдию."))
+	w:Run(5)
+	T.eq(#c.O.ns.Recruit.requests, 0)
+	T.ok(R.OnRoute("J2~y~~0~Чиллзон Север=10=" .. c.O:Name(), c.O:Name(), "WHISPER"))
+	T.ok(R.NextContact("Чиллзон Север"), "появились места — гильдия снова доступна")
 	Errors(c)
 end)
 
@@ -168,7 +203,10 @@ T.test("заявки: офицер вне выдачи поиска по гил�
 	Search(w, c)
 	local R, U = c.R.ns.Recruit, c.R.ns.Util
 	T.eq(#R.Officers("Чиллзон Север"), 0, "глава назван, но не найден")
-	T.eq(U.Key(R.Unverified()), U.Key(leader))
+	local kind, name, hint = R.NextSearch()
+	T.eq(kind, "verify")
+	T.eq(U.Key(name), U.Key(leader))
+	T.eq(hint.name, "Чиллзон Север")
 	w:Run(11)
 	T.ok(R.Search())
 	T.eq(c.R.whoQueries[#c.R.whoQueries], '"' .. leader .. '"', "запрос по имени, как /who \"Имя Фамилия\"")
@@ -176,10 +214,139 @@ T.test("заявки: офицер вне выдачи поиска по гил�
 	local officers = R.Officers("Чиллзон Север")
 	T.eq(#officers, 1, "найден по имени")
 	T.eq(U.Key(officers[1].name), U.Key(leader))
-	T.no(R.Unverified())
+	T.no(R.NextSearch())
 	w:Run(11)
 	T.ok(R.Search())
 	T.ok(c.R.whoQueries[#c.R.whoQueries]:find("g-", 1, true), "дальше обычный поиск")
+	Errors(c)
+end)
+
+-- Большая заполненная главная гильдия: общий поиск по GUILD_TOKEN отдаёт 50 её строк, и
+-- «Чиллзон Север» в них не попадает. Перепись главной гильдии знает «Север» и его места;
+-- officers — кого из офицеров «Севера» она может назвать (по сертификатам).
+local function FullMain(officers)
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	w:Guild("Чиллзон Север")
+	w:Guild("Другая гильдия")
+	local c = {}
+	c.K = w:Client({ first = "Король", surname = "Чиллзона", guild = "Чиллзон", rank = 0 })
+	c.KO = w:Client({ first = "Капитан", surname = "Главный", guild = "Чиллзон", rank = 1 })
+	c.O = w:Client({ first = "Ольга", surname = "Северная", guild = "Чиллзон Север", rank = 0 })
+	c.M = w:Client({ first = "Миша", surname = "Северный", guild = "Чиллзон Север", rank = 3 })
+	c.R = w:Client({ first = "Новый", surname = "Игрок", guild = "Другая гильдия", level = 27 })
+	w:Run(8)
+	local answer = ("J2~y~~0~Чиллзон=0=%s;Чиллзон Север=40=%s"):format(c.KO:Name(), officers or "")
+	for _, m in ipairs({ c.K, c.KO }) do m.ns.Recruit.RouteAnswer = function() return answer end end
+	c.R.whoRows = function(query, rows)
+		if query ~= 'g-"Чиллзон"' then return rows end
+		local out = {}
+		for _, row in ipairs(rows) do
+			if row.fullGuildName == "Чиллзон" then out[#out + 1] = row end
+		end
+		for i = #out + 1, 50 do out[i] = { fullName = "Рядовой Номер" .. i, fullGuildName = "Чиллзон", level = 60, filename = "WARRIOR" } end
+		return out
+	end
+	c.R:Slash("/chillzone")
+	return w, c
+end
+
+local function GuildNames(R)
+	local out = {}
+	for _, g in ipairs(R.Guilds()) do out[#out + 1] = g.name end
+	return table.concat(out, ",")
+end
+
+T.test("заявки: заполненная главная гильдия не заслоняет гильдию с местами", function()
+	local w, c = FullMain()
+	local R, U, L = c.R.ns.Recruit, c.R.ns.Util, c.R.ns.L
+	T.ok(R.Search())
+	T.eq(c.R.whoQueries[1], 'g-"Чиллзон"')
+	w:Run(5)
+	local guilds = R.Guilds()
+	T.eq(GuildNames(R), "Чиллзон Север,Чиллзон", "гильдия с местами из подсказки J2 — первой")
+	T.eq(#guilds[1].members, 0, "/who её участников ещё не нашёл")
+	T.eq(guilds[1].free, 40)
+	T.eq(guilds[2].free, 0)
+	local rows = c.R.ns.RecruitPane.guildRows
+	T.eq(rows[1].ask:GetText(), L.RECRUIT_NO_OFFICERS)
+	T.eq(rows[2].ask:GetText(), L.RECRUIT_NO_PLACES, "офицер главной гильдии найден, но мест нет")
+	T.no(R.NextContact(), "писать пока некому")
+	T.no(c.R.ns.Who.Covered("Чиллзон"), "выдача обрезана до 50 строк")
+	local kind, name = R.NextSearch()
+	T.eq(kind, "guild", "следующий щелчок ищет гильдию с местами из подсказки J2")
+	T.eq(name, "Чиллзон Север")
+	T.eq(c.R.ns.RecruitPane.frames.note:GetText(), L.RECRUIT_GUILD_NEXT:format("Чиллзон Север", 40))
+	local asked = #w.log
+	w:Run(6)
+	T.ok(R.Search())
+	T.eq(c.R.whoQueries[2], 'g-"Чиллзон Север"')
+	w:Run(10)
+	-- J1 участникам «Севера» уходит после паузы между пачками, без нового щелчка.
+	local north = {}
+	for i = asked + 1, #w.log do
+		local e = w.log[i]
+		if e.from == "Новый Игрок" and e.msg == "J1~1" then
+			T.ok(e.target == c.O:Name() or e.target == c.M:Name(), "J1 не уходит заполненной гильдии: " .. e.target)
+			north[e.target] = true
+		end
+	end
+	T.ok(north[c.O:Name()], "J1 участнику «Севера»")
+	T.eq(GuildNames(R), "Чиллзон Север,Чиллзон", "гильдия с местами выше заполненной")
+	T.eq(U.Key(R.NextContact().name), U.Key(c.O:Name()), "первым предлагается офицер гильдии с местами")
+	T.eq(#c.R.whoQueries, 2, "хватило двух щелчков")
+	Errors(c)
+end)
+
+T.test("заявки: офицер гильдии с местами из чужой подсказки проверяется по имени", function()
+	local w, c = FullMain("Ольга Северная")
+	local R, U, L = c.R.ns.Recruit, c.R.ns.Util, c.R.ns.L
+	T.ok(R.Search())
+	w:Run(5)
+	local kind, name = R.NextSearch()
+	T.eq(kind, "verify", "названный офицер проверяется раньше поиска по гильдии")
+	T.eq(U.Key(name), U.Key(c.O:Name()))
+	T.eq(c.R.ns.RecruitPane.frames.note:GetText(), L.RECRUIT_VERIFY_NEXT:format("Чиллзон Север", 40))
+	w:Run(6)
+	T.ok(R.Search())
+	T.eq(c.R.whoQueries[2], '"' .. c.O:Name() .. '"')
+	w:Run(1)
+	T.eq(GuildNames(R), "Чиллзон Север,Чиллзон")
+	T.eq(U.Key(R.NextContact().name), U.Key(c.O:Name()))
+	Errors(c)
+end)
+
+T.test("заявки: поиск гильдии без ответа /who повторяется следующим щелчком", function()
+	local w, c = FullMain()
+	local R = c.R.ns.Recruit
+	T.ok(R.Search())
+	w:Run(11)
+	c.R.whoTimeout = true
+	T.ok(R.Search())
+	T.eq(c.R.whoQueries[2], 'g-"Чиллзон Север"')
+	w:Run(7)
+	T.no(c.R.ns.Who.IsPending(), "тайм-аут")
+	local kind, name = R.NextSearch()
+	T.eq(kind, "guild", "неудачный запрос не засчитан")
+	T.eq(name, "Чиллзон Север")
+	c.R.whoTimeout = nil
+	w:Run(31)
+	T.ok(R.Search())
+	T.eq(c.R.whoQueries[3], 'g-"Чиллзон Север"')
+	w:Run(1)
+	T.ok(R.Guilds()[1].name == "Чиллзон Север")
+	Errors(c)
+end)
+
+T.test("заявки: гильдию, найденную общим поиском целиком, отдельно не ищем", function()
+	local w, c = Build()
+	Search(w, c)
+	local R, U = c.R.ns.Recruit, c.R.ns.Util
+	T.ok(c.R.ns.Who.Covered("Чиллзон Север"), "выдача не обрезана")
+	R.route = { t = w.now, byName = {
+		[U.GuildKey("Чиллзон Север")] = { name = "Чиллзон Север", free = 900, contacts = {} },
+	} }
+	T.no(R.NextSearch(), "все участники «Севера» в игре уже найдены")
 	Errors(c)
 end)
 
