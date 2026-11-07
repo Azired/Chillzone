@@ -215,3 +215,37 @@ T.test("codec: выбор реле стабилен в окне", function()
 	T.eq(Codec.PickRelay("чиллзон север", { "б", "в", "а" }, 1799), a, "порядок не важен")
 	T.eq(Codec.PickRelay("x", {}, 0), nil, "пусто")
 end)
+
+T.test("codec: ключ дедупликации вмещает весь 32-битный хеш в клиенте игры", function()
+	local ns, Codec = fresh()
+	local format = string.format
+	-- LuaJIT и 64-битная Lua 5.1 принимают большие %d, а клиент игры выдаёт overflow.
+	-- Подмена действует только внутри этого теста и снимается даже при его падении.
+	string.format = function(fmt, ...) -- luacheck: ignore 122
+		local i = 0
+		for spec in fmt:gmatch("%%([%d%.]*[%a%%])") do
+			local kind = spec:sub(-1)
+			if kind ~= "%" then
+				i = i + 1
+				local value = select(i, ...)
+				if (kind == "d" or kind == "i") and (value < -2147483648 or value > 2147483647) then
+					error("integer overflow attempting to store " .. tostring(value))
+				end
+			end
+		end
+		return format(fmt, ...)
+	end
+	local ok, err = pcall(function()
+		T.no(pcall(string.format, "%d", 2478423003), "ограничение игры воспроизводится")
+		for _, text in ipairs({ "0", "2147483647", "2147483648", "2478423003", "4294967295" }) do
+			local hash = tonumber(text)
+			ns.Util.Hash = function() return hash end
+			local expected = "автор|7|" .. text
+			T.eq(Codec.DedupeKey("автор", "S1~test"), expected, "полное значение хеша")
+			T.eq(Codec.DedupeKey("автор", "S1~test"), expected, "повтор даёт тот же ключ")
+			T.eq(Codec.DedupeKey(nil, ""), "?|0|" .. text, "пустое сообщение")
+		end
+	end)
+	string.format = format -- luacheck: ignore 122
+	T.ok(ok, err)
+end)
