@@ -254,7 +254,8 @@ local function Env(c)
 			local rows = {}
 			local Fold = c.ns.Util.Fold
 			local token = query:match('g%-"([^"]+)"')
-			local named = query:match('n%-"([^"]+)"')
+			-- Имя — строка в кавычках без префикса, как /who "Имя Фамилия" на Forever.
+			local named = query:match('^"([^"]+)"$')
 			local low, high = query:match(" (%d+)%-(%d+)$")
 			for _, other in ipairs(w.clients) do
 				if other.online and other.faction == c.faction and other.guild

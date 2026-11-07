@@ -171,7 +171,7 @@ T.test("заявки: офицер вне выдачи поиска по гил�
 	T.eq(U.Key(R.Unverified()), U.Key(leader))
 	w:Run(11)
 	T.ok(R.Search())
-	T.ok(c.R.whoQueries[#c.R.whoQueries]:find('n-"' .. leader .. '"', 1, true), "запрос по имени")
+	T.eq(c.R.whoQueries[#c.R.whoQueries], '"' .. leader .. '"', "запрос по имени, как /who \"Имя Фамилия\"")
 	w:Run(1)
 	local officers = R.Officers("Чиллзон Север")
 	T.eq(#officers, 1, "найден по имени")

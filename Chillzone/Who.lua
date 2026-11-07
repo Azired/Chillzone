@@ -119,12 +119,13 @@ end
 
 -- Один игрок по имени (офицер из подсказки J2, которого не нашёл поиск по гильдии). Его
 -- строка добавляется в тот же список, только если /who видит его в гильдии Чиллзона;
--- раунд и диапазоны уровней не сдвигаются.
+-- раунд и диапазоны уровней не сдвигаются. На Forever работает /who "Имя Фамилия",
+-- а n-"Имя Фамилия" ничего не находит. Ранга /who не показывает: его назвал J2.
 function Who.Verify(name)
 	if ns.IsMember() or not Who.Fresh() or type(name) ~= "string" or name == "" then return false end
 	local send = Ready()
 	if not send then return false end
-	return Send(send, ('n-"%s"'):format((name:gsub('["%c]', ""))), { verify = true })
+	return Send(send, ('"%s"'):format((name:gsub('["%c]', ""))), { verify = true })
 end
 
 local function OnAnswer()
