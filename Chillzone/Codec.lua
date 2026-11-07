@@ -602,5 +602,6 @@ end
 
 -- Ключ дедупликации реле.
 function Codec.DedupeKey(originKey, inner)
-	return ("%s|%d|%d"):format(originKey or "?", #inner, ns.Util.Hash(inner))
+	-- Хеш до 2^32 - 1 не помещается в знаковый %d клиента игры.
+	return ("%s|%d|%.0f"):format(originKey or "?", #inner, ns.Util.Hash(inner))
 end
