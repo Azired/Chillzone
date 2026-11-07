@@ -33,14 +33,59 @@ local function Errors(c)
 	end
 end
 
-T.test("общие заявки: вкладка видна без заявок, с подписью и пустым состоянием", function()
+-- Подсказка вкладки «Заявки»: число заявок теперь там, а не в подписи.
+local function TabTip(client)
+	local tip = {}
+	client.stubs.GameTooltip = true
+	client.env.GameTooltip = {
+		SetOwner = function() end, Show = function() end, Hide = function() end,
+		AddLine = function(_, text) tip[#tip + 1] = text end,
+	}
+	local tab = client.ns.UI.tabs.requests
+	tab:GetScript("OnEnter")(tab)
+	return tip[1]
+end
+
+T.test("общие заявки: вкладка видна главе без заявок, без подписи и с пустым состоянием", function()
 	local _, c = Build()
 	c.O:Slash("/chillzone", "requests")
 	T.eq(c.O.ns.UI.Current(), "requests")
 	T.ok(c.O.ns.UI.tabs.requests:IsShown())
-	T.eq(c.O.ns.UI.tabs.requests.label:GetText(), "Заявки")
+	T.eq(rawget(c.O.ns.UI.tabs.requests, "label"), nil, "у значка нет подписи")
+	T.eq(TabTip(c.O), "Заявки")
 	T.ok(c.O.ns.RecruitPane.frames.inbox:IsShown())
 	T.ok(c.O.ns.RecruitPane.frames.inboxEmpty:IsShown())
+	Errors(c)
+end)
+
+T.test("общие заявки: рядовой не видит вкладку, а его заявка уходит офицерам", function()
+	local w, c = Build()
+	Receive(w, c, "M", "Просьба рядовому")
+	T.eq(c.M:Saw("Заявку увидят глава и офицеры."), 1)
+	T.eq(c.M:Saw("на вкладке «Заявки»"), 0, "рядовому не указываем на скрытую вкладку")
+	T.eq(#c.O.ns.Recruit.Requests(), 1)
+	c.M.ns.UI.Toggle("census")
+	T.no(c.M.ns.UI.tabs.requests:IsShown())
+	T.ok(c.M.ns.UI.tabs.kingdom:IsShown())
+	c.M:Slash("/chillzone", "requests")
+	T.eq(c.M.ns.UI.Current(), "census", "команда не открывает скрытую вкладку")
+	T.eq(c.M:Saw("вкладка «Заявки» только для глав и офицеров"), 1)
+	Errors(c)
+end)
+
+T.test("общие заявки: потеря звания при открытом окне прячет вкладку", function()
+	local w, c = Build()
+	Receive(w, c, "M", "Для офицеров")
+	c.P:Slash("/chillzone", "requests")
+	T.eq(c.P.ns.UI.Current(), "requests")
+	c.P.rank = 3
+	c.O.ns.Roster.Scan(); c.M.ns.Roster.Scan(); c.P.ns.Roster.Scan()
+	T.no(c.P.ns.UI.tabs.requests:IsShown())
+	T.eq(c.P.ns.UI.Current(), "chat")
+	T.no(c.P.ns.RecruitPane.frames.inbox:IsShown())
+	c.P.rank = 1
+	c.O.ns.Roster.Scan(); c.M.ns.Roster.Scan(); c.P.ns.Roster.Scan()
+	T.ok(c.P.ns.UI.tabs.requests:IsShown(), "звание вернули — вкладка снова видна")
 	Errors(c)
 end)
 
@@ -53,7 +98,9 @@ T.test("общие заявки: офицеры видят чужую заявк
 	T.eq(#c.N.ns.Recruit.Requests(), 0)
 	T.eq(#c.K.ns.Recruit.Requests(), 0)
 	c.P.ns.UI.Toggle("chat")
-	T.eq(c.P.ns.UI.tabs.requests.label:GetText(), "Заявки (1)")
+	T.eq(TabTip(c.P), "Заявки (1)")
+	c.M.ns.UI.Toggle("chat")
+	T.no(c.M.ns.UI.tabs.requests:IsShown(), "рядовым вкладка не видна")
 	Errors(c)
 end)
 

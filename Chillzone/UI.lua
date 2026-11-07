@@ -1,5 +1,5 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
--- значки на правом краю (Чат, Перепись, Королевство, Настройки, а главам и офицерам ещё Отладка).
+-- значки на правом краю (Чат, Перепись, Королевство, Настройки, а главам и офицерам ещё Заявки и Отладка).
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, остальные вкладки — список строк из Views.lua
 -- и Debug.lua во вставке окна. Кнопка у миникарты — по образцу Olympus UI.lua.
 local ADDON, ns = ...
@@ -163,26 +163,39 @@ function UI.RenderStatus()
 	if w > 0 then status:SetWidth(math.ceil(w) + 4) end
 end
 
--- Вкладка «Отладка» — только тем, кому можно (Debug.Allowed): звание могли поменять при открытом окне.
-local function SyncDebugTab()
-	local allowed = ns.Debug.Allowed()
-	if tabs.debug then tabs.debug:SetShown(allowed) end
-	if current == "debug" and not allowed then current = "chat" end
-	return allowed
+-- «Заявки» (общая очередь, RecruitSync.IsOfficer) и «Отладка» (Debug.Allowed) — только главам и
+-- офицерам: звание могли поменять при открытом окне. Видимые вкладки идут подряд, без дыр.
+local function Allowed(key)
+	if key == "requests" then return ns.RecruitSync.IsOfficer() end
+	if key == "debug" then return ns.Debug.Allowed() end
+	return true
+end
+
+local function SyncTabs()
+	local prev
+	for _, def in ipairs(TABS) do
+		local b, allowed = tabs[def.key], Allowed(def.key)
+		b:SetShown(allowed)
+		if allowed then
+			b:ClearAllPoints()
+			if prev then
+				b:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -20)
+			else
+				b:SetPoint("TOPLEFT", frame, "TOPRIGHT", 0, -36)
+			end
+			prev = b
+		elseif current == def.key then
+			current = "chat"
+		end
+	end
 end
 
 function UI.Render()
 	if not frame or not frame:IsShown() then return end
-	SyncDebugTab()
+	SyncTabs()
 	if not ns.IsMember() and current ~= "settings" then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
 	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
-	if tabs.requests then
-		local count = #ns.Recruit.Requests()
-		tabs.requests:SetShown(ns.IsMember())
-		tabs.requests.label:SetText(count > 0 and L.TAB_REQUESTS_COUNT:format(count) or L.TAB_REQUESTS)
-		tabs.requests.label:SetTextColor(count > 0 and 1 or 0.8, count > 0 and 0.82 or 0.8, count > 0 and 0 or 0.8)
-	end
 	if current ~= "requests" then ns.RecruitPane.HideInbox() end
 	UI.RenderStatus()
 	if current == "join" then
@@ -243,14 +256,10 @@ local function SelectTab(key)
 end
 
 -- Вкладки-значки на правом краю, как у окна гильдии (32×32, фон вкладки книги заклинаний).
-local function SideTab(i, def)
+-- Места вкладкам раздаёт SyncTabs.
+local function SideTab(def)
 	local b = CreateFrame("CheckButton", nil, frame)
 	b:SetSize(32, 32)
-	if i == 1 then
-		b:SetPoint("TOPLEFT", frame, "TOPRIGHT", 0, -36)
-	else
-		b:SetPoint("TOPLEFT", tabs[TABS[i - 1].key], "BOTTOMLEFT", 0, -20)
-	end
 	local bg = b:CreateTexture(nil, "BACKGROUND")
 	bg:SetTexture("Interface\\SpellBook\\SpellBook-SkillLineTab")
 	bg:SetSize(64, 64)
@@ -261,21 +270,17 @@ local function SideTab(i, def)
 	icon:SetPoint("LEFT")
 	icon:SetTexture(FirstIcon(def.icons))
 	b.icon = icon
-	if def.key == "requests" then
-		b:SetWidth(132)
-		b.label = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-		b.label:SetPoint("LEFT", icon, "RIGHT", 6, 0)
-		b.label:SetWidth(94)
-		b.label:SetJustifyH("LEFT")
-		b.label:SetText(L.TAB_REQUESTS)
-	end
 	b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
 	-- SetCheckedTexture режим наложения не принимает: без ADD чёрная середина рамки закрывает значок.
 	b:SetCheckedTexture("Interface\\Buttons\\CheckButtonHilight")
 	local checked = b.GetCheckedTexture and b:GetCheckedTexture()
 	if checked and checked.SetBlendMode then checked:SetBlendMode("ADD") end
 	b:SetScript("OnClick", function() ns.SafeCall("tab " .. def.key, SelectTab, def.key) end)
-	SetTip(b, function(tt) tt:AddLine(L[def.text], 1, 1, 1) end)
+	SetTip(b, function(tt)
+		-- Число заявок — в подсказке: подпись рядом со значком растягивала вкладку.
+		local count = def.key == "requests" and #ns.Recruit.Requests() or 0
+		tt:AddLine(count > 0 and L.TAB_REQUESTS_COUNT:format(count) or L[def.text], 1, 1, 1)
+	end)
 	tabs[def.key] = b
 end
 
@@ -375,7 +380,7 @@ local function Create()
 	body:Hide()
 
 	ns.ChatPane.Build(f)
-	for i, def in ipairs(TABS) do SideTab(i, def) end
+	for _, def in ipairs(TABS) do SideTab(def) end
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
@@ -419,10 +424,16 @@ function UI.Current()
 	return frame and frame:IsShown() and current or nil
 end
 
+local function TabsChanged()
+	for key, b in pairs(tabs) do
+		if (b:IsShown() and true or false) ~= (Allowed(key) and true or false) then return true end
+	end
+	return false
+end
+
 local function Refresh()
 	if not frame or not frame:IsShown() then return end
-	local debugShown = (tabs.debug and tabs.debug:IsShown()) and true or false
-	if current == "census" or current == "kingdom" or current == "debug" or current == "requests" or debugShown ~= ns.Debug.Allowed() then
+	if current == "census" or current == "kingdom" or current == "debug" or current == "requests" or TabsChanged() then
 		UI.Render()
 	else
 		UI.RenderStatus()
@@ -510,7 +521,13 @@ end, L.HELP_MINIMAP)
 
 ns.Command("kingdom", function() UI.Toggle("kingdom") end, L.HELP_KINGDOM)
 ns.Command("census", function() UI.Toggle("census") end, L.HELP_CENSUS)
-ns.Command("requests", function() UI.Toggle("requests") end, L.HELP_REQUESTS)
+ns.Command("requests", function()
+	if not ns.RecruitSync.IsOfficer() then
+		ns.Print(L.REQUESTS_ONLY_OFFICERS)
+		return
+	end
+	UI.Toggle("requests")
+end, L.HELP_REQUESTS)
 ns.Command("settings", function() UI.Toggle("settings") end, L.HELP_SETTINGS)
 ns.Command("diag", function()
 	if not ns.Debug.Allowed() then
