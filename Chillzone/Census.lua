@@ -12,6 +12,10 @@ local Census = {}
 ns.Census = Census
 
 local peers = {} -- [Key] = { t, z, r, name, version }: согильдийцы с аддоном
+-- С какого момента слушаем приветы своей гильдии (вход, смена гильдии). Каждый клиент шлёт H1
+-- раз в HELLO_EVERY, поэтому через HEARD_ALL молчание согильдийца в игре значит: аддона нет.
+local listenSince
+local HEARD_ALL = C.HELLO_EVERY + 30
 local lastSent, lastSentAt = nil, -1e9
 local lastQ1Answer = -1e9
 local trustCatchupPending = false
@@ -33,6 +37,18 @@ function Census.Users()
 	local n = 1
 	for _ in pairs(Live(ns.Now())) do n = n + 1 end
 	return n
+end
+
+-- Есть ли аддон у согильдийца с ключом key (U.Key имени). true — это я или от него был привет
+-- H1 после входа; false — привета нет, хотя приветы слушаем дольше HEARD_ALL (верно только для
+-- того, кто сейчас в игре); nil — пока не знаю. Второе значение — версия его аддона.
+function Census.Addon(key)
+	if not key then return nil end
+	if key == ns.myKey then return true, ns.VERSION end
+	local p = peers[key]
+	if p then return true, p.version end
+	if listenSince and ns.Now() - listenSince >= HEARD_ALL then return false end
+	return nil
 end
 
 -- Кандидат в репортёры: глава, офицер или связной по моему ростеру; пока
@@ -152,7 +168,9 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	local key = U.Key(sender)
 	local known = peers[key]
 	peers[key] = { t = ns.Now(), z = h.zones, r = h.relay, name = sender, version = h.version }
-	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее.
+	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее,
+	-- и отметить его в списке людей окна.
+	if not known or known.version ~= h.version then ns.Fire("PEERS") end
 	if not known then ns.After(math.random(2, 6), "hello back", Census.SendHello) end
 end)
 
@@ -264,6 +282,7 @@ end)
 -- Расписание
 ---------------------------------------------------------------------------
 ns.On("LOGIN", function()
+	listenSince = ns.Now()
 	ns.After(3, "first hello", Census.SendHello)
 	ns.After(15, "census ask", function()
 		if ns.IsMember() then ns.Comm.Send("GUILD", "Q1~") end
@@ -279,6 +298,7 @@ end)
 
 ns.On("GUILD_CHANGED", function()
 	wipe(peers)
+	listenSince = ns.Now()
 	elected, previous, acting, handingUntil = nil, nil, false, nil
 	inheritedUntil = nil
 	lastSent, lastSentAt, signing, epoch = nil, -1e9, nil, epoch + 1

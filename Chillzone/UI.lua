@@ -6,13 +6,16 @@
 local ADDON, ns = ...
 
 local L = ns.L
+local U = ns.Util
 
 local UI = {}
 ns.UI = UI
 
 local ROW_H = 18
 local WIDTH, HEIGHT = 814, 426
-local ICON = "Interface\\Icons\\Spell_Nature_Tranquility"
+-- Значок аддона: логотип «Chill Zone», обрезанный по золотому кольцу (media/icon.tga, 64×64 TGA
+-- с прозрачностью). Он уже круглый, маска не нужна. Логотип целиком — media/logo.tga, для списка аддонов (toc).
+local ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
 local TABS = {
 	{ key = "chat", text = "TAB_CHAT", icons = { "Interface\\Icons\\UI_Chat", "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "census", text = "TAB_CENSUS", icons = { "Interface\\Icons\\achievement_guildperk_everybodysfriend", "Interface\\Icons\\INV_Misc_Book_09" } },
@@ -102,10 +105,13 @@ end
 ---------------------------------------------------------------------------
 -- Настройки
 ---------------------------------------------------------------------------
+local settingsY = 16 -- отступ сверху для следующей строки настроек
+
 local function Check(key, text, tip, get, set)
 	local c = CreateFrame("CheckButton", nil, settings, "UICheckButtonTemplate")
 	c:SetSize(26, 26)
-	c:SetPoint("TOPLEFT", settings, "TOPLEFT", 16, -16 - #checks * 30)
+	c:SetPoint("TOPLEFT", settings, "TOPLEFT", 16, -settingsY)
+	settingsY = settingsY + 30
 	local label = c:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 	label:SetPoint("LEFT", c, "RIGHT", 4, 0)
 	label:SetText(text)
@@ -117,6 +123,124 @@ local function Check(key, text, tip, get, set)
 	end)
 	checks[#checks + 1] = c
 	return c
+end
+
+-- Вкладка чата игры для копий строк: кнопка и свой список открытых вкладок. Не UIDropDownMenu:
+-- его общие глобалы на Forever дают taint, как и стандартные popup. Окна чата только читаем.
+local ITEM_H = 20
+local picker = { items = {} } -- label, button, list, empty, items
+UI.picker = picker
+
+local function RenderPicker()
+	local b = picker.button
+	if not b then return end
+	local name, open = ns.Chat.Window()
+	if not name then
+		b:SetText(L.WINDOW_MAIN)
+	elseif open then
+		b:SetText(name)
+	else
+		b:SetText("|cffff6060" .. L.WINDOW_GONE:format(name) .. "|r")
+	end
+	local mirror = ns.char.chatMirror ~= false
+	b:SetEnabled(mirror)
+	picker.label:SetFontObject(mirror and "GameFontHighlight" or "GameFontDisable")
+	if not mirror then picker.list:Hide() end
+end
+
+local function Pick(value)
+	picker.list:Hide()
+	ns.Chat.SetWindow(value)
+	RenderPicker()
+end
+
+local function PickerItem(i)
+	local it = picker.items[i]
+	if it then return it end
+	it = CreateFrame("Button", nil, picker.list)
+	it:SetHeight(ITEM_H)
+	it:SetPoint("TOPLEFT", picker.list, "TOPLEFT", 6, -6 - (i - 1) * ITEM_H)
+	it:SetPoint("RIGHT", picker.list, "RIGHT", -6, 0)
+	it.check = it:CreateTexture(nil, "ARTWORK")
+	it.check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+	it.check:SetSize(16, 16)
+	it.check:SetPoint("LEFT", 0, 0)
+	it.text = it:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	it.text:SetPoint("LEFT", 20, 0)
+	it.text:SetPoint("RIGHT", -4, 0)
+	it.text:SetJustifyH("LEFT")
+	it.text:SetWordWrap(false)
+	local hl = it:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	hl:SetColorTexture(1, 1, 1, 0.1)
+	it:SetScript("OnClick", function(self) ns.SafeCall("window pick", Pick, self.value) end)
+	picker.items[i] = it
+	return it
+end
+
+-- Список собирается заново при каждом открытии: вкладки могли создать, закрыть или переименовать.
+local function ToggleList()
+	local list = picker.list
+	if list:IsShown() then
+		list:Hide()
+		return
+	end
+	local entries = { { text = L.WINDOW_MAIN, value = "" } }
+	for _, w in ipairs(ns.Chat.Windows()) do
+		if w.frame ~= DEFAULT_CHAT_FRAME then entries[#entries + 1] = { text = w.name, value = w.name } end
+	end
+	local chosen = U.Fold(ns.Chat.Window() or "")
+	for i, e in ipairs(entries) do
+		local it = PickerItem(i)
+		it.value = e.value
+		it.text:SetText(e.text)
+		it.check:SetShown(U.Fold(e.value) == chosen)
+		it:Show()
+	end
+	for i = #entries + 1, #picker.items do picker.items[i]:Hide() end
+	local h = 12 + #entries * ITEM_H
+	local empty = picker.empty
+	empty:ClearAllPoints()
+	empty:SetPoint("TOPLEFT", list, "TOPLEFT", 10, -h)
+	empty:SetShown(#entries == 1)
+	if #entries == 1 then h = h + math.max(28, empty:GetStringHeight() or 0) + 6 end
+	list:SetHeight(h)
+	list:Show()
+end
+
+local function BuildPicker()
+	local label = settings:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	label:SetPoint("TOPLEFT", settings, "TOPLEFT", 46, -settingsY - 6)
+	label:SetText(L.WINDOW_TITLE .. ":")
+	local b = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
+	b:SetSize(220, 22)
+	b:SetPoint("LEFT", label, "RIGHT", 8, 0)
+	b:SetScript("OnClick", function() ns.SafeCall("window list", ToggleList) end)
+	SetTip(b, function(tt)
+		tt:AddLine(L.WINDOW_TITLE, 1, 0.82, 0)
+		tt:AddLine(L.WINDOW_TIP, 1, 1, 1, true)
+	end)
+	local list = CreateFrame("Frame", nil, settings)
+	list:SetPoint("TOPLEFT", b, "BOTTOMLEFT", 0, -2)
+	list:SetWidth(260)
+	list:SetFrameStrata("DIALOG")
+	list:EnableMouse(true)
+	local edge = list:CreateTexture(nil, "BACKGROUND", nil, -1)
+	edge:SetPoint("TOPLEFT", -1, 1)
+	edge:SetPoint("BOTTOMRIGHT", 1, -1)
+	edge:SetColorTexture(0.5, 0.5, 0.5, 0.9)
+	local bg = list:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0.06, 0.06, 0.06, 0.96)
+	local empty = list:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	empty:SetWidth(240)
+	empty:SetJustifyH("LEFT")
+	empty:SetText(L.WINDOW_NONE)
+	list:Hide()
+	-- Список — ребёнок настроек: без этого он снова появится вместе с ними.
+	settings:SetScript("OnHide", function() list:Hide() end)
+	picker.label, picker.button, picker.list, picker.empty = label, b, list, empty
+	settingsY = settingsY + 30
 end
 
 local function BuildSettings(parent)
@@ -132,7 +256,11 @@ local function BuildSettings(parent)
 		ns.char.chatOn = on
 		ns.Print(on and L.CHAT_ON or L.CHAT_OFF)
 	end)
-	Check("mirror", L.CHECK_MIRROR, L.CHECK_MIRROR_TIP, function() return ns.char.chatMirror end, function(on) ns.char.chatMirror = on end)
+	Check("mirror", L.CHECK_MIRROR, L.CHECK_MIRROR_TIP, function() return ns.char.chatMirror end, function(on)
+		ns.char.chatMirror = on
+		RenderPicker()
+	end)
+	BuildPicker()
 	Check("time", L.CHECK_TIME, L.CHECK_TIME_TIP, function() return ns.char.chatTime end, function(on)
 		ns.char.chatTime = on
 		ns.ChatPane.Reload()
@@ -144,7 +272,7 @@ local function BuildSettings(parent)
 	Check("recruits", L.CHECK_RECRUITS, L.CHECK_RECRUITS_TIP,
 		function() return not ns.Recruit.NoContactMe() end, function(on) ns.Recruit.SetNoContact(not on) end)
 	local hint = settings:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-	hint:SetPoint("TOPLEFT", settings, "TOPLEFT", 20, -24 - #checks * 30)
+	hint:SetPoint("TOPLEFT", settings, "TOPLEFT", 20, -settingsY - 8)
 	hint:SetPoint("RIGHT", settings, "RIGHT", -20, 0)
 	hint:SetJustifyH("LEFT")
 	hint:SetText(L.SETTINGS_HINT)
@@ -230,6 +358,7 @@ function UI.Render()
 		ns.CensusPane.Hide()
 		settings:Show()
 		for _, c in ipairs(checks) do c:SetChecked(c.get() and true or false) end
+		RenderPicker()
 		return
 	end
 	settings:Hide()
@@ -296,11 +425,7 @@ end
 
 local function Portrait(f)
 	local tex = f.portrait or f.Portrait or (f.PortraitContainer and f.PortraitContainer.portrait)
-	if not tex then return end
-	local set = rawget(_G, "SetPortraitToTexture")
-	if type(set) == "function" and pcall(set, tex, ICON) then return end
-	tex:SetTexture(ICON)
-	if tex.SetMask then pcall(tex.SetMask, tex, "Interface\\CharacterFrame\\TempPortraitAlphaMask") end
+	if tex then tex:SetTexture(ICON) end
 end
 
 local function SavePosition(f)
@@ -485,7 +610,6 @@ local function CreateButton()
 	icon:SetTexture(ICON)
 	icon:SetSize(18, 18)
 	icon:SetPoint("TOPLEFT", 7, -7)
-	if icon.SetMask then pcall(icon.SetMask, icon, "Interface\\CharacterFrame\\TempPortraitAlphaMask") end
 	local ring = b:CreateTexture(nil, "OVERLAY")
 	ring:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
 	ring:SetSize(53, 53)

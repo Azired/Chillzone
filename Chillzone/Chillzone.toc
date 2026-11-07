@@ -1,6 +1,7 @@
 ## Interface: 11509, 11510, 16001, 16002, 16003, 16004, 16005, 16010, 16100, 20506, 20507
 ## Title: |cff7fd4c1Chillzone|r
 ## Notes: Связь гильдий «Чиллзон»: перепись, королевство, карта и общий чат.
+## IconTexture: Interface\AddOns\Chillzone\media\logo
 ## Author: Chillzone addon contributors
 ## Version: 0.7.1
 ## SavedVariables: ChillzoneDB
