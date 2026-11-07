@@ -120,6 +120,17 @@ T.test("union: вкладка управления исчезает при пе�
     T.no(k.ns.UI.Current() == "union")
 end)
 
+T.test("union: новый участник главной гильдии получает состав при входе", function()
+    local w, k, _, v = Build()
+    w:Pair(v, k)
+    w:Run(40)
+    local reader = w:Client({ first = "Новый", surname = "Главный", guild = k.guild, rank = 3 })
+    k.ns.Roster.Scan()
+    w:Run(60)
+    T.ok(reader.ns.Util.IsMemberGuild(v.guild), "главная гильдия тоже запрашивает состав при первом объявлении")
+    T.eq(#reader.ns.db.errors, 0)
+end)
+
 T.test("union: решение офицера с настоящей подписью не меняет состав", function()
     local w, k, o, v = Build()
     w:Pair(v, k)

@@ -441,6 +441,8 @@ T.test("security: priority queue and peer discovery have hard bounds", function(
 end)
 
 T.test("security: additional readers cause no author-to-reader confirmation traffic", function()
+    -- При этом порядке таймеров повторные просьбы сертификата вытесняли чат каталогами.
+    math.randomseed(2)
     local w, c = Build()
     local readers = {}
     for i = 1, 12 do readers[i] = w:Client({ first = "Читатель" .. i, surname = "Севера", guild = "Чиллзон Север", rank = 3 }) end

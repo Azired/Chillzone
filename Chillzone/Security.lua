@@ -454,11 +454,12 @@ end
 -- (KQ) отдаёт автор, а новые сертификаты рассылает выдавший их офицер.
 function S.Say()
     if not identity or not ns.MyGuild() or not ns.Roster.Fresh() then return end
+    local needUnion = lastHello < 0 or not ns.IsMember()
     lastHello = ns.Now()
     keys[ns.myKey] = { name = ns.me, public = identity.public, at = lastHello }
     local mine = S.MyCertificate()
-    -- "~0": сертификата у меня нет. Издатель, у которого он уже есть, пришлёт его шёпотом.
-    ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0") .. (ns.IsMember() and "" or "~u"),
+    -- "~0" просит только сертификат; "~u" — состав при входе или пока своя гильдия неизвестна.
+    ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0") .. (needUnion and "~u" or ""),
         { prio = ns.Comm.PRIO_BOOTSTRAP, key = "identity" })
     if mine and (not lastSaid or lastSaid.raw ~= mine.raw or lastHello - lastSaid.at >= C.AUTH_ANNOUNCE) then
         lastSaid = { raw = mine.raw, at = lastHello }
@@ -810,7 +811,7 @@ ns.Comm.On("K1", function(msg, sender, dist)
     -- После перезагрузки имя то же. Ответить на объявление ключа, чтобы вошедший узнал
     -- репортёра-офицера раньше, чем примет RG, и корень гильдии раньше, чем офицер возьмётся
     -- за /chillzone trust init.
-    if S.CanAdmin() and flag ~= "" then nativeUnionPending = true end
+    if S.CanAdmin() and flag:find("~u", 1, true) then nativeUnionPending = true end
     if S.CanAdmin() and not nativeTrustPending then
         nativeTrustPending = true
         ns.After(math.max(0, 5 - (ns.Now() - lastNativeHello)), "доверие новым участникам", function()
