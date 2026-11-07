@@ -99,11 +99,17 @@ function Chat.Tag(tier)
 	return "|c" .. Chat.TIER_COLOR[tier] .. "|H" .. Chat.TAG_LINK .. tier .. "|h[" .. L["TIER_" .. tier] .. "]|h|r"
 end
 
+-- Короткая метка гильдии только в строках чата; полное имя хранится в истории.
+function Chat.GuildTag(guild)
+	local name = Codec.Plain(guild or "?")
+	return L.CHAT_GUILD_TAGS[U.Fold(name)] or name
+end
+
 function Chat.Format(tier, guild, sender, class, text)
 	local name = U.Display(sender)
 	local color = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
 	if color and color.colorStr then name = "|c" .. color.colorStr .. name .. "|r" end
-	local g = Codec.Plain(guild or "?")
+	local g = Chat.GuildTag(guild)
 	return Chat.Tag(tier) .. " |cff999999<" .. g .. ">|r |Hplayer:" .. (U.TellName(sender) or "?") .. "|h[" .. name .. "]|h: " .. Codec.SanitizeChat(text)
 end
 
@@ -360,26 +366,14 @@ function Chat.Submit(channel, text)
 	return Chat.Send(channel, text)
 end
 
--- Открытие ввода с проверкой прав: UI.Select иначе подменяет недоступный канал первым.
-function Chat.OpenInput(tier, text)
-	if Chat.MyLevel() < Chat.TIER_LEVEL[tier] then
-		ns.Print(L.CHAT_NO_RIGHTS, L["TIER_" .. tier])
-		return
-	end
-	if not (ns.UI and ns.UI.OpenChat) then return end
-	ns.UI.OpenChat(tier, true)
-	if text and text ~= "" then ns.ChatPane.Insert(text) end
-end
-
 -- /cz и кириллические алиасы всегда принадлежат чату, включая слова settings/status.
-local inputAliases = { ["/cz"] = "A", ["/чз"] = "A", ["/чиллзон"] = "A" }
+-- Ввод остаётся в игровом поле; сообщение отправляется только после Enter.
 for i, tier in ipairs({ "A", "C", "L" }) do
 	_G["SLASH_CHILLZONE" .. tier .. "1"] = "/cz" .. i
 	_G["SLASH_CHILLZONE" .. tier .. "2"] = "/чз" .. i
-	inputAliases["/cz" .. i], inputAliases["/чз" .. i] = tier, tier
 	SlashCmdList["CHILLZONE" .. tier] = function(msg)
 		if U.Trim(msg) == "" then
-			ns.SafeCall("/cz" .. i, Chat.OpenInput, tier)
+			ns.Print(L.CHAT_USAGE)
 			return
 		end
 		ns.SafeCall("/cz" .. i, Chat.Send, tier, msg or "")
@@ -388,39 +382,6 @@ end
 _G.SLASH_CHILLZONEA3 = "/cz"
 _G.SLASH_CHILLZONEA4 = "/чз"
 _G.SLASH_CHILLZONEA5 = "/чиллзон"
-
--- Наблюдаем за вводом через пост-хук скрипта, не меняя текст, атрибуты и методы
--- игрового поля. Переводим фокус только после завершения обработчика Blizzard.
--- Повторно читаем строку: Escape, Enter или исправление команды отменяют переход.
-ns.On("LOGIN", function()
-	local pending, hooked, rejected = {}, {}, {}
-	local function Changed(editBox, userInput)
-		local command = (editBox:GetText() or ""):match("^(/%S+)%s")
-		command = command and U.Fold(command)
-		if rejected[editBox] ~= command then rejected[editBox] = nil end
-		if not userInput or pending[editBox] or rejected[editBox] or not editBox:HasFocus() then return end
-		if ns.ChatPane.Gamepad() or not inputAliases[command] then return end
-		pending[editBox] = true
-		ns.After(0, "chat input switch", function()
-			pending[editBox] = nil
-			if not editBox:IsShown() or not editBox:HasFocus() or ns.ChatPane.Gamepad() then return end
-			local cmd, text = (editBox:GetText() or ""):match("^(/%S+)%s+(.*)$")
-			local tier = cmd and inputAliases[U.Fold(cmd)]
-			if tier then
-				if Chat.MyLevel() < Chat.TIER_LEVEL[tier] then rejected[editBox] = U.Fold(cmd) end
-				Chat.OpenInput(tier, text)
-			end
-		end)
-	end
-	for i = 1, (tonumber(NUM_CHAT_WINDOWS) or 10) do
-		local frame = rawget(_G, "ChatFrame" .. i)
-		local editBox = rawget(_G, "ChatFrame" .. i .. "EditBox") or (frame and frame.editBox)
-		if editBox and not hooked[editBox] then
-			hooked[editBox] = true
-			editBox:HookScript("OnTextChanged", Changed)
-		end
-	end
-end)
 
 ---------------------------------------------------------------------------
 -- Клик по метке канала в чате игры. Ссылки addon: игра на Forever отдаёт своему

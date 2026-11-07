@@ -71,21 +71,21 @@ function Who.Reset()
 	ns.Fire("WHO", Who.found)
 end
 
-function Who.Search()
-	if ns.IsMember() then return false end
+-- Можно ли сейчас отправить запрос: функция отправки или nil (причину уже сказали игроку).
+local function Ready()
 	local now = ns.Now()
 	if pending or now < lateUntil or now - lastSend < Who.COOLDOWN then
 		ns.Print(L.RECRUIT_SEARCH_WAIT)
-		return false
+		return nil
 	end
 	HookSearch()
 	local send = C_FriendList and C_FriendList.SendWho or SendWho
-	if type(send) ~= "function" then ns.Print(L.RECRUIT_NO_WHO); return false end
-	if not Who.Fresh() or (brackets and step > #brackets) then Who.Reset() end
-	local query = ('g-"%s"'):format(ns.Config.GUILD_TOKEN:gsub('["%c]', ""))
-	if step > 0 and brackets then query = query .. (" %d-%d"):format(brackets[step][1], brackets[step][2]) end
-	local p = { step = step }
-	pending, lastSend = p, now
+	if type(send) ~= "function" then ns.Print(L.RECRUIT_NO_WHO); return nil end
+	return send
+end
+
+local function Send(send, query, p)
+	pending, lastSend = p, ns.Now()
 	-- Не читаем чужой запоздалый ответ после тайм-аута. Следующий щелчок повторит диапазон.
 	ns.After(Who.TIMEOUT, "поиск: тайм-аут", function()
 		if pending ~= p then return end
@@ -105,6 +105,27 @@ function Who.Search()
 	ns.Print(L.RECRUIT_SEARCHING)
 	ns.Fire("RECRUIT")
 	return true
+end
+
+function Who.Search()
+	if ns.IsMember() then return false end
+	local send = Ready()
+	if not send then return false end
+	if not Who.Fresh() or (brackets and step > #brackets) then Who.Reset() end
+	local query = ('g-"%s"'):format((ns.Config.GUILD_TOKEN:gsub('["%c]', "")))
+	if step > 0 and brackets then query = query .. (" %d-%d"):format(brackets[step][1], brackets[step][2]) end
+	return Send(send, query, { step = step })
+end
+
+-- Один игрок по имени (офицер из подсказки J2, которого не нашёл поиск по гильдии). Его
+-- строка добавляется в тот же список, только если /who видит его в гильдии Чиллзона;
+-- раунд и диапазоны уровней не сдвигаются. На Forever работает /who "Имя Фамилия",
+-- а n-"Имя Фамилия" ничего не находит. Ранга /who не показывает: его назвал J2.
+function Who.Verify(name)
+	if ns.IsMember() or not Who.Fresh() or type(name) ~= "string" or name == "" then return false end
+	local send = Ready()
+	if not send then return false end
+	return Send(send, ('"%s"'):format((name:gsub('["%c]', ""))), { verify = true })
 end
 
 local function OnAnswer()
@@ -139,6 +160,10 @@ local function OnAnswer()
 				end
 			end
 		end
+	end
+	if p.verify then
+		ns.Fire("WHO", Who.found)
+		return
 	end
 	if p.step == 0 then
 		roundAt = ns.Now()
