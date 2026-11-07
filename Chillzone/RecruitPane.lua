@@ -37,7 +37,7 @@ function Pane.Build(parent)
 	child = CreateFrame("Frame", nil, scroll)
 	child:SetSize(740, 10)
 	scroll:SetScrollChild(child)
-	Pane.frames.pane, Pane.frames.search = pane, search
+	Pane.frames.pane, Pane.frames.search, Pane.frames.note = pane, search, note
 	pane:Hide()
 	return pane
 end
@@ -51,13 +51,24 @@ local function GuildLine(g)
 	return L.RECRUIT_GUILD:format(list, g.free and tostring(g.free) or "?")
 end
 
+-- Почему в гильдию сейчас некому написать: мест нет, всем офицерам уже написали или их не видно.
+local function Unavailable(guild, officers)
+	if not R.HasSpace(guild) then return L.RECRUIT_NO_PLACES end
+	return officers > 0 and L.RECRUIT_NOBODY or L.RECRUIT_NO_OFFICERS
+end
+
 function Pane.Render()
 	if not pane then return end
 	local guilds, y = R.Guilds(), 0
+	local action, _, hint = R.NextSearch()
+	local open = false
+	for _, g in ipairs(guilds) do open = open or g.free ~= 0 end
 	if ns.Who.IsPending() then note:SetText(L.RECRUIT_SEARCHING)
+	elseif action == "guild" then note:SetText(L.RECRUIT_GUILD_NEXT:format(hint.name, hint.free))
+	elseif action == "verify" then note:SetText(L.RECRUIT_VERIFY_NEXT:format(hint.name, hint.free))
 	elseif #guilds == 0 then note:SetText(L.RECRUIT_EMPTY)
-	elseif R.Unverified() then note:SetText(L.RECRUIT_VERIFY_NEXT)
-	else note:SetText(ns.Who.missing and L.RECRUIT_MORE_SEARCH or L.RECRUIT_SEARCH_DONE) end
+	elseif ns.Who.missing then note:SetText(L.RECRUIT_MORE_SEARCH)
+	else note:SetText(open and L.RECRUIT_SEARCH_DONE or L.RECRUIT_ALL_FULL) end
 	for i, g in ipairs(guilds) do
 		local row = guildRows[i]
 		if not row then
@@ -67,7 +78,7 @@ function Pane.Render()
 			row.sub = Label(row, 0, 23, 480)
 			row.ask = Button(row, L.RECRUIT_ASK, 210, function()
 				local p = R.NextContact(row.guild)
-				if p then R.Prompt(p) else ns.Print(#R.Officers(row.guild) > 0 and L.RECRUIT_NOBODY or L.RECRUIT_NO_OFFICERS) end
+				if p then R.Prompt(p) else ns.Print(Unavailable(row.guild, #R.Officers(row.guild))) end
 			end)
 			row.ask:SetPoint("TOPRIGHT", 0, -5)
 			guildRows[i] = row
@@ -78,7 +89,7 @@ function Pane.Render()
 		row.title:SetText(ns.Codec.Plain(g.name))
 		row.sub:SetText(GuildLine(g))
 		local contact = R.NextContact(g.name)
-		row.ask:SetText(contact and L.RECRUIT_ASK or (#g.officers > 0 and L.RECRUIT_NOBODY or L.RECRUIT_NO_OFFICERS))
+		row.ask:SetText(contact and L.RECRUIT_ASK or Unavailable(g.name, #g.officers))
 		row.ask:SetEnabled(contact ~= nil)
 		row:Show()
 		y = y + 54
