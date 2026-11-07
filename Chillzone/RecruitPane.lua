@@ -28,7 +28,7 @@ function Pane.Build(parent)
 	pane:SetAllPoints(parent)
 	Label(pane, 16, 12, 720, "GameFontNormalLarge"):SetText(L.RECRUIT_TITLE)
 	Label(pane, 16, 40, 740):SetText(L.RECRUIT_INTRO)
-	local search = Button(pane, L.RECRUIT_SEARCH, 190, function() ns.Who.Search() end)
+	local search = Button(pane, L.RECRUIT_SEARCH, 190, function() R.Search() end)
 	search:SetPoint("TOPLEFT", 16, -78)
 	note = Label(pane, 222, 83, 530)
 	local scroll = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
@@ -56,6 +56,7 @@ function Pane.Render()
 	local guilds, y = R.Guilds(), 0
 	if ns.Who.IsPending() then note:SetText(L.RECRUIT_SEARCHING)
 	elseif #guilds == 0 then note:SetText(L.RECRUIT_EMPTY)
+	elseif R.Unverified() then note:SetText(L.RECRUIT_VERIFY_NEXT)
 	else note:SetText(ns.Who.missing and L.RECRUIT_MORE_SEARCH or L.RECRUIT_SEARCH_DONE) end
 	for i, g in ipairs(guilds) do
 		local row = guildRows[i]

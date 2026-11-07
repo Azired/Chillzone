@@ -122,6 +122,64 @@ T.test("заявки: поиск показывает офицеров, рядо
 	R.asked[U.Key(c.O:Name())] = w.now
 	T.no(R.NextContact("Чиллзон Север"), "после главы рядовому не пишем")
 	T.no(R.NextContact())
+	local logged = false
+	for _, line in ipairs(c.R.ns.db.log) do logged = logged or line:find("J2 от", 1, true) ~= nil end
+	T.ok(logged, "ответ J2 виден в логе")
+	Errors(c)
+end)
+
+T.test("заявки: заполненная гильдия тоже называет офицеров", function()
+	local w, c = Build()
+	c.R:Slash("/chillzone")
+	-- У участников «Чиллзон Север» гильдия заполнена: мест 0.
+	local caps = {}
+	for _, m in ipairs({ c.O, c.M }) do
+		for _, s in ipairs(m.ns.Data.Summary()) do
+			if s.mine then caps[m] = m.ns.Codec.GUILD_CAP; m.ns.Codec.GUILD_CAP = s.total end
+		end
+	end
+	T.ok(caps[c.O] and caps[c.M], "у участников есть свой отчёт")
+	Search(w, c)
+	for m, cap in pairs(caps) do m.ns.Codec.GUILD_CAP = cap end
+	local R, U = c.R.ns.Recruit, c.R.ns.Util
+	local officers = R.Officers("Чиллзон Север")
+	T.eq(#officers, 1)
+	T.eq(U.Key(officers[1].name), U.Key(c.O:Name()))
+	local north
+	for _, g in ipairs(R.Guilds()) do if g.name == "Чиллзон Север" then north = g end end
+	T.eq(north.free, 0, "мест нет, но офицеры видны")
+	T.ok(R.NextContact("Чиллзон Север"))
+	Errors(c)
+end)
+
+T.test("заявки: офицер вне выдачи поиска по гильдии проверяется по имени", function()
+	local w, c = Build()
+	c.R:Slash("/chillzone")
+	local leader = c.O:Name()
+	-- В большой гильдии /who по гильдии отдаёт 50 строк: глава в них не попал.
+	c.R.whoRows = function(query, rows)
+		if not query:find("g%-") then return rows end
+		local out = {}
+		for _, row in ipairs(rows) do
+			if not row.fullName:find(leader, 1, true) then out[#out + 1] = row end
+		end
+		return out
+	end
+	Search(w, c)
+	local R, U = c.R.ns.Recruit, c.R.ns.Util
+	T.eq(#R.Officers("Чиллзон Север"), 0, "глава назван, но не найден")
+	T.eq(U.Key(R.Unverified()), U.Key(leader))
+	w:Run(11)
+	T.ok(R.Search())
+	T.ok(c.R.whoQueries[#c.R.whoQueries]:find('n-"' .. leader .. '"', 1, true), "запрос по имени")
+	w:Run(1)
+	local officers = R.Officers("Чиллзон Север")
+	T.eq(#officers, 1, "найден по имени")
+	T.eq(U.Key(officers[1].name), U.Key(leader))
+	T.no(R.Unverified())
+	w:Run(11)
+	T.ok(R.Search())
+	T.ok(c.R.whoQueries[#c.R.whoQueries]:find("g-", 1, true), "дальше обычный поиск")
 	Errors(c)
 end)
 

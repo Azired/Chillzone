@@ -16,7 +16,7 @@ local Recruit = {
 	found = {}, asked = {}, replied = {}, replyNames = {}, requests = {},
 }
 ns.Recruit = Recruit
-local routeAsked, dnc, answered, whispers, requestAt, lineTimes = {}, {}, {}, {}, {}, {}
+local routeAsked, dnc, answered, whispers, requestAt, lineTimes, verifyTried = {}, {}, {}, {}, {}, {}, {}
 local lastAsk, lastRoute = -math.huge, -math.huge
 
 local function Field(s) return Codec.Plain(s):gsub("[~;=/]", "") end
@@ -46,6 +46,7 @@ local function AskRoute(name, check)
 	if not check and routeAsked[key] and now - routeAsked[key] < 10 then return false end
 	if not Whisper(name, "J1~1") then return false end
 	routeAsked[key] = now
+	ns.Log("вступление: J1 для %s", U.Display(name))
 	return true
 end
 
@@ -107,6 +108,34 @@ function Recruit.NextContact(guild)
 	return nil
 end
 
+-- Офицер, которого назвала подсказка J2, но не нашёл поиск по гильдии: /who отдаёт 50 строк,
+-- а в большой гильдии в игре сотни. Его проверяет отдельный запрос по имени, по одному
+-- на щелчок; одно имя проверяем не чаще раза за раунд поиска.
+function Recruit.Unverified()
+	local route = Recruit.Route()
+	if not route or not ns.Who.Fresh() or ns.IsMember() then return nil end
+	local now = ns.Now()
+	for _, g in ipairs(Recruit.Guilds()) do
+		local hint = route.byName[U.GuildKey(g.name)]
+		for _, name in ipairs(hint and hint.contacts or {}) do
+			local key, at = U.Key(name), verifyTried[U.Key(name)]
+			if key and not Found(name, g.name) and not dnc[key] and not Recruit.asked[key]
+				and not (at and now - at <= ns.Who.ROUND_TTL) then return name end
+		end
+	end
+	return nil
+end
+
+-- Щелчок «Найти гильдии»: сначала проверка названного офицера, потом обычный поиск.
+function Recruit.Search()
+	local name = Recruit.Unverified()
+	if not name then return ns.Who.Search() end
+	if not ns.Who.Verify(name) then return false end
+	verifyTried[U.Key(name)] = ns.Now()
+	ns.Log("вступление: проверка офицера %s через /who", U.Display(name))
+	return true
+end
+
 function Recruit.OnRoute(msg, sender, dist, ctx)
 	if dist ~= "WHISPER" or ctx or ns.IsMember() then return false end
 	local key, now = U.Key(sender), ns.Now()
@@ -142,6 +171,7 @@ function Recruit.OnRoute(msg, sender, dist, ctx)
 		end
 	end
 	if n > 0 or not Recruit.Route() then Recruit.route = r end
+	ns.Log("вступление: J2 от %s: %s", U.Display(sender), msg)
 	if dnc[key] and Recruit.pending and U.Key(Recruit.pending.name) == key then
 		Recruit.Cancel()
 		ns.Print(L.RECRUIT_DNC, U.Display(sender))
@@ -153,13 +183,14 @@ ns.Comm.On("J2", Recruit.OnRoute)
 
 -- Глава главной гильдии не получает поток рекрутов. Своя гильдия — из ростера,
 -- чужая — из подписанной переписи; список офицеров дополнительно сверяется с сертификатами.
+-- Заполненная гильдия тоже попадает в ответ (мест 0), иначе новичок не увидит её офицеров;
+-- гильдии с местами идут первыми и первыми помещаются в 250 байт.
 function Recruit.RouteAnswer()
 	local list = {}
 	for _, s in ipairs(ns.Data.Summary()) do
 		local row = ns.Data.Row(s.guild)
 		if s.fresh and not s.conflict and (s.mine or (row and row.signed)) and U.IsMemberGuild(s.guild) then
-			local free = math.max(0, Codec.GUILD_CAP - (s.total or Codec.GUILD_CAP))
-			if free > 0 then list[#list + 1] = { s = s, free = free } end
+			list[#list + 1] = { s = s, free = math.max(0, Codec.GUILD_CAP - (s.total or Codec.GUILD_CAP)) }
 		end
 	end
 	table.sort(list, function(a, b)
@@ -198,7 +229,9 @@ function Recruit.OnRouteAsk(msg, sender, dist, ctx)
 	for i = #answerTimes, 1, -1 do if now - answerTimes[i] >= 60 then table.remove(answerTimes, i) end end
 	if #answerTimes >= 10 then return false end
 	answered[key], answerTimes[#answerTimes + 1] = now, now
-	return Whisper(sender, Recruit.RouteAnswer())
+	local answer = Recruit.RouteAnswer()
+	ns.Log("вступление: J1 от %s, ответ %s", U.Display(sender), answer)
+	return Whisper(sender, answer)
 end
 ns.Comm.On("J1", Recruit.OnRouteAsk)
 
@@ -373,13 +406,15 @@ end
 
 ns.On("WHO", function(list)
 	Recruit.found = list
+	-- Пустой список — новый раунд поиска: проверенные по имени офицеры из него выпали.
+	if #list == 0 then verifyTried = {} end
 	AskRoutes()
 	Changed()
 end)
 ns.On("GUILD_CHANGED", function()
 	Recruit.Cancel()
 	Recruit.found, Recruit.asked, Recruit.replied, Recruit.replyNames, Recruit.requests, Recruit.route = {}, {}, {}, {}, {}, nil
-	routeAsked, dnc, answered, whispers, requestAt, lineTimes, answerTimes = {}, {}, {}, {}, {}, {}, {}
+	routeAsked, dnc, answered, whispers, requestAt, lineTimes, answerTimes, verifyTried = {}, {}, {}, {}, {}, {}, {}, {}
 	Changed()
 end)
 ns.On("ROSTER", Changed)
