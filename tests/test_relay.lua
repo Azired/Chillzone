@@ -309,6 +309,62 @@ T.test("relay: уровень канала у отправителя — по с
 	T.eq(c.G:Saw("глава со свежей ролью"), 1, "со свежей ролью строка доходит")
 end)
 
+T.test("census: новый репортёр сохраняет прежнего после начала работы, но лишь на время передачи", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон Север")
+	local A = w:Client({ first = "Алла", surname = "Альфа", guild = "Чиллзон Север", rank = 1 })
+	local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	local B = w:Client({ first = "Бетта", surname = "Быстрая", guild = "Чиллзон Север", rank = 1 })
+	local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+	local census, C = A.ns.Census, A.ns.Config
+	local vera, betta = Key(A, V:Name()), Key(A, B:Name())
+	A.ns.Roster.Scan()
+	census.Peers()[vera] = { t = w.now, name = V:Name() }
+	census.Track()
+	w.now = C.LOGIN_QUIET - 0.01
+	T.ok(census.MayForward(vera), "до начала работы прежний репортёр принимается")
+	w.now = C.LOGIN_QUIET + 0.5
+	T.ok(census.IsReporter(), "новый репортёр уже работает")
+	T.ok(census.MayForward(vera), "прежний ещё может пересылать по живой аренде")
+	local deadline = w.now + C.REPORTER_HANDOVER
+	census.Peers()[betta] = { t = w.now, name = B:Name() }
+	T.eq(census.Reporter(true), betta, "позже появился другой кандидат")
+	T.ok(census.MayForward(vera), "запомнен именно прежний репортёр")
+	T.no(census.MayForward(betta), "новый кандидат не подменяет прежнего во время передачи")
+	T.no(census.MayForward(Key(A, N:Name())), "рядовой не получает права пересылки")
+	w.now = deadline
+	A.ns.Roster.Scan()
+	census.Peers()[vera].t = w.now
+	T.ok(census.MayForward(vera), "последняя граница окна включена")
+	w.now = deadline + 0.01
+	census.Peers()[vera].t = w.now
+	T.no(census.MayForward(vera), "новые приветствия не продлевают завершённую передачу")
+	A.ns.Fire("GUILD_CHANGED")
+	T.no(census.MayForward(vera), "смена гильдии сбрасывает прежнего репортёра")
+	T.eq(#A.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("census: новый репортёр узнаёт прежнего после начала работы без продления окна", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон Север")
+	local A = w:Client({ first = "Алла", surname = "Альфа", guild = "Чиллзон Север", rank = 1 })
+	local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	local census, C = A.ns.Census, A.ns.Config
+	local vera = Key(A, V:Name())
+	A.ns.Roster.Scan()
+	w.now = C.LOGIN_QUIET
+	census.Track()
+	T.no(census.MayForward(vera), "неизвестный аддон ещё не имеет права пересылки")
+	w.now = C.LOGIN_QUIET + 5
+	census.Peers()[vera] = { t = w.now, name = V:Name() }
+	T.ok(census.MayForward(vera), "запоздавшее приветствие прежнего репортёра принято")
+	w.now = C.LOGIN_QUIET + C.REPORTER_HANDOVER + 0.01
+	A.ns.Roster.Scan()
+	census.Peers()[vera].t = w.now
+	T.no(census.MayForward(vera), "срок считается от начала работы, а не от запоздавшего приветствия")
+	T.eq(#A.ns.db.errors, 0, "без ошибок")
+end)
+
 T.test("relay: смена репортёра — чат гильдии не теряется, аренда переходит преемнику", function()
 	local w, c = Build()
 	local U = c.A.ns.Util
