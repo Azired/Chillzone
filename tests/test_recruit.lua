@@ -89,8 +89,97 @@ T.test("заявки: не беспокоить закрывает уже отк
 	T.no(R.pending)
 	T.no(c.R.ns.RecruitPane.frames.dialog:IsShown())
 	T.no(R.Ask(contact, "не должно уйти"))
-	T.eq(R.NextContact("Чиллзон Север").name, c.M.ns.me)
+	T.no(R.NextContact("Чиллзон Север"), "рядовой не предлагается вместо офицера")
 	T.eq(#c.O.ns.Recruit.requests, 0)
+	Errors(c)
+end)
+
+T.test("заявки: поиск показывает офицеров, рядовым просьба не уходит", function()
+	local w, c = Build()
+	c.R:Slash("/chillzone")
+	Search(w, c)
+	local R, U = c.R.ns.Recruit, c.R.ns.Util
+	local asked = {}
+	for _, entry in ipairs(w.log) do
+		if entry.from == "Новый Игрок" and entry.msg:find("J1~1", 1, true) then asked[entry.target] = true end
+	end
+	T.ok(asked[c.K:Name()], "J1 участнику второй гильдии")
+	T.ok(asked[c.O:Name()] and asked[c.M:Name()], "J1 нескольким из гильдии без известных офицеров")
+	-- Ответы J2 складываются: ответ Короля (своя гильдия без контактов) не стирает офицеров Севера.
+	local officers = R.Officers("Чиллзон Север")
+	T.eq(#officers, 1, "только глава, рядовой Миша не офицер")
+	T.eq(U.Key(officers[1].name), U.Key(c.O:Name()))
+	T.eq(#R.Officers("Чиллзон"), 0, "Король не адресат")
+	local guilds = R.Guilds()
+	T.eq(guilds[1].name, "Чиллзон Север", "гильдия с офицерами — первой")
+	T.ok(guilds[1].free and guilds[2].free, "места известны для обеих гильдий")
+	local rows = c.R.ns.RecruitPane.guildRows
+	T.ok(rows[1].sub:GetText():find(U.Display(c.O:Name()), 1, true), "в строке гильдии — имя офицера")
+	T.no(rows[1].sub:GetText():find(U.Display(c.M:Name()), 1, true), "рядового в строке нет")
+	T.ok(rows[2].sub:GetText():find(c.R.ns.L.RECRUIT_OFFICERS_UNKNOWN, 1, true))
+	T.eq(rows[2].ask:GetText(), c.R.ns.L.RECRUIT_NO_OFFICERS, "без офицеров писать некому")
+	T.no(R.NextContact("Чиллзон"))
+	R.asked[U.Key(c.O:Name())] = w.now
+	T.no(R.NextContact("Чиллзон Север"), "после главы рядовому не пишем")
+	T.no(R.NextContact())
+	local logged = false
+	for _, line in ipairs(c.R.ns.db.log) do logged = logged or line:find("J2 от", 1, true) ~= nil end
+	T.ok(logged, "ответ J2 виден в логе")
+	Errors(c)
+end)
+
+T.test("заявки: заполненная гильдия тоже называет офицеров", function()
+	local w, c = Build()
+	c.R:Slash("/chillzone")
+	-- У участников «Чиллзон Север» гильдия заполнена: мест 0.
+	local caps = {}
+	for _, m in ipairs({ c.O, c.M }) do
+		for _, s in ipairs(m.ns.Data.Summary()) do
+			if s.mine then caps[m] = m.ns.Codec.GUILD_CAP; m.ns.Codec.GUILD_CAP = s.total end
+		end
+	end
+	T.ok(caps[c.O] and caps[c.M], "у участников есть свой отчёт")
+	Search(w, c)
+	for m, cap in pairs(caps) do m.ns.Codec.GUILD_CAP = cap end
+	local R, U = c.R.ns.Recruit, c.R.ns.Util
+	local officers = R.Officers("Чиллзон Север")
+	T.eq(#officers, 1)
+	T.eq(U.Key(officers[1].name), U.Key(c.O:Name()))
+	local north
+	for _, g in ipairs(R.Guilds()) do if g.name == "Чиллзон Север" then north = g end end
+	T.eq(north.free, 0, "мест нет, но офицеры видны")
+	T.ok(R.NextContact("Чиллзон Север"))
+	Errors(c)
+end)
+
+T.test("заявки: офицер вне выдачи поиска по гильдии проверяется по имени", function()
+	local w, c = Build()
+	c.R:Slash("/chillzone")
+	local leader = c.O:Name()
+	-- В большой гильдии /who по гильдии отдаёт 50 строк: глава в них не попал.
+	c.R.whoRows = function(query, rows)
+		if not query:find("g%-") then return rows end
+		local out = {}
+		for _, row in ipairs(rows) do
+			if not row.fullName:find(leader, 1, true) then out[#out + 1] = row end
+		end
+		return out
+	end
+	Search(w, c)
+	local R, U = c.R.ns.Recruit, c.R.ns.Util
+	T.eq(#R.Officers("Чиллзон Север"), 0, "глава назван, но не найден")
+	T.eq(U.Key(R.Unverified()), U.Key(leader))
+	w:Run(11)
+	T.ok(R.Search())
+	T.eq(c.R.whoQueries[#c.R.whoQueries], '"' .. leader .. '"', "запрос по имени, как /who \"Имя Фамилия\"")
+	w:Run(1)
+	local officers = R.Officers("Чиллзон Север")
+	T.eq(#officers, 1, "найден по имени")
+	T.eq(U.Key(officers[1].name), U.Key(leader))
+	T.no(R.Unverified())
+	w:Run(11)
+	T.ok(R.Search())
+	T.ok(c.R.whoQueries[#c.R.whoQueries]:find("g-", 1, true), "дальше обычный поиск")
 	Errors(c)
 end)
 
