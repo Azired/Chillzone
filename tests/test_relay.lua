@@ -162,7 +162,7 @@ end)
 
 T.test("relay: согласие делиться зонами переключает репортёра", function()
 	local w, c = Build()
-	c.V:Slash("/cz", "zones on")
+	c.V:Slash("/chillzone", "zones on")
 	w:Run(200)
 	T.eq(c.B.ns.Census.Reporter(), Key(c.B, "Вера Верная"), "у Бориса")
 	T.eq(c.V.ns.Census.Reporter(), Key(c.V, "Вера Верная"), "у Веры")
@@ -208,7 +208,7 @@ T.test("relay: без проверки звания любой участник 
 	T.eq(c.B.ns.Relay.TrustOf("Мира Тихая"), "member", "member credential verified independently of gossip")
 	-- Рядовой Севера с зонами — единственный, кто делится зонами, поэтому репортёр он.
 	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3 })
-	Ak:Slash("/cz", "zones on")
+	Ak:Slash("/chillzone", "zones on")
 	w:Run(200)
 	T.eq(Ak.ns.Census.Reporter(), Key(Ak, "Вера Верная"), "zone sharing does not preempt an officer")
 	c.V:Logout()
@@ -223,7 +223,7 @@ T.test("relay: без проверки звания любой участник 
 	w:Run(30)
 	for _, cl in ipairs({ c.B, Ak }) do T.eq(cl:Saw("привет Северу через рядового"), 1, cl:Name() .. " видит") end
 	T.ok(Ak.ns.Relay.stats.delivered > 0, "certified ordinary reporter delivered real signed messages")
-	Ak:Slash("/cz", "status")
+	Ak:Slash("/chillzone", "status")
 	T.ok(Ak:Saw("может быть любой участник") >= 1, "status объясняет режим")
 end)
 
@@ -395,7 +395,7 @@ end)
 T.test("relay: рядовой не становится репортёром — ни с первым именем, ни с зонами", function()
 	local w, c = Build({ config = RANKS })
 	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3, config = RANKS })
-	Ak:Slash("/cz", "zones on")
+	Ak:Slash("/chillzone", "zones on")
 	w:Run(200)
 	for _, cl in ipairs({ c.B, c.V, Ak }) do
 		T.eq(cl.ns.Census.Reporter(), Key(cl, "Вера Верная"), cl:Name() .. ": officer has priority over veteran")
@@ -407,7 +407,7 @@ T.test("relay: рядовой не становится репортёром —
 	c.V:Logout()
 	w:Run(200)
 	T.eq(Ak.ns.Census.Reporter(), nil, "репортёра нет")
-	Ak:Slash("/cz", "status")
+	Ak:Slash("/chillzone", "status")
 	T.ok(Ak:Saw("нет главы, офицера или «Ветеран»") >= 1, "status объясняет")
 end)
 
@@ -660,21 +660,22 @@ T.test("relay: Q1 после /reload восполняет перепись", fun
 	T.ok(M2.ns.Data.Row("Чиллзон Север"), "Север пришёл по Q1")
 end)
 
-T.test("relay: /чз — как /cz: команды, окно, текст в общий чат", function()
+T.test("relay: /chillzone управляет, /чз и /cz пишут в общий чат", function()
 	local w, c = Build()
 	local toggles, toggle = 0, c.B.ns.UI.Toggle
 	c.B.ns.UI.Toggle = function() toggles = toggles + 1 end
-	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон", "/chillzone" }) do
+	for _, cmd in ipairs({ "/chillzone" }) do
 		c.B:Slash(cmd, "")
 		c.B:Slash(cmd, "status")
 	end
 	c.B.ns.UI.Toggle = toggle
-	T.eq(toggles, 4, "без текста — окно")
+	T.eq(toggles, 1, "без текста — окно")
 	T.eq(c.B.ns.Chat.stats.sent, 0, "команды не ушли в чат")
-	T.ok(c.B:Saw("перепись: репортёр") >= 4, "status выполнен")
+	T.ok(c.B:Saw("перепись: репортёр") >= 1, "status выполнен")
 	local lines = {
 		{ c.B, "/чз", "Привет кириллицей" },
 		{ c.B, "/cz", "привет без номера" },
+		{ c.B, "/чиллзон", "status" },
 		{ c.B, "/чз1", "привет через чз1" },
 		{ c.V, "/чз2", "офицерам через чз2" },
 		{ c.G, "/чз3", "главам через чз3" },
@@ -686,6 +687,7 @@ T.test("relay: /чз — как /cz: команды, окно, текст в о�
 	for name, cl in pairs(c) do
 		T.eq(cl:Saw("Привет кириллицей"), 1, name .. ": /чз текст")
 		T.eq(cl:Saw("привет без номера"), 1, name .. ": /cz текст")
+		T.eq(cl:Saw("status"), 1, name .. ": слово команды — текст через /чиллзон")
 		T.eq(cl:Saw("привет через чз1"), 1, name .. ": /чз1")
 	end
 	for _, n in ipairs({ "A", "K", "G", "V" }) do T.eq(c[n]:Saw("офицерам через чз2"), 1, n .. ": /чз2") end
@@ -697,10 +699,10 @@ end)
 T.test("relay: команды, окно и вкладки без ошибок", function()
 	local w, c = Build()
 	for _, cmd in ipairs({ "", "help", "status", "relay", "relay ping", "zones", "chat", "chat off", "chat on", "history 1", "history 3", "map off", "map on", "minimap", "minimap", "kingdom", "census", "ignore", "log 5", "debug", "debug", "нетакой" }) do
-		c.B:Slash("/cz", cmd)
-		c.A:Slash("/cz", cmd)
+		c.B:Slash("/chillzone", cmd)
+		c.A:Slash("/chillzone", cmd)
 	end
-	c.B:Slash("/cz", "ignore Глеб Гордый")
+	c.B:Slash("/chillzone", "ignore Глеб Гордый")
 	c.G:Slash("/cz1", "меня не видно")
 	w:Run(30)
 	T.eq(c.B:Saw("меня не видно"), 0, "игнор работает")

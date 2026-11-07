@@ -10,7 +10,7 @@ local Data = {}
 ns.Data = Data
 
 local claims = {} -- [originKey] = { g = guildKey, t = время }: одна гильдия на отправителя
-Data.rejected = {} -- [причина] = сколько (для /cz status)
+Data.rejected = {} -- [причина] = сколько (для /chillzone status)
 
 local function Guilds()
 	return ns.store and ns.store.guilds or {}
