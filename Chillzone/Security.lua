@@ -24,6 +24,7 @@ local serial, lastHello, lastPolicy = 0, -1e9, -1e9
 local lastSaid
 local policySigning = {}
 local policySent = {}
+local lastLegacyProbe = -1e9
 local lastNativeHello = -1e9
 local nativeTrustPending = false
 local nativeUnionPending = false
@@ -327,9 +328,9 @@ end
 -- Задать корень гильдии guild. Отозванный ключ (/chillzone trust reset) из каталога, от офицеров
 -- (KT) и т. п. не принимается; confirmed — его явно подтвердил офицер здесь же
 -- (/chillzone accept или ответ на свой /chillzone link): тогда отметка об отзыве снимается.
-local function Pin(guild, name, public, confirmed)
+local function Pin(guild, name, public, confirmed, trustedRoot)
     if not GuildName(guild) or not Name(name) then return false end
-    if not LocalOrMember(guild) and not (confirmed and S.CanManageUnion()) then return false end
+    if not LocalOrMember(guild) and not trustedRoot and not (confirmed and S.CanManageUnion()) then return false end
     local pk = Ed.FromB64(public)
     if not pk or #pk ~= 32 then return false end
     local s, gk = Store(), U.GuildKey(guild)
@@ -458,9 +459,10 @@ function S.Say()
     lastHello = ns.Now()
     keys[ns.myKey] = { name = ns.me, public = identity.public, at = lastHello }
     local mine = S.MyCertificate()
-    -- "~0" просит только сертификат; "~u" — состав при входе или пока своя гильдия неизвестна.
-    ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0") .. (needUnion and "~u" or ""),
+    -- K1 понимает и 0.8; новый запрос состава идёт отдельно, чтобы старый издатель не потерял ключ.
+    ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0"),
         { prio = ns.Comm.PRIO_BOOTSTRAP, key = "identity" })
+    if needUnion then ns.Comm.Send("GUILD", "UQ~1", { prio = ns.Comm.PRIO_BOOTSTRAP, key = "union-query" }) end
     if mine and (not lastSaid or lastSaid.raw ~= mine.raw or lastHello - lastSaid.at >= C.AUTH_ANNOUNCE) then
         lastSaid = { raw = mine.raw, at = lastHello }
         ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(mine.raw), { key = "my-credential" })
@@ -496,16 +498,21 @@ function S.IntroduceWire(target, wire, force)
     if raw then S.Introduce(target, raw, force) end
 end
 function S.Roots() return Store() and Store().roots or {} end
+local function PolicyPrefix(p)
+    return p.legacy and C.PREFIX or C.UNION_PREFIX
+end
 function S.ShareTrust(bootstrap)
     if not S.CanAdmin() then return false end
     if ns.Census then ns.Census.SendHello() end
     -- При первом входе корни и состав обгоняют чат; обычная догоняющая рассылка
     -- остаётся наравне с ним, как и сертификаты.
     local priority = bootstrap and ns.Comm.PRIO_BOOTSTRAP or true
-    for _, root in pairs(S.Roots()) do ShareRoot(root.guild, root, priority) end
+    for _, root in pairs(S.Roots()) do
+        if LocalOrMember(root.guild) then ShareRoot(root.guild, root, priority) end
+    end
     for _, p in pairs(Store().policies) do
-        if p.expires > ns.ServerTime() then ns.Comm.Send("GUILD", p.wire,
-            { prio = priority, key = "union:" .. U.GuildKey(p.guild) }) end
+        if p.expires > ns.ServerTime() and not (p.legacy and Store().governed) then ns.Comm.Send("GUILD", p.wire,
+            { prio = priority, key = "union:" .. U.GuildKey(p.guild), prefix = PolicyPrefix(p) }) end
     end
     return true
 end
@@ -608,9 +615,11 @@ function S.SendPolicies(target)
     policySent[key] = policySent[key] or {}
     for _, p in pairs(Store() and Store().policies or {}) do
         local old = policySent[key][p.guild]
-        if p.expires > ns.ServerTime() and (not old or old.wire ~= p.wire or now - old.at >= 120) then
+        if p.expires > ns.ServerTime() and not (p.legacy and Store().governed)
+            and (not old or old.wire ~= p.wire or now - old.at >= 120) then
             policySent[key][p.guild] = { wire = p.wire, at = now }
-            ns.Comm.Send("WHISPER", p.wire, { target = target, prio = true, key = "policy:" .. U.Key(target) .. ":" .. p.guild })
+            ns.Comm.Send("WHISPER", p.wire, { target = target, prio = true,
+                key = "policy:" .. U.Key(target) .. ":" .. p.guild, prefix = PolicyPrefix(p) })
         end
     end
 end
@@ -640,7 +649,7 @@ local function BuildPolicies()
     local now, s = ns.ServerTime(), Store()
     for gk, entry in pairs(s.union) do
         local previous = s.policies[gk]
-        if not policySigning[gk] and (not previous or now - previous.issued >= C.AUTH_RENEW) then
+        if not policySigning[gk] and (not previous or previous.legacy or now - previous.issued >= C.AUTH_RENEW) then
             local revision = (entry.revision or 0) + 1
             local body = Pack("GUILDROOT", { ns.group, ns.faction, entry.guild, entry.name, entry.public, now,
                 math.min(now + C.AUTH_TTL, c.expires), entry.active and "1" or "0", revision })
@@ -651,6 +660,7 @@ local function BuildPolicies()
                     or s.union[gk] ~= entry then return end
                 local wire = "KA~" .. Ed.ToB64(c.raw) .. "~" .. Ed.ToB64(body) .. "~" .. Ed.ToB64(sig)
                 entry.revision, entry.issued = revision, now
+                entry.legacy, s.governed = nil, true
                 s.policies[gk] = { wire = wire, issued = now, revision = revision,
                     expires = math.min(now + C.AUTH_TTL, c.expires), guild = entry.guild }
                 ns.Fire("UNION_POLICY", entry.guild, wire)
@@ -666,9 +676,44 @@ local function BuildPolicies()
         end
     end
 end
-ns.Comm.On("KA", function(msg, sender, dist)
+-- До первого решения главы принимаем проверенные каталоги 0.8. Они сохраняют уже
+-- действующее доверие, но никогда не отменяют новое решение или исключение гильдии.
+local function LegacyPolicy(msg, sender, dist)
+    if Store().governed then return end
+    local ec, eb, es = msg:match("^KA~([%w_-]+)~([%w_-]+)~([%w_-]+)$")
+    local raw, body, sig = ec and Ed.FromB64(ec), eb and Ed.FromB64(eb), es and Ed.FromB64(es)
+    local p = body and Unpack(body, "GUILDROOT", 7, 500)
+    local issued, expires = p and Int(p[6], 1, 4102444800), p and Int(p[7], 1, 4102444800)
+    local pk = p and Ed.FromB64(p[5])
+    if not raw or not p or not sig or #sig ~= 64 or p[1] ~= ns.group or p[2] ~= ns.faction
+        or not GuildName(p[3]) or not Name(p[4]) or not pk or #pk ~= 32
+        or not issued or not expires or expires <= ns.ServerTime() or issued > ns.ServerTime() + 30
+        or expires <= issued or expires - issued > C.AUTH_TTL then return end
+    Job(function()
+        local c = VerifyCertificate(raw)
+        if not c or not U.IsMainGuild(c.guild) or not c.canIssue
+            or (c.role ~= "leader" and c.role ~= "officer") or expires > c.expires then return end
+        if Ed.Verify(c.pk, body, sig) then return c end
+    end, function(issuer)
+        local s, gk = Store(), U.GuildKey(p[3])
+        if not issuer or not Current(issuer) or expires <= ns.ServerTime() or s.governed then return end
+        local old = s.union[gk]
+        if old and (not old.legacy or old.issued > issued) then return end
+        if not Pin(p[3], p[4], p[5], false, true) then return end
+        if not U.IsMainGuild(p[3]) then
+            s.union[gk] = { guild = p[3], name = p[4], public = p[5], active = true,
+                issued = issued, revision = 0, legacy = true, contact = p[4] }
+        end
+        s.policies[gk] = { wire = msg, guild = p[3], issued = issued, expires = expires, legacy = true }
+        ns.Fire("UNION")
+        ns.Fire("AUTH_ROOT", p[3])
+        if dist == "WHISPER" then ns.Comm.Send("GUILD", msg, { key = "union:" .. gk, prefix = C.PREFIX }) end
+    end)
+end
+ns.Comm.On("KA", function(msg, sender, dist, ctx)
     if dist ~= "GUILD" and dist ~= "WHISPER" then return end
     if #msg > 3000 or not Budget("n:" .. Peer(sender), C.AUTH_NEW_PER_MIN) then return end
+    if ctx and not ctx.unionControl then LegacyPolicy(msg, sender, dist); return end
     local encodedCert, encodedBody, encodedSig = msg:match("^KA~([%w_-]+)~([%w_-]+)~([%w_-]+)$")
     local raw, body, sig = encodedCert and Ed.FromB64(encodedCert), encodedBody and Ed.FromB64(encodedBody), encodedSig and Ed.FromB64(encodedSig)
     local p = body and Unpack(body, "GUILDROOT", 9, 600)
@@ -693,6 +738,7 @@ ns.Comm.On("KA", function(msg, sender, dist)
         s.union[gk] = entry
         if entry.active and not Pin(p[3], p[4], p[5]) then s.union[gk] = old; return end
         s.policies[gk] = { wire = msg, issued = issued, revision = revision, expires = expires, guild = p[3] }
+        s.governed = true
         ns.Fire("UNION_POLICY", p[3], msg)
         ns.Fire("UNION")
         ns.Fire("AUTH_ROOT", p[3])
@@ -833,7 +879,32 @@ end)
 ns.Comm.On("KT", function(msg, sender, dist)
     if dist ~= "GUILD" or not ns.Roster.Fresh() or not ns.Roster.IsOfficerRank(ns.Roster.RankOf(sender)) then return end
     local guild, name, public = msg:match("^KT~([^~]+)~([^~]+)~([%w_-]+)$")
-    if guild then Pin(guild, name, public) end
+    -- Корень от своего настоящего офицера даёт только известный ключ, а не членство.
+    if not guild or not Pin(guild, name, public, false, true) then return end
+end)
+local function NativeTrustReply(union)
+    if not S.CanAdmin() then return end
+    if union then nativeUnionPending = true end
+    if nativeTrustPending then return end
+    nativeTrustPending = true
+    ns.After(math.max(0, 5 - (ns.Now() - lastNativeHello)), "доверие новым участникам", function()
+        nativeTrustPending = false
+        if not S.CanAdmin() then return end
+        lastNativeHello = ns.Now()
+        if nativeUnionPending then
+            nativeUnionPending = false
+            S.ShareTrust(true)
+        else
+            local root = Root(ns.MyGuild())
+            if root then ShareRoot(root.guild, root) end
+            if ns.Census then ns.Census.SendHello() end
+        end
+    end)
+end
+ns.Comm.On("UQ", function(msg, sender, dist, ctx)
+    if msg == "UQ~1" and dist == "GUILD" and ctx and ctx.unionControl and NativeRole(sender) then
+        NativeTrustReply(true)
+    end
 end)
 ns.Comm.On("K1", function(msg, sender, dist)
     if dist ~= "GUILD" or not NativeRole(sender) then return end
@@ -860,23 +931,7 @@ ns.Comm.On("K1", function(msg, sender, dist)
     -- После перезагрузки имя то же. Ответить на объявление ключа, чтобы вошедший узнал
     -- репортёра-офицера раньше, чем примет RG, и корень гильдии раньше, чем офицер возьмётся
     -- за /chillzone trust init.
-    if S.CanAdmin() and flag:find("~u", 1, true) then nativeUnionPending = true end
-    if S.CanAdmin() and not nativeTrustPending then
-        nativeTrustPending = true
-        ns.After(math.max(0, 5 - (ns.Now() - lastNativeHello)), "доверие новым участникам", function()
-            nativeTrustPending = false
-            if not S.CanAdmin() then return end
-            lastNativeHello = ns.Now()
-            if nativeUnionPending then
-                nativeUnionPending = false
-                S.ShareTrust(true)
-            else
-                local root = Root(ns.MyGuild())
-                if root then ShareRoot(root.guild, root) end
-                if ns.Census then ns.Census.SendHello() end
-            end
-        end)
-    end
+    NativeTrustReply(flag:find("~u", 1, true) ~= nil)
 end)
 ns.Comm.On("KP", function(msg, sender, dist)
     if dist ~= "GUILD" and dist ~= "WHISPER" then return end
@@ -1049,7 +1104,7 @@ local function Sweep(restore)
     end
     for gk, p in pairs(s.policies) do
         if type(p) ~= "table" or type(p.expires) ~= "number" or p.expires <= now
-            or type(p.revision) ~= "number" then s.policies[gk] = nil end
+            or (type(p.revision) ~= "number" and (not p.legacy or s.governed)) then s.policies[gk] = nil end
     end
 end
 local function Tick()
@@ -1057,9 +1112,21 @@ local function Tick()
     local now = ns.Now()
     if S.CanAdmin() and now - lastPolicy >= 30 then
         lastPolicy = now
-        for _, root in pairs(S.Roots()) do ShareRoot(root.guild, root) end
+        for _, root in pairs(S.Roots()) do
+            if LocalOrMember(root.guild) then ShareRoot(root.guild, root) end
+        end
     end
     if now - lastHello >= 60 then S.Say() end
+    -- У новой установки среди 0.8 ещё нет состава, поэтому обычный выбор реле закрыт.
+    -- Старое RP с настоящим своим сертификатом запрашивает подписанный каталог у
+    -- уже доверенного главного корня. Нативный KT сам по себе членства не даёт.
+    local mainRoot, mine = Root(C.MAIN_GUILD), S.MyCertificate()
+    if not Store().governed and not ns.IsMember() and mainRoot and mine and now - lastLegacyProbe >= 120 then
+        lastLegacyProbe = now
+        S.Introduce(mainRoot.name)
+        ns.Comm.Send("WHISPER", "RP~" .. mine.fp, { target = mainRoot.name,
+            prio = true, key = "legacy-union-probe" })
+    end
     if Authority() then
         local room = IssueRoom()
         if room > 0 and Issue(ns.me, identity.public) then room = room - 1 end
@@ -1072,6 +1139,7 @@ local function Tick()
 end
 ns.On("LOGIN", function()
     local s = ns.store.security
+    local legacy = type(s) == "table" and s.version == 1 and s.union == nil
     if type(s) ~= "table" or s.version ~= 1 then
         ns.store.security = { version = 1, roots = {}, certs = {}, policies = {} }
         ns.store.guilds, ns.store.relays, ns.store.manual = {}, {}, {}
@@ -1080,6 +1148,26 @@ ns.On("LOGIN", function()
     s.union = type(s.union) == "table" and s.union or {}
     s.roots, s.certs, s.policies, s.delegations, s.retired = s.roots or {}, s.certs or {}, s.policies or {}, s.delegations or {}, s.retired or {}
     s.verified = type(s.verified) == "table" and s.verified or {}
+    -- Однократный перенос уже подтверждённых корней 0.8, без нового списка в Config.
+    -- Выполняется до восстановления сертификатов: членство не пропадает даже на кадр.
+    if legacy then
+        for gk, root in pairs(s.roots) do
+            local pk = type(root) == "table" and Ed.FromB64(root.public)
+            if pk and #pk == 32 and GuildName(root.guild) and Name(root.name)
+                and gk == U.GuildKey(root.guild) and not U.IsMainGuild(root.guild)
+                and not (s.retired[gk] and s.retired[gk][root.public]) then
+                s.union[gk] = { guild = root.guild, name = root.name, public = root.public,
+                    active = true, issued = 0, revision = 0, legacy = true, contact = root.name }
+            end
+        end
+        for _, p in pairs(s.policies) do
+            if type(p) == "table" and type(p.wire) == "string" then
+                local encoded = p.wire:match("^KA~[%w_-]+~([%w_-]+)~[%w_-]+$")
+                local body = encoded and Ed.FromB64(encoded)
+                p.legacy = body and Unpack(body, "GUILDROOT", 7, 500) ~= nil or nil
+            end
+        end
+    end
     s.replay = type(s.replay) == "table" and s.replay or {}
     replay = s.replay
     for id, entry in pairs(replay) do
