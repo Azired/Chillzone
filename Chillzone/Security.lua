@@ -279,10 +279,27 @@ function S.MyCertificate()
     local c = g and S.Member(g, ns.me)
     return c and identity and c.public == identity.public and c or nil
 end
-local function ShareRoot(guild, root)
-    if S.CanAdmin() then
+-- Отсутствие сертификата не означает отсутствие корня: повторный init здесь не поможет.
+local function CertificateWait(root)
+    if identity and U.Key(root.name) == ns.myKey then
+        if root.public ~= identity.public then return ns.L.AUTH_ROOT_KEY_CHANGED end
+        if S.CanAdmin() then return ns.L.AUTH_CERT_PENDING end
+    end
+    return ns.L.AUTH_CERT_WAIT:format(U.Display(root.name))
+end
+function S.NotReadyReason()
+    local guild = ns.MyGuild()
+    local root = guild and Root(guild)
+    return root and CertificateWait(root) or ns.L.AUTH_NOT_READY
+end
+-- priority: корень перед сертификатом уходит с приоритетом сертификата и прямо перед ним
+-- (ещё не отправленное объявление того же корня поднимается в очереди). Без priority —
+-- фоновое повторное объявление, которое не обгоняет чат.
+-- before — ключ сертификата: KT должен обогнать и уже ожидающий или отправляемый KP.
+local function ShareRoot(guild, root, priority, before)
+    if root and S.CanAdmin() then
         ns.Comm.Send("GUILD", "KT~" .. guild .. "~" .. root.name .. "~" .. root.public,
-            { key = "root:" .. U.GuildKey(guild), guard = S.CanAdmin })
+            { prio = priority, key = "root:" .. U.GuildKey(guild), before = before, guard = S.CanAdmin })
     end
 end
 -- Снять с ключа public отметку об отзыве (см. Forget).
@@ -309,7 +326,7 @@ local function Pin(guild, name, public, confirmed)
     if old then return true end
     s.roots[gk] = { name = name, public = public, guild = guild }
     hints[gk] = nil
-    if gk == GuildKey() then ShareRoot(guild, s.roots[gk]) end
+    if gk == GuildKey() then ShareRoot(guild, s.roots[gk], ns.Comm.PRIO_BOOTSTRAP) end
     ns.Fire("AUTH_ROOT", guild)
     return true
 end
@@ -317,15 +334,18 @@ local function Authority()
     if not identity or not S.CanAdmin() then return end
     local root = Root(ns.MyGuild())
     if not root then return end
-    -- Сертификаты выдаёт ровно один офицер в игре. Запасной хранит делегирование от корня
-    -- отдельно от часто продлеваемого подтверждения звания.
+    -- Онлайн в ростере не означает работающий аддон. Издатель должен недавно объявить
+    -- именно подтверждённый ключ; иначе запасные навсегда уступят молчащему персонажу.
+    -- Делегирование хранится отдельно от часто продлеваемого подтверждения звания.
     local delegations = Store().delegations[GuildKey()] or {}
     local best, bestIsRoot
     for _, row in ipairs(ns.Roster.members) do
-        if row.online and ns.Roster.IsOfficerRank(row.rank) then
-            local isRoot = row.key == U.Key(root.name)
+        local peer = keys[row.key]
+        if row.online and ns.Roster.IsOfficerRank(row.rank) and peer
+            and ns.Now() - peer.at <= C.PEER_WINDOW then
+            local isRoot = row.key == U.Key(root.name) and peer.public == root.public
             local d = delegations[row.key] and Certificate(delegations[row.key])
-            if isRoot or (d and Current(d) and d.approvedRoot == root.public) then
+            if isRoot or (d and d.canIssue and d.public == peer.public and Current(d) and d.approvedRoot == root.public) then
                 if not best or (isRoot and not bestIsRoot) or (isRoot == bestIsRoot and row.key < best) then
                     best, bestIsRoot = row.key, isRoot
                 end
@@ -364,11 +384,19 @@ local function Issue(name, public)
         if not c then return end
         Keep(Approve(c, root.public))
         -- Корень — раньше сертификата: без корня новичок отбросит KP, а повторно его не выдадут.
-        ShareRoot(root.guild, root)
-        ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { key = "credential:" .. key, guard = S.CanAdmin })
+        local queuedKey = "credential:" .. key
+        ShareRoot(root.guild, root, true, queuedKey)
+        ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = queuedKey, guard = S.CanAdmin })
     end)
     if not started then issuing[key] = nil end
     return started
+end
+-- Сколько ещё сертификатов издатель может поставить в очередь (C.AUTH_ISSUE_QUEUE): и
+-- подписываемые сейчас, и ждущие отправки, в том числе повторные шёпотом.
+local function IssueRoom()
+    local busy = ns.Comm.Queued("credential:") + ns.Comm.Queued("kp-own:")
+    for _ in pairs(issuing) do busy = busy + 1 end
+    return C.AUTH_ISSUE_QUEUE - busy
 end
 local function Entropy()
     -- Тот же компромисс, что в Olympus: смесь местных замеров, а НЕ криптостойкий генератор ОС.
@@ -411,10 +439,10 @@ end
 function S.Say()
     if not identity or not ns.IsMember() or not ns.Roster.Fresh() then return end
     lastHello = ns.Now()
-    keys[ns.myKey] = { name = ns.me, public = identity.public }
+    keys[ns.myKey] = { name = ns.me, public = identity.public, at = lastHello }
     local mine = S.MyCertificate()
     -- "~0": сертификата у меня нет. Издатель, у которого он уже есть, пришлёт его шёпотом.
-    ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0"), { key = "identity" })
+    ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0"), { prio = ns.Comm.PRIO_BOOTSTRAP, key = "identity" })
     if mine and (not lastSaid or lastSaid.raw ~= mine.raw or lastHello - lastSaid.at >= C.AUTH_ANNOUNCE) then
         lastSaid = { raw = mine.raw, at = lastHello }
         ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(mine.raw), { key = "my-credential" })
@@ -435,10 +463,12 @@ function S.Introduce(target, raw, force)
     if not force and introduced[key] and now - introduced[key] < C.AUTH_INTRODUCE then return end
     introduced[key] = now
     local wire = "KP~" .. Ed.ToB64(raw)
+    local queuedKey = "kp:" .. key
     if target == "GUILD" then
-        ns.Comm.Send("GUILD", wire, { prio = true, key = "kp:" .. key })
+        ShareRoot(c.guild, Root(c.guild), true, queuedKey)
+        ns.Comm.Send("GUILD", wire, { prio = true, key = queuedKey })
     else
-        ns.Comm.Send("WHISPER", wire, { target = target, prio = true, key = "kp:" .. key })
+        ns.Comm.Send("WHISPER", wire, { target = target, prio = true, key = queuedKey })
     end
 end
 -- То же для готового пакета S1: сертификат его автора, если он у меня есть.
@@ -451,7 +481,8 @@ function S.Roots() return Store() and Store().roots or {} end
 function S.ShareTrust()
     if not S.CanAdmin() then return false end
     if ns.Census then ns.Census.SendHello() end
-    for _, root in pairs(S.Roots()) do ShareRoot(root.guild, root) end
+    -- Наравне с чатом: корни должны уйти раньше сертификатов и конвертов, поставленных следом.
+    for _, root in pairs(S.Roots()) do ShareRoot(root.guild, root, true) end
     return true
 end
 local function Forget(guild, public)
@@ -473,7 +504,7 @@ function S.Reset(guild)
     if not S.CanAdmin() or not root then return false end
     local public = root.public
     if not Forget(guild, public) then return false end
-    ns.Comm.Send("GUILD", "KF~" .. guild .. "~" .. public, { prio = true, guard = S.CanAdmin })
+    ns.Comm.Send("GUILD", "KF~" .. guild .. "~" .. public, { prio = ns.Comm.PRIO_CONTROL, guard = S.CanAdmin })
     if U.GuildKey(guild) == GuildKey() and identity and identity.public == public then StartIdentity(true) end
     S.Say()
     return true
@@ -490,7 +521,10 @@ function S.Init(force, report)
     local L, guild = ns.L, ns.MyGuild()
     if not S.CanAdmin() or not guild then report(L.AUTH_NEED_OFFICER); return false end
     local gk, root = U.GuildKey(guild), Root(guild)
-    if root then report(L.AUTH_INIT_DONE:format(U.Display(root.name))); return false end
+    if root then
+        report(S.MyCertificate() and L.AUTH_INIT_DONE:format(U.Display(root.name)) or CertificateWait(root))
+        return false
+    end
     if not identity or ns.Now() - ns.loginAt < 20 or initAsking then report(L.AUTH_INIT_WAIT); return false end
     local retired = Store().retired[gk]
     if retired and retired[identity.public] then
@@ -500,12 +534,15 @@ function S.Init(force, report)
         return false
     end
     initAsking, hints[gk] = true, nil
-    ns.Comm.Send("GUILD", "KR~", { prio = true, key = "root-query" })
+    ns.Comm.Send("GUILD", "KR~", { prio = ns.Comm.PRIO_CONTROL, key = "root-query" })
     report(L.AUTH_INIT_ASK)
     ns.After(INIT_WAIT, "trust init", function()
         initAsking = nil
         local now = Root(guild)
-        if now then report(L.AUTH_INIT_DONE:format(U.Display(now.name))); return end
+        if now then
+            report(S.MyCertificate() and L.AUTH_INIT_DONE:format(U.Display(now.name)) or CertificateWait(now))
+            return
+        end
         if GuildKey() ~= gk or not S.CanAdmin() or not identity then report(L.AUTH_NEED_OFFICER); return end
         if hints[gk] and not force then report(L.AUTH_INIT_HINT:format(U.Display(hints[gk]))); return end
         if Pin(guild, U.Display(ns.me), identity.public) then report(L.AUTH_INIT_OK) else report(L.AUTH_NEED_OFFICER) end
@@ -516,12 +553,12 @@ ns.Comm.On("KR", function(_, sender, dist)
     if dist ~= "GUILD" or not NativeRole(sender) or ns.IsMe(sender) then return end
     local root = Root(ns.MyGuild())
     if not root then return end
-    if S.CanAdmin() then ShareRoot(root.guild, root); return end
+    if S.CanAdmin() then ShareRoot(root.guild, root, ns.Comm.PRIO_CONTROL); return end
     -- Участников много, ответа хватит одного: случайная пауза, и кто услышал чужой — молчит.
     ns.After(math.random() * 3, "root hint", function()
         if ns.Now() - heardHint < INIT_WAIT or Root(ns.MyGuild()) ~= root then return end
         heardHint = ns.Now()
-        ns.Comm.Send("GUILD", "KH~" .. root.name, { key = "root-hint" })
+        ns.Comm.Send("GUILD", "KH~" .. root.name, { prio = ns.Comm.PRIO_CONTROL, key = "root-hint" })
     end)
 end)
 ns.Comm.On("KH", function(msg, sender, dist)
@@ -608,15 +645,15 @@ function S.Link(name)
     local nonce = tostring(ns.ServerTime()) .. "." .. serial
     outgoing[key] = { nonce = nonce, untilAt = ns.Now() + 180 }
     ns.Comm.Send("WHISPER", "KL~H~" .. nonce .. "~" .. ns.MyGuild() .. "~" .. root.name .. "~" .. root.public,
-        { target = name, prio = true, guard = S.CanAdmin })
+        { target = name, prio = ns.Comm.PRIO_CONTROL, guard = S.CanAdmin })
     ns.Print(ns.L.AUTH_SENT, U.Display(name))
     return true
 end
 -- Офицер явно подтвердил корень чужой гильдии: гильдии — сначала что он больше не отозван
 -- (KU: прежний /chillzone trust reset ушёл всем по KF), затем сам корень (KT).
 local function Confirmed(guild, public)
-    ns.Comm.Send("GUILD", "KU~" .. guild .. "~" .. public, { prio = true, key = "unretire:" .. U.GuildKey(guild), guard = S.CanAdmin })
-    ShareRoot(guild, Root(guild))
+    ns.Comm.Send("GUILD", "KU~" .. guild .. "~" .. public, { prio = ns.Comm.PRIO_CONTROL, key = "unretire:" .. U.GuildKey(guild), guard = S.CanAdmin })
+    ShareRoot(guild, Root(guild), ns.Comm.PRIO_BOOTSTRAP)
 end
 function S.Accept(name)
     local key = U.Key(name)
@@ -626,7 +663,7 @@ function S.Accept(name)
     pending[key] = nil
     Confirmed(p.guild, p.public)
     ns.Comm.Send("WHISPER", "KL~R~" .. p.nonce .. "~" .. ns.MyGuild() .. "~" .. root.name .. "~" .. root.public,
-        { target = name, prio = true, guard = S.CanAdmin })
+        { target = name, prio = ns.Comm.PRIO_CONTROL, guard = S.CanAdmin })
     S.Introduce(name)
     ns.Print(ns.L.AUTH_PAIRED, U.Display(name), p.guild)
     return true
@@ -665,14 +702,19 @@ ns.Comm.On("K1", function(msg, sender, dist)
     local raw = Ed.FromB64(public)
     if not raw or #raw ~= 32 then return end
     local k = U.Key(sender)
-    keys[k] = { name = sender, public = public }
+    keys[k] = { name = sender, public = public, at = ns.Now() }
     -- У участника нет сертификата, а у меня, активного издателя, он есть: первый KP до него
     -- не дошёл (лимит, ещё не было корня). Issue свежий сертификат заново не выдаёт.
-    if flag == "~0" and Authority() and (not resent[k] or ns.Now() - resent[k] >= 60) then
+    -- Пока выданный сертификат ещё ждёт в очереди или очередь выдачи полна — не дублировать.
+    local issuerRoot = flag == "~0" and Authority()
+    if issuerRoot and (not resent[k] or ns.Now() - resent[k] >= 60)
+        and ns.Comm.Queued("credential:" .. k, true) == 0 and IssueRoom() > 0 then
         local held = S.Member(ns.MyGuild(), sender)
         if held and held.public == public then
             resent[k] = ns.Now()
-            ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(held.raw), { target = sender, prio = true, key = "kp-own:" .. k })
+            local queuedKey = "kp-own:" .. k
+            ShareRoot(issuerRoot.guild, issuerRoot, true, queuedKey)
+            ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(held.raw), { target = sender, prio = true, key = queuedKey })
         end
     end
     -- После перезагрузки имя то же. Ответить на объявление ключа, чтобы вошедший узнал
@@ -712,7 +754,9 @@ ns.Comm.On("KQ", function(msg, sender, dist)
     if dist == "GUILD" then
         if c.key ~= ns.myKey and not (ns.Census and ns.Census.Forwarding()) then return end
         served[key] = now
-        ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = "kp:" .. key })
+        local queuedKey = "kp:" .. key
+        ShareRoot(c.guild, Root(c.guild), true, queuedKey)
+        ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = queuedKey })
         return
     end
     if not Budget("q:" .. Peer(sender), 20) then return end
@@ -863,11 +907,11 @@ local function Tick()
     end
     if now - lastHello >= 60 then S.Say() end
     if Authority() then
-        Issue(ns.me, identity.public)
-        local count = 0
+        local room = IssueRoom()
+        if room > 0 and Issue(ns.me, identity.public) then room = room - 1 end
         for _, row in pairs(keys) do
-            if count >= 8 then break end
-            if Issue(row.name, row.public) then count = count + 1 end
+            if room <= 0 then break end
+            if Issue(row.name, row.public) then room = room - 1 end
         end
     end
     BuildPolicies()

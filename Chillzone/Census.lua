@@ -73,6 +73,7 @@ end
 ---------------------------------------------------------------------------
 local elected, previous = nil, nil -- ключ выбранного репортёра; { key, untilAt } — прежний
 local acting, handingUntil = false, nil -- я репортёр; до каких пор я передаю аренду
+local inheritedUntil -- до каких пор вошедший репортёр может узнать своего предшественника
 
 function Census.Track()
 	local now = ns.Now()
@@ -80,12 +81,25 @@ function Census.Track()
 	if key ~= elected then
 		previous = elected and { key = elected, untilAt = now + C.REPORTER_HANDOVER } or nil
 		elected = key
+		inheritedUntil = nil
 	end
 	local me = Census.IsReporter()
-	if me == acting then return end
-	acting = me
-	handingUntil = not me and now + C.REPORTER_HANDOVER or nil
-	ns.Fire("REPORTER", me)
+	local changed = me ~= acting
+	if changed then
+		acting = me
+		handingUntil = not me and now + C.REPORTER_HANDOVER or nil
+		-- Вошедший клиент мог с самого начала выбирать себя и не увидеть смену elected.
+		-- Его предшественник ещё пересылает пакеты, пока реле принимают новую регистрацию.
+		inheritedUntil = me and not previous and now + C.REPORTER_HANDOVER or nil
+	end
+	if inheritedUntil and now <= inheritedUntil then
+		local predecessor = Census.Reporter(true)
+		if predecessor then
+			previous = { key = predecessor, untilAt = inheritedUntil }
+			inheritedUntil = nil
+		end
+	end
+	if changed then ns.Fire("REPORTER", me) end
 end
 
 -- Я был репортёром и передаю дела: пересылаю гильдии RM по старой аренде.
@@ -106,7 +120,8 @@ function Census.Successor()
 end
 
 -- Принимать ли от key пересланное гильдии (RG): от выбранного репортёра, от прежнего, пока
--- он передаёт дела, и, пока я сам после входа молчу, — от того, кто был бы выбран без меня.
+-- он передаёт дела. Вошедший репортёр сохраняет того, кого выбрали бы без него, и после
+-- LOGIN_QUIET: реле могут ещё слать пакеты по старой аренде.
 function Census.MayForward(key)
 	if not key then return false end
 	Census.Track()
@@ -127,7 +142,7 @@ function Census.SendHello()
 	if not ns.IsMember() then return end
 	local R = ns.Relay
 	local hello = Codec.EncodeHello(ns.VERSION, ns.char.shareZones, R and R.IAmRelay() or false)
-	ns.Comm.Send("GUILD", hello, { key = "hello" })
+	ns.Comm.Send("GUILD", hello, { prio = ns.Comm.PRIO_CONTROL, key = "hello" })
 end
 
 ns.Comm.On("H1", function(msg, sender, dist)
@@ -255,6 +270,7 @@ end)
 ns.On("GUILD_CHANGED", function()
 	wipe(peers)
 	elected, previous, acting, handingUntil = nil, nil, false, nil
+	inheritedUntil = nil
 	lastSent, lastSentAt, signing, epoch = nil, -1e9, nil, epoch + 1
 	ns.After(3, "hello after guild change", Census.SendHello)
 end)

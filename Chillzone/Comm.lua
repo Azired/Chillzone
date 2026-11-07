@@ -13,6 +13,11 @@ Comm.SEND_INTERVAL = 1.2
 Comm.PARTS_RELAY = 4
 Comm.MAX_QUEUE = 200
 Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько (блокировка) — выбрасывается
+-- Управление связью (опрос корня, отзыв, соединение, приветствия) идёт первым, объявления
+-- ключей — следом. Сертификаты идут наравне с чатом (prio = true — уровень 1), в порядке
+-- очереди: так поток чата их не задерживает бесконечно, а пачка сертификатов — строки чата.
+Comm.PRIO_BOOTSTRAP = 2
+Comm.PRIO_CONTROL = 3
 
 -- Ответы игры «не сейчас»: AddonMessageThrottle (3), ChannelThrottle (8), GeneralError (9),
 -- AddOnMessageLockdown (11). Сообщение остаётся на месте, очередь ждёт всё дольше.
@@ -85,18 +90,49 @@ local function Finish(job, ok, why)
 	if job.done then ns.SafeCall("send done", job.done, ok, why) end
 end
 
+local function Priority(prio)
+	return prio == true and 1 or (type(prio) == "number" and prio or 0)
+end
+
+local function BeforeIndex(key, prio)
+	if not key then return end
+	for i, pending in ipairs(queue) do
+		if pending.key == key and Priority(pending.prio) == Priority(prio) then return i end
+	end
+end
+
+local function Enqueue(job, before)
+	local pos = #queue + 1
+	if job.prio then
+		pos = 1
+		while queue[pos] and Priority(queue[pos].prio) >= Priority(job.prio) do pos = pos + 1 end
+	end
+	local target = BeforeIndex(before, job.prio)
+	if target and target < pos then pos = target end
+	table.insert(queue, pos, job)
+end
+
 -- В очередь. opts: target (шёпот), key (новое заменяет ещё не начатое с тем же ключом),
--- prio (вперёд обычных), logged (текст игрока), done(ok, why).
+-- prio (true или числовой приоритет, больше — раньше), logged (текст игрока), done(ok, why).
+-- before — перед заданием с этим ключом того же приоритета, даже если оно уже отправляется.
 function Comm.Send(dist, payload, opts)
 	opts = opts or {}
 	if type(payload) ~= "string" or payload == "" then return false end
 	if dist == "WHISPER" and not opts.target then return false end
 	local now = ns.Now()
 	if opts.key then
-		for _, job in ipairs(queue) do
+		for i, job in ipairs(queue) do
 			if job.key == opts.key and job.i == 1 then
 				job.parts, job.at, job.target, job.done = Codec.Pack(payload, NewId()), now, opts.target, opts.done
 				job.guard = opts.guard
+				-- Ответ на срочный запрос мог заменить ещё не отправленное объявление.
+				local promoted = Priority(opts.prio) > Priority(job.prio)
+				if promoted then job.prio = opts.prio end
+				local target = BeforeIndex(opts.before, job.prio)
+				if promoted or (target and target < i) then
+					table.remove(queue, i)
+					Enqueue(job, opts.before)
+				end
 				return true
 			end
 		end
@@ -105,13 +141,7 @@ function Comm.Send(dist, payload, opts)
 		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1,
 		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done, guard = opts.guard,
 	}
-	if job.prio then
-		local pos = 1
-		while queue[pos] and queue[pos].prio do pos = pos + 1 end
-		table.insert(queue, pos, job)
-	else
-		queue[#queue + 1] = job
-	end
+	Enqueue(job, opts.before)
 	Comm.stats.queued = Comm.stats.queued + 1
 	-- Переполнение: выбрасывается самое старое обычное, ещё не начатое.
 	while #queue > Comm.MAX_QUEUE do
@@ -130,6 +160,16 @@ end
 
 function Comm.QueueSize()
 	return #queue
+end
+
+-- Сколько заданий в очереди (и начатых) с ключом, который начинается с prefix; exact — ровно с этим ключом.
+function Comm.Queued(prefix, exact)
+	local n = 0
+	for _, job in ipairs(queue) do
+		local key = job.key
+		if key and (key == prefix or (not exact and key:sub(1, #prefix) == prefix)) then n = n + 1 end
+	end
+	return n
 end
 
 local function PumpOnce(prioOnly)
@@ -179,7 +219,7 @@ function Comm.Pump()
 	end
 end
 
--- Срочное (чат) прямо сейчас, не дожидаясь насоса: до n кусков.
+-- Срочное прямо сейчас, не дожидаясь насоса: до n кусков в порядке приоритета.
 function Comm.Flush(n)
 	if Comm.InLockdown() or ns.Now() < waitUntil then return end
 	for _ = 1, n or 1 do
