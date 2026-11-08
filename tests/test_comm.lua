@@ -3,10 +3,10 @@ local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
 local TARGET = "Ника Маковка"
 
-local function Fresh()
+local function Fresh(chatFilterAPI)
 	local w = Wow.World()
 	w:Guild("Чиллзон Север")
-	local c = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север" })
+	local c = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", chatFilterAPI = chatFilterAPI })
 	w.now = 100
 	local sent = {}
 	c.env.C_ChatInfo.SendAddonMessage = function(_, msg, dist, target)
@@ -94,4 +94,65 @@ T.test("comm: недоступный адресат — чужие и проср
 	T.no(Hidden(c, text))
 	c:Fire("CHAT_MSG_SYSTEM", text)
 	T.ok(comm.Send("WHISPER", "KQ~test", { target = TARGET }))
+end)
+
+T.test("comm: Forever — фильтр через ChatFrameUtil без старой глобальной функции", function()
+	local _, c, comm = Fresh("modern")
+	T.eq(c.env.ChatFrame_AddMessageEventFilter, nil, "в клиенте нет старой функции")
+	T.eq(type(c.env.ChatFrameUtil.AddMessageEventFilter), "function")
+	comm.SendNow("WHISPER", "KQ~test", TARGET)
+	local text = ('Персонаж по имени "%s" в игре не найден.'):format(TARGET)
+	T.ok(Hidden(c, text), "фильтр зарегистрирован через актуальный API")
+	c:Fire("CHAT_MSG_SYSTEM", text)
+	T.ok(Hidden(c, text), "строка скрыта и после отмены очереди")
+end)
+
+for _, logged in ipairs({ false, true }) do
+	local useLogged = logged
+	T.test("comm: Forever — TargetOffline прекращает отправки, logged=" .. tostring(useLogged), function()
+		local _, c, comm = Fresh("modern")
+		local calls, cancelled, failures = 0, 0, 0
+		local function Offline()
+			calls = calls + 1
+			return 12 -- Enum.SendAddonMessageResult.TargetOffline
+		end
+		c.env.C_ChatInfo.SendAddonMessage = Offline
+		c.env.C_ChatInfo.SendAddonMessageLogged = Offline
+		local function Done(ok, why)
+			T.no(ok)
+			T.eq(why, "offline")
+			cancelled = cancelled + 1
+		end
+		c.ns.On("WHISPER_UNAVAILABLE", function() failures = failures + 1 end)
+		comm.Send("WHISPER", string.rep("x", 1000), { target = TARGET, logged = useLogged, done = Done })
+		comm.Send("WHISPER", "KQ~test", { target = TARGET, logged = useLogged, done = Done })
+		-- Текстовая строка вообще не приходит: достаточно результата API.
+		comm.Pump(); comm.Pump()
+		T.eq(calls, 1, "остальная очередь недоступному персонажу не отправляется")
+		T.eq(comm.QueueSize(), 0)
+		T.eq(cancelled, 2, "каждый callback вызван ровно один раз")
+		T.eq(failures, 1, "маршрутизация узнаёт о недоступности сразу")
+		T.eq(comm.stats.dropped, 2)
+		T.no(comm.Send("WHISPER", "KQ~again", { target = TARGET }))
+		T.eq(#c.ns.db.errors, 0, "без скрытых ошибок callback")
+	end)
+end
+
+T.test("comm: Forever — синхронная ошибка не вызывает callback повторно", function()
+	local _, c, comm = Fresh("modern")
+	local cancelled = 0
+	c.env.C_ChatInfo.SendAddonMessage = function()
+		c:Fire("CHAT_MSG_SYSTEM", c.env.ERR_CHAT_PLAYER_NOT_FOUND_S:format(TARGET))
+		return 0
+	end
+	comm.Send("WHISPER", "KQ~test", { target = TARGET, done = function(ok, why)
+		T.no(ok)
+		T.eq(why, "offline")
+		cancelled = cancelled + 1
+	end })
+	comm.Pump()
+	T.eq(cancelled, 1)
+	T.eq(comm.QueueSize(), 0)
+	T.eq(comm.stats.dropped, 1)
+	T.eq(#c.ns.db.errors, 0, "насос не завершает отменённое задание повторно")
 end)
