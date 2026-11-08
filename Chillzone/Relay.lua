@@ -716,7 +716,8 @@ ns.Command("relay", function(arg)
 	name = U.Trim(name)
 	local store = ns.store
 	if cmd == "add" and name ~= "" then
-		if not ns.Security.Link(name) then ns.Print(L.AUTH_NEED_OFFICER) end
+		local ok, why = ns.Security.Link(name)
+		if not ok and why then ns.Print(why) end
 		return
 	elseif (cmd == "del" or cmd == "remove") and name ~= "" then
 		local k = U.Key(name)

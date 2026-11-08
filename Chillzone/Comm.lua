@@ -18,6 +18,7 @@ Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько (б�
 -- очереди: так поток чата их не задерживает бесконечно, а пачка сертификатов — строки чата.
 Comm.PRIO_BOOTSTRAP = 2
 Comm.PRIO_CONTROL = 3
+Comm.PRIO_LINK = 4 -- ручное соединение обгоняет фоновые опросы и их повторы
 
 -- Ответы игры «не сейчас»: AddonMessageThrottle (3), ChannelThrottle (8), GeneralError (9),
 -- AddOnMessageLockdown (11). Сообщение остаётся на месте, очередь ждёт всё дольше.
@@ -83,7 +84,7 @@ function Comm.SendNow(dist, msg, target, logged)
 		waitUntil = ns.Now() + RETRY_WAIT[math.min(refusedInRow, #RETRY_WAIT)]
 	end
 	Comm.stats.fails = Comm.stats.fails + 1
-	ns.Log("не отправлено %s: %s", dist, tostring(res))
+	ns.Log("не отправлено %s для %s: %s", dist, to or "гильдии", tostring(res))
 	if ok then return false, res end
 	return false, "error"
 end
