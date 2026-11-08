@@ -97,6 +97,10 @@ function S.CanManageUnion()
     return U.IsMainGuild(ns.MyGuild()) and ns.Roster.Fresh() and ns.Roster.MyRank() == 0
         and ns.Roster.RankOf(ns.me) == 0
 end
+-- Офицеру гильдии вне объединения доступен только запрос связи. Главная гильдия всегда в объединении.
+function S.CanRequestUnion()
+    return S.CanAdmin() and not ns.IsMember()
+end
 local function LocalOrMember(guild)
     return U.IsMemberGuild(guild) or U.GuildKey(guild) == GuildKey()
 end
@@ -702,8 +706,11 @@ local function LegacyPolicy(msg, sender, dist)
     end, function(issuer)
         local s, gk = Store(), U.GuildKey(p[3])
         if not issuer or not Current(issuer) or expires <= ns.ServerTime() or s.governed then return end
-        local old = s.union[gk]
+        local old, known = s.union[gk], s.policies[gk]
         if old and (not old.legacy or old.issued > issued) then return end
+        -- Реле присылают один и тот же каталог раз за разом. Он ничего не меняет: без этой
+        -- проверки каждый повтор уходил бы всей гильдии и будил приветы H1.
+        if known and known.legacy and known.issued and known.issued >= issued then return end
         if not Pin(p[3], p[4], p[5], false, true) then return end
         if not U.IsMainGuild(p[3]) then
             s.union[gk] = { guild = p[3], name = p[4], public = p[5], active = true,
@@ -769,6 +776,12 @@ end
 local function SameLink(p, nonce, guild, name, public)
     return p.nonce == nonce and p.guild == guild and p.name == name and p.public == public
 end
+-- Ход запроса связи: в чат и на вкладку «Объединение».
+local function LinkNotice(text, ...)
+    if select("#", ...) > 0 then text = text:format(...) end
+    ns.Print("%s", text)
+    ns.Fire("UNION_LINK", text)
+end
 local function SendLink(key, p)
     p.queued = true
     local function Done(ok, why)
@@ -783,12 +796,12 @@ local function SendLink(key, p)
             end
             outgoing[key] = nil
             ns.Log("запрос связи %s не отправлен: %s", p.target, tostring(why))
-            ns.Print(ns.L.AUTH_LINK_FAILED, p.target)
+            LinkNotice(ns.L.AUTH_LINK_FAILED, p.target)
             return
         end
         if not p.sentAt then
             p.sentAt, p.untilAt = ns.Now(), ns.Now() + LINK_TTL
-            ns.Print(ns.L.AUTH_SENT, p.target)
+            LinkNotice(ns.L.AUTH_SENT, p.target)
         end
         p.retryAt = ns.Now() + LINK_RETRY
     end
@@ -832,7 +845,7 @@ local function TickLinks()
     for key, p in pairs(outgoing) do
         if now > p.untilAt then
             outgoing[key] = nil
-            ns.Print(p.sentAt and ns.L.AUTH_LINK_EXPIRED or ns.L.AUTH_LINK_FAILED, p.target)
+            LinkNotice(p.sentAt and ns.L.AUTH_LINK_EXPIRED or ns.L.AUTH_LINK_FAILED, p.target)
         elseif p.retryAt and not p.queued and now >= p.retryAt and LinkCurrent(p) then
             SendLink(key, p)
         end
@@ -910,6 +923,15 @@ function S.RemoveGuild(guild)
     ns.Fire("AUTH_ROOT", guild)
     return true
 end
+function S.MyRoot()
+    local guild = ns.MyGuild()
+    return guild and Root(guild) or nil
+end
+-- Запрос связи к name ещё ждёт ответа: "queued", "sent" или nil. Для вкладки офицера.
+function S.LinkState(name)
+    local p = outgoing[U.Key(U.TellName(name))]
+    return p and (p.sentAt and "sent" or "queued") or nil
+end
 function S.Link(name)
     local why = LinkPermission()
     if why then return false, why end
@@ -925,7 +947,7 @@ function S.Link(name)
     local p = { nonce = tostring(ns.ServerTime()) .. "." .. serial, target = name,
         localGuild = guild, localRoot = root, untilAt = ns.Now() + ns.Comm.HOLD_MAX }
     outgoing[key] = p
-    ns.Print(ns.L.AUTH_LINK_QUEUED, name)
+    LinkNotice(ns.L.AUTH_LINK_QUEUED, name)
     SendLink(key, p)
     return outgoing[key] == p
 end
@@ -985,10 +1007,10 @@ ns.Comm.On("KL", function(msg, sender, dist)
             Confirmed(guild, public)
             S.Introduce(sender, nil, true)
             Admit(guild, name, public, sender)
-            ns.Print(ns.L.AUTH_PAIRED, U.Display(sender), guild)
+            LinkNotice(ns.L.AUTH_PAIRED, U.Display(sender), guild)
         else
             outgoing[key] = nil
-            ns.Print(ns.L.AUTH_LINK_CONFLICT)
+            LinkNotice(ns.L.AUTH_LINK_CONFLICT)
         end
     end
 end)

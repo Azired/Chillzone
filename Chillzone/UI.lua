@@ -1,6 +1,7 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
 -- значки на правом краю (Чат, Перепись, Королевство, Настройки, а главам и офицерам ещё Заявки и Отладка).
--- Только текущему главе главной гильдии доступна вкладка «Объединение» (UnionPane.lua).
+-- Вкладка «Объединение» (UnionPane.lua): глава главной гильдии управляет составом,
+-- офицер гильдии вне объединения запрашивает связь.
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, остальные вкладки — список строк из Views.lua
 -- и Debug.lua во вставке окна. Кнопка у миникарты — по образцу Olympus UI.lua.
 local ADDON, ns = ...
@@ -310,7 +311,7 @@ end
 local function Allowed(key)
 	if key == "requests" then return ns.RecruitSync.IsOfficer() end
 	if key == "debug" then return ns.Debug.Allowed() end
-	if key == "union" then return ns.Security.CanManageUnion() end
+	if key == "union" then return ns.Security.CanManageUnion() or ns.Security.CanRequestUnion() end
 	return true
 end
 
@@ -337,7 +338,7 @@ function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncTabs()
 	if current ~= "union" then ns.UnionPane.Hide() end
-	if not ns.IsMember() and current ~= "settings" then current = "join"
+	if not ns.IsMember() and current ~= "settings" and current ~= "union" then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
 	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
 	if current ~= "requests" then ns.RecruitPane.HideInbox() end

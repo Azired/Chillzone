@@ -80,6 +80,63 @@ T.test("migration: новый клиент получает старое дов�
     Errors(c)
 end)
 
+T.test("migration: повтор прежнего каталога не расходится по гильдии снова", function()
+    local w, c = Build()
+    c.b = Upgrade(w, c.b)
+    w:Run(45)
+    local gk = c.k.ns.Util.GuildKey(c.v.guild)
+    local function Spread()
+        local n = 0
+        for _, e in ipairs(w.log) do
+            if e.from == c.b:Name() and e.dist == "GUILD"
+                and (e.msg:find("^KA~") or e.msg:find("^C[^:]*:1:%d+:KA~")) then n = n + 1 end
+        end
+        return n
+    end
+    local unions = 0
+    c.b.ns.On("UNION", function() unions = unions + 1 end)
+    local wire = c.k.ns.store.security.policies[gk].wire
+    c.o.ns.Comm.Send("WHISPER", wire, { target = c.b:Name() })
+    w:Run(15)
+    local spread, fired = Spread(), unions
+    for _ = 1, 3 do
+        c.o.ns.Comm.Send("WHISPER", wire, { target = c.b:Name() })
+        w:Run(15)
+    end
+    T.eq(Spread(), spread, "тот же каталог гильдии повторно не рассылается")
+    T.eq(unions, fired, "и не считается изменением состава")
+    T.ok(c.b.ns.IsMember(), "членство на месте")
+    Errors(c)
+end)
+
+-- Считает приветы, которые дошли бы до гильдии: клиент уже в объединении.
+local function CountHellos(client)
+    local box, census, send = { n = 0 }, client.ns.Census, client.ns.Census.SendHello
+    census.SendHello = function(...)
+        if client.ns.IsMember() then box.n = box.n + 1 end
+        return send(...)
+    end
+    return box
+end
+
+T.test("migration: привет H1 уходит при входе в состав, а не на каждое продление", function()
+    local w, c = Build()
+    c.n = w:Client({ first = "Новый", surname = "Северный", guild = c.v.guild, rank = 3 })
+    local hellos = CountHellos(c.n)
+    c.v.ns.Roster.Scan()
+    for _ = 1, 150 do
+        w:Run(1)
+        if c.n.ns.IsMember() then break end
+    end
+    T.ok(c.n.ns.IsMember(), "состав получен")
+    T.ok(hellos.n >= 1, "вошёл в состав — сразу объявил себя")
+    w:Run(1)
+    local before = hellos.n
+    for _ = 1, 3 do c.n.ns.Fire("UNION") end
+    T.eq(hellos.n, before, "продление решения ничего не меняет")
+    Errors(c)
+end)
+
 T.test("migration: корни и прежняя версия от офицера не заменяют подписанный каталог", function()
     local w, c = Build()
     c.k:Logout(); c.o:Logout()

@@ -1,9 +1,10 @@
--- Chillzone: управление составом объединения, только текущему главе главной гильдии.
+-- Chillzone: вкладка «Объединение». Текущий глава главной гильдии управляет составом,
+-- офицер гильдии вне объединения запрашивает связь. Права проверяет Security.
 local ADDON, ns = ...
 local L, S = ns.L, ns.Security
 local P = {}
 ns.UnionPane = P
-local pane, child, input, message
+local pane, child, scroll, caption, input, connect, message
 -- confirming: "add:Гильдия" или "remove:Гильдия" — какой кнопке нужен второй щелчок.
 local rows, headers, confirming = {}, {}, nil
 local ROW_HEIGHT, HEADER_HEIGHT, HEADER_GAP, SECTION_GAP = 32, 24, 6, 18
@@ -14,6 +15,10 @@ local function Button(parent, text, width, fn)
     b:SetText(text)
     b:SetScript("OnClick", function() ns.SafeCall("объединение", fn) end)
     return b
+end
+local function Mode()
+    if S.CanManageUnion() then return "manage" end
+    if S.CanRequestUnion() then return "request" end
 end
 local function Connect()
     if not S.CanManageUnion() then return end
@@ -29,7 +34,7 @@ end
 function P.Build(parent)
     pane = CreateFrame("Frame", nil, parent)
     pane:SetAllPoints(parent)
-    local caption = pane:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    caption = pane:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     caption:SetPoint("TOPLEFT", 16, -16)
     caption:SetText(L.UNION_NAME)
     input = CreateFrame("EditBox", nil, pane, "InputBoxTemplate")
@@ -39,19 +44,16 @@ function P.Build(parent)
     input:SetMaxLetters(64)
     input:SetScript("OnEnterPressed", Connect)
     input:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    local connect = Button(pane, L.UNION_CONNECT, 180, Connect)
+    connect = Button(pane, L.UNION_CONNECT, 180, Connect)
     connect:SetPoint("LEFT", input, "RIGHT", 12, 0)
     message = pane:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    message:SetPoint("TOPLEFT", 16, -62)
-    message:SetPoint("RIGHT", -16, 0)
     message:SetJustifyH("LEFT")
-    local scroll = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 12, -96)
-    scroll:SetPoint("BOTTOMRIGHT", -30, 12)
+    scroll = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
     child = CreateFrame("Frame", nil, scroll)
     child:SetSize(730, 10)
     scroll:SetScrollChild(child)
-    P.frames = { pane = pane, input = input, connect = connect, rows = rows, headers = headers }
+    P.frames = { pane = pane, caption = caption, input = input, connect = connect, message = message,
+        rows = rows, headers = headers }
     pane:Hide()
 end
 local function RowAt(i)
@@ -63,8 +65,20 @@ local function RowAt(i)
     row.label:SetPoint("RIGHT", -200, 0)
     row.label:SetJustifyH("LEFT")
     row.action = Button(row, "", 180, function()
-        if not S.CanManageUnion() then return end
         local entry = row.entry
+        if entry.init then
+            S.Init(false, function(text)
+                -- Этот текст написан для чата и называет команды, а здесь дальше просто кнопка.
+                message:SetText(text == L.AUTH_INIT_OK and L.UNION_INIT_OK or text)
+            end)
+            return
+        end
+        if entry.ask then
+            local ok, why = S.Link(ns.Config.MAIN_GUILD_LEADER)
+            if not ok and why then message:SetText(why) end -- без причины итог уже показал LinkNotice
+            return
+        end
+        if not S.CanManageUnion() then return end
         local key = (entry.known and "add:" or "remove:") .. entry.guild
         if entry.request then
             local ok, why = S.Accept(entry.contact)
@@ -109,7 +123,9 @@ end
 local function Fill(row, item)
     row.entry = item
     local label, action = item.guild, L.UNION_REMOVE
-    if item.request then
+    if item.text then
+        label, action = item.text, item.action
+    elseif item.request then
         label, action = L.UNION_REQUEST:format(item.guild, ns.Util.Display(item.contact)), L.UNION_ADD
     elseif item.known then
         label = L.UNION_KNOWN:format(item.guild, ns.Util.Display(item.root))
@@ -118,16 +134,16 @@ local function Fill(row, item)
         action = L.UNION_CONFIRM_REMOVE
     end
     row.label:SetText(label)
-    row.action:SetShown(not item.main)
-    row.action:SetText(action)
+    row.action:SetShown(action ~= nil and not item.main)
+    row.action:SetText(action or "")
+    row.action:SetEnabled(not item.disabled)
 end
 local function Place(frame, y)
     frame:ClearAllPoints()
     frame:SetPoint("TOPLEFT", 0, -y)
     frame:Show()
 end
-function P.Render()
-    if not pane or not S.CanManageUnion() then P.Hide(); return end
+local function ManageSections()
     local requests, known = {}, {}
     for _, r in ipairs(S.UnionRequests()) do
         requests[#requests + 1] = { guild = r.guild, contact = r.contact, request = true }
@@ -135,12 +151,50 @@ function P.Render()
     for _, r in ipairs(S.KnownGuilds()) do
         known[#known + 1] = { guild = r.guild, root = r.root, known = true }
     end
-    local y, rowCount, headerCount = 0, 0, 0
-    for _, section in ipairs({
+    return {
         { title = L.UNION_SECTION_REQUESTS, items = requests },
         { title = L.UNION_SECTION_MEMBERS, items = S.UnionGuilds() },
         { title = L.UNION_SECTION_KNOWN, tip = L.UNION_KNOWN_TIP, items = known },
-    }) do
+    }
+end
+local function RequestSections()
+    local root, leader = S.MyRoot(), ns.Config.MAIN_GUILD_LEADER
+    local state = S.LinkState(leader)
+    local text = state == "sent" and L.UNION_LEADER_WAITING or state == "queued" and L.UNION_LEADER_QUEUED or L.UNION_LEADER
+    local items = {
+        { text = root and L.UNION_ROOT:format(ns.Util.Display(root.name)) or L.UNION_NO_ROOT,
+          action = not root and L.UNION_INIT or nil, init = true },
+        { text = text:format(ns.Util.Display(leader)), action = L.UNION_CONNECT, ask = true,
+          disabled = not root or state ~= nil },
+    }
+    return { { title = L.UNION_SECTION_CONNECT:format((ns.MyGuild())), tip = L.UNION_CONNECT_TIP, items = items } }
+end
+-- Глава вводит имя представителя над списком. Офицеру поле не нужно: итог запроса виден под строками.
+local function Layout(mode)
+    local manage = mode == "manage"
+    caption:SetShown(manage)
+    input:SetShown(manage)
+    connect:SetShown(manage)
+    scroll:ClearAllPoints()
+    scroll:SetPoint("TOPLEFT", 12, manage and -96 or -16)
+    scroll:SetPoint("BOTTOMRIGHT", -30, 12)
+end
+local function PlaceMessage(mode, y)
+    message:ClearAllPoints()
+    if mode == "manage" then
+        message:SetPoint("TOPLEFT", 16, -62)
+        message:SetPoint("RIGHT", -16, 0)
+    else
+        message:SetPoint("TOPLEFT", child, "TOPLEFT", 4, -y - 8)
+        message:SetPoint("RIGHT", child, "RIGHT", -4, 0)
+    end
+end
+function P.Render()
+    local mode = pane and Mode()
+    if not mode then P.Hide(); return end
+    Layout(mode)
+    local y, rowCount, headerCount = 0, 0, 0
+    for _, section in ipairs(mode == "manage" and ManageSections() or RequestSections()) do
         if #section.items > 0 then
             if headerCount > 0 then y = y + SECTION_GAP end
             headerCount = headerCount + 1
@@ -162,9 +216,10 @@ function P.Render()
     for i = rowCount + 1, #rows do rows[i]:Hide() end
     for i = headerCount + 1, #headers do headers[i]:Hide() end
     child:SetHeight(math.max(10, y))
+    PlaceMessage(mode, y)
 end
 function P.Show()
-    if not S.CanManageUnion() then return end
+    if not Mode() then return end
     pane:Show()
     P.Render()
 end
@@ -172,3 +227,11 @@ function P.Hide()
     if pane then pane:Hide(); input:ClearFocus() end
     confirming = nil
 end
+local function RenderIfShown()
+    if pane and pane:IsShown() then P.Render() end
+end
+ns.On("AUTH_ROOT", RenderIfShown)
+ns.On("UNION_LINK", function(text)
+    if message then message:SetText(text) end
+    RenderIfShown()
+end)

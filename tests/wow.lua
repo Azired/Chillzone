@@ -201,6 +201,7 @@ local function NewFrame(c, name)
 	function methods.HasFocus(self) return c.focus == self end
 	function methods.SetChecked(self, on) self.checked = on and true or false end
 	function methods.GetChecked(self) return self.checked end
+	function methods.SetEnabled(self, on) self.enabled = on and true or false end
 	function methods.AddMessage(self, t) self.lines[#self.lines + 1] = t end
 	function methods.Clear(self) self.lines = {} end
 	function methods.AtBottom() return true end
