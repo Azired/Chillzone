@@ -103,6 +103,40 @@ T.test("union: подключение и удаление через кнопк�
     T.eq(#k.ns.db.errors, 0)
 end)
 
+local function Sections(k)
+    local out = {}
+    for _, header in ipairs(k.ns.UnionPane.frames.headers) do
+        if header:IsShown() then out[#out + 1] = header.title end
+    end
+    return out
+end
+
+T.test("union: на вкладке видны только непустые разделы", function()
+    local w, k, _, v = Build()
+    local L = k.ns.L
+    k.ns.UI.Toggle("union")
+    T.same(Sections(k), { L.UNION_SECTION_MEMBERS }, "пока есть только главная гильдия")
+    T.ok(v.ns.Security.Link(k:Name()))
+    w:Run(5)
+    k.ns.UnionPane.Render()
+    T.same(Sections(k), { L.UNION_SECTION_REQUESTS, L.UNION_SECTION_MEMBERS }, "пришёл запрос связи")
+    T.ok(k.ns.Security.Accept(v:Name()))
+    w:Run(45)
+    k.ns.UnionPane.Render()
+    T.same(Sections(k), { L.UNION_SECTION_MEMBERS }, "запрос принят")
+    T.ok(k.ns.Security.RemoveGuild(v.guild))
+    w:Run(40)
+    k.ns.UnionPane.Render()
+    T.same(Sections(k), { L.UNION_SECTION_MEMBERS, L.UNION_SECTION_KNOWN }, "исключённая гильдия стала известной")
+    local headers, shown = k.ns.UnionPane.frames.headers, {}
+    T.no(rawget(headers[1], "tip"), "у состава подсказки нет") -- заглушка кадра отвечает на любое поле
+    k.env.GameTooltip = { SetOwner = function() end, Show = function() end, Hide = function() end,
+        AddLine = function(_, text) shown[#shown + 1] = text end }
+    headers[2].scripts.OnEnter(headers[2])
+    T.same(shown, { L.UNION_KNOWN_TIP }, "подсказка объясняет раздел")
+    T.eq(#k.ns.db.errors, 0)
+end)
+
 T.test("union: вкладка управления исчезает при передаче главы", function()
     local _, k, o, v = Build()
     k.ns.UI.Toggle("union")
