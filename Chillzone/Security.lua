@@ -10,6 +10,7 @@ Ed.SLICE_MS = 2
 local S = { stats = { rejected = 0, verified = 0, limited = 0 } }
 ns.Security = S
 local identity, keys, issuing, pending, outgoing = nil, {}, {}, {}, {}
+local acceptedLinks = {} -- подтверждённые запросы: повтор ответа при потере пакета, без второго accept
 local certCache, verifyPending, replay, cachedOpens, limits = {}, {}, {}, {}, {}
 -- byFp: отпечаток → проверенный сертификат; waiting: кто ждёт сертификат по отпечатку;
 -- checking: сертификаты в проверке; hints: имя корня своей гильдии со слов участника (KH),
@@ -637,17 +638,102 @@ ns.Comm.On("KA", function(msg, sender, dist)
         s.policies[gk] = { wire = msg, issued = issued, expires = expires, guild = p[3] }
     end)
 end)
+local LINK_TTL, LINK_RETRY = 180, 15
+local function LinkPermission()
+    if not ns.IsMember() then return ns.L.AUTH_LINK_NOT_MEMBER end
+    if not ns.Roster.Fresh() then
+        ns.Roster.RequestScan()
+        return ns.L.AUTH_LINK_ROSTER
+    end
+    if not ns.Roster.IsOfficerRank(ns.Roster.MyRank()) then return ns.L.AUTH_LINK_OFFICER end
+end
+local function LinkCurrent(p)
+    return S.CanAdmin() and ns.MyGuild() == p.localGuild and Root(p.localGuild) == p.localRoot
+end
+local function SameLink(p, nonce, guild, name, public)
+    return p.nonce == nonce and p.guild == guild and p.name == name and p.public == public
+end
+local function SendLink(key, p)
+    p.queued = true
+    local function Done(ok, why)
+        p.queued = nil
+        if outgoing[key] ~= p then return end
+        if not ok then
+            if why == "authority changed" and ns.MyGuild() == p.localGuild and Root(p.localGuild) == p.localRoot
+                and ns.IsMember() and not ns.Roster.Fresh() then
+                ns.Roster.RequestScan()
+                p.retryAt = ns.Now() + LINK_RETRY
+                return
+            end
+            outgoing[key] = nil
+            ns.Log("запрос связи %s не отправлен: %s", p.target, tostring(why))
+            ns.Print(ns.L.AUTH_LINK_FAILED, p.target)
+            return
+        end
+        if not p.sentAt then
+            p.sentAt, p.untilAt = ns.Now(), ns.Now() + LINK_TTL
+            ns.Print(ns.L.AUTH_SENT, p.target)
+        end
+        p.retryAt = ns.Now() + LINK_RETRY
+    end
+    local root = p.localRoot
+    local queued = ns.Comm.Send("WHISPER", "KL~H~" .. p.nonce .. "~" .. p.localGuild .. "~" .. root.name .. "~" .. root.public,
+        { target = p.target, prio = ns.Comm.PRIO_LINK, key = "link:" .. key,
+          guard = function() return outgoing[key] == p and LinkCurrent(p) and ns.Now() <= p.untilAt end,
+          done = Done })
+    if not queued and outgoing[key] == p then Done(false, "queue") end
+end
+local function ReplyLink(key, p)
+    if p.queued or (p.repliedAt and ns.Now() - p.repliedAt < 5) then return end
+    p.queued = true
+    local function Done(ok, why)
+        p.queued = nil
+        if ok then
+            p.repliedAt = ns.Now()
+        else
+            ns.Log("ответ на запрос связи %s не отправлен: %s", p.target, tostring(why))
+        end
+    end
+    local root = p.localRoot
+    local queued = ns.Comm.Send("WHISPER", "KL~R~" .. p.nonce .. "~" .. p.localGuild .. "~" .. root.name .. "~" .. root.public,
+        { target = p.target, prio = ns.Comm.PRIO_LINK, key = "link-reply:" .. key,
+          guard = function()
+              local pinned = Root(p.guild)
+              return acceptedLinks[key] == p and LinkCurrent(p) and ns.Now() <= p.untilAt
+                  and pinned and pinned.public == p.public and pinned.name == p.name
+          end, done = Done })
+    if not queued and p.queued then Done(false, "queue") end
+    ns.Security.Introduce(p.target, nil, true)
+end
+local function TickLinks()
+    local now = ns.Now()
+    for key, p in pairs(outgoing) do
+        if now > p.untilAt then
+            outgoing[key] = nil
+            ns.Print(p.sentAt and ns.L.AUTH_LINK_EXPIRED or ns.L.AUTH_LINK_FAILED, p.target)
+        elseif p.retryAt and not p.queued and now >= p.retryAt and LinkCurrent(p) then
+            SendLink(key, p)
+        end
+    end
+    for key, p in pairs(acceptedLinks) do if now > p.untilAt then acceptedLinks[key] = nil end end
+end
 function S.Link(name)
-    local root = ns.MyGuild() and Root(ns.MyGuild())
+    local why = LinkPermission()
+    if why then return false, why end
+    if not identity then return false, ns.L.AUTH_LINK_KEY end
+    local guild = ns.MyGuild()
+    local root = Root(guild)
+    if not root then return false, ns.L.AUTH_LINK_ROOT end
+    name = U.TellName(name)
     local key = U.Key(name)
-    if not S.CanAdmin() or not identity or not root or not key or ns.Roster.RankOf(name) ~= nil then return false end
+    if not key or key == "" or ns.Roster.RankOf(name) ~= nil then return false, ns.L.AUTH_LINK_NAME end
     serial = serial + 1
-    local nonce = tostring(ns.ServerTime()) .. "." .. serial
-    outgoing[key] = { nonce = nonce, untilAt = ns.Now() + 180 }
-    ns.Comm.Send("WHISPER", "KL~H~" .. nonce .. "~" .. ns.MyGuild() .. "~" .. root.name .. "~" .. root.public,
-        { target = name, prio = ns.Comm.PRIO_CONTROL, guard = S.CanAdmin })
-    ns.Print(ns.L.AUTH_SENT, U.Display(name))
-    return true
+    local p = { nonce = tostring(ns.ServerTime()) .. "." .. serial, target = name,
+        localGuild = guild, localRoot = root, untilAt = ns.Now() + ns.Comm.HOLD_MAX }
+    outgoing[key] = p
+    ns.Print(ns.L.AUTH_LINK_QUEUED, name)
+    SendLink(key, p)
+    return outgoing[key] == p
 end
 -- Офицер явно подтвердил корень чужой гильдии: гильдии — сначала что он больше не отозван
 -- (KU: прежний /chillzone trust reset ушёл всем по KF), затем сам корень (KT).
@@ -656,37 +742,53 @@ local function Confirmed(guild, public)
     ShareRoot(guild, Root(guild), ns.Comm.PRIO_BOOTSTRAP)
 end
 function S.Accept(name)
+    local why = LinkPermission()
+    if why then return false, why end
     local key = U.Key(name)
     local p, root = pending[key], ns.MyGuild() and Root(ns.MyGuild())
-    if not S.CanAdmin() or not p or not root or ns.Now() > p.untilAt then return false end
-    if not Pin(p.guild, p.name, p.public, true) then return false end
+    if not root then return false, ns.L.AUTH_LINK_ROOT end
+    if not p or ns.Now() > p.untilAt then return false, ns.L.AUTH_LINK_NO_REQUEST:format(U.Display(name)) end
+    if not Pin(p.guild, p.name, p.public, true) then return false, ns.L.AUTH_LINK_CONFLICT end
     pending[key] = nil
+    p.localGuild, p.localRoot, p.untilAt = ns.MyGuild(), root, ns.Now() + LINK_TTL
+    acceptedLinks[key] = p
     Confirmed(p.guild, p.public)
-    ns.Comm.Send("WHISPER", "KL~R~" .. p.nonce .. "~" .. ns.MyGuild() .. "~" .. root.name .. "~" .. root.public,
-        { target = name, prio = ns.Comm.PRIO_CONTROL, guard = S.CanAdmin })
-    S.Introduce(name)
-    ns.Print(ns.L.AUTH_PAIRED, U.Display(name), p.guild)
+    ReplyLink(key, p)
+    ns.Print(ns.L.AUTH_ACCEPTED, p.guild, p.target)
     return true
 end
 ns.Comm.On("KL", function(msg, sender, dist)
-    if dist ~= "WHISPER" or not S.CanAdmin() or not Budget("l:" .. Peer(sender), 30) then return end
+    if dist ~= "WHISPER" or not Budget("l:" .. Peer(sender), 30) then return end
     local mode, nonce, guild, name, public = msg:match("^KL~([HR])~([%d%.]+)~([^~]+)~([^~]+)~([%w_-]+)$")
     if not mode or #msg > 250 or #nonce > 40 or not U.IsMemberGuild(guild) or U.GuildKey(guild) == GuildKey()
         or not Name(name) or #public ~= 43 or not Ed.FromB64(public) then return end
+    local why = LinkPermission()
+    if why then ns.Log("соединение с %s пропущено: %s", U.Display(sender), why); return end
     local key = U.Key(sender)
     if mode == "H" then
+        local accepted = acceptedLinks[key]
+        if accepted and accepted.nonce == nonce then
+            if ns.Now() <= accepted.untilAt and SameLink(accepted, nonce, guild, name, public) then ReplyLink(key, accepted) end
+            return
+        end
+        local previous = pending[key]
+        if previous and ns.Now() <= previous.untilAt and SameLink(previous, nonce, guild, name, public) then return end
         local total = 0; for _ in pairs(pending) do total = total + 1 end
         if total >= 16 and not pending[key] then return end
-        pending[key] = { nonce = nonce, guild = guild, name = name, public = public, untilAt = ns.Now() + 180 }
+        pending[key] = { nonce = nonce, guild = guild, name = name, public = public,
+            target = U.TellName(sender), untilAt = ns.Now() + LINK_TTL }
         ns.Print(ns.L.AUTH_REQUEST, U.Display(sender), guild)
     else
         local p = outgoing[key]
-        if not p or p.nonce ~= nonce or ns.Now() > p.untilAt then return end
+        if not p or not p.sentAt or p.nonce ~= nonce or ns.Now() > p.untilAt or not LinkCurrent(p) then return end
         if Pin(guild, name, public, true) then
             outgoing[key] = nil
             Confirmed(guild, public)
-            S.Introduce(sender)
+            S.Introduce(sender, nil, true)
             ns.Print(ns.L.AUTH_PAIRED, U.Display(sender), guild)
+        else
+            outgoing[key] = nil
+            ns.Print(ns.L.AUTH_LINK_CONFLICT)
         end
     end
 end)
@@ -899,6 +1001,7 @@ local function Sweep(restore)
     end
 end
 local function Tick()
+    TickLinks()
     if not identity or not ns.IsMember() or not ns.Roster.Fresh() then return end
     local now = ns.Now()
     if S.CanAdmin() and now - lastPolicy >= 30 then
@@ -940,7 +1043,6 @@ ns.On("LOGIN", function()
         for wire, entry in pairs(sealed) do if clock - entry.at > 120 then sealed[wire] = nil end end
         for id, entry in pairs(replay) do if now - entry.at > C.CHAT_DEDUPE then replay[id], openedHere[id] = nil, nil end end
         for key, p in pairs(pending) do if clock > p.untilAt then pending[key] = nil end end
-        for key, p in pairs(outgoing) do if clock > p.untilAt then outgoing[key] = nil end end
         for raw, c in pairs(certCache) do if c.expires <= now then certCache[raw] = nil end end
         for fp, raw in pairs(byFp) do if not certCache[raw] then byFp[fp] = nil end end
         for fp, list in pairs(waiting) do if clock - list.at > 30 then waiting[fp] = nil end end
@@ -953,14 +1055,17 @@ ns.On("LOGIN", function()
 end)
 ns.On("GUILD_CHANGED", function()
     keys, issuing, pending, outgoing, hints = {}, {}, {}, {}, {}
+    acceptedLinks = {}
     lastHello, lastPolicy, lastSaid = -1e9, -1e9, nil
     S.Say()
 end)
 ns.Command("link", function(name)
-    if not S.Link(U.Trim(name)) then ns.Print(ns.L.AUTH_NEED_OFFICER) end
+    local ok, why = S.Link(U.Trim(name))
+    if not ok and why then ns.Print(why) end
 end, "соединить гильдии: /chillzone link Имя Фамилия (глава или офицер)")
 ns.Command("accept", function(name)
-    if not S.Accept(U.Trim(name)) then ns.Print(ns.L.AUTH_NEED_OFFICER) end
+    local ok, why = S.Accept(U.Trim(name))
+    if not ok and why then ns.Print(why) end
 end, "подтвердить проверенное имя: /chillzone accept Имя Фамилия")
 ns.Command("trust", function(arg)
     local cmd, rest = U.Trim(arg or ""):match("^(%S*)%s*(.-)$")
