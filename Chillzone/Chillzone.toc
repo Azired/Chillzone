@@ -3,7 +3,7 @@
 ## Notes: Связь гильдий «Чиллзон»: перепись, королевство, карта и общий чат.
 ## IconTexture: Interface\AddOns\Chillzone\media\logo
 ## Author: Chillzone addon contributors
-## Version: 0.9.0
+## Version: 0.10.0
 ## SavedVariables: ChillzoneDB
 ## X-License: MIT
 
