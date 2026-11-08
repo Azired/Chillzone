@@ -415,8 +415,8 @@ function Chat.Submit(channel, text)
 	return Chat.Send(channel, text)
 end
 
--- /cz и кириллические алиасы всегда принадлежат чату, включая слова settings/status.
--- Ввод остаётся в игровом поле; сообщение отправляется только после Enter.
+-- Нумерованные алиасы отправляют любой текст в выбранный канал.
+-- Ввод остаётся в игровом поле; разбор выполняется только после Enter.
 for i, tier in ipairs({ "A", "C", "L" }) do
 	_G["SLASH_CHILLZONE" .. tier .. "1"] = "/cz" .. i
 	_G["SLASH_CHILLZONE" .. tier .. "2"] = "/чз" .. i
@@ -432,9 +432,14 @@ for i, tier in ipairs({ "A", "C", "L" }) do
 		ns.SafeCall("/cz" .. i, Chat.Send, tier, msg or "")
 	end
 end
-_G.SLASH_CHILLZONEA3 = "/cz"
-_G.SLASH_CHILLZONEA4 = "/чз"
-_G.SLASH_CHILLZONEA5 = "/чиллзон"
+-- Короткие алиасы: известная команда выполняется, остальной текст уходит всем.
+_G.SLASH_CHILLZONECHAT1 = "/cz"
+_G.SLASH_CHILLZONECHAT2 = "/чз"
+_G.SLASH_CHILLZONECHAT3 = "/чиллзон"
+SlashCmdList.CHILLZONECHAT = function(msg)
+	if not ns.me then return end
+	if not ns.RunCommand(msg) then SlashCmdList.CHILLZONEA(msg) end
+end
 
 ---------------------------------------------------------------------------
 -- Клик по метке канала в чате игры. Ссылки addon: игра на Forever отдаёт своему

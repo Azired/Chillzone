@@ -60,23 +60,49 @@ local function SlashClient(rank)
 	return w, c
 end
 
-T.test("slash: управление только через /chillzone, алиасы всегда пишут в чат", function()
+T.test("slash: короткие алиасы выполняют известные команды, остальное отправляют в чат", function()
 	local _, c = SlashClient()
 	local sent = {}
 	c.ns.Chat.Send = function(tier, text) sent[#sent + 1] = { tier, text } end
-	c:Slash("/chillzone", "settings")
-	T.eq(c.ns.UI.Current(), "settings")
-	c:Slash("/chillzone", "status")
-	T.ok(c:Saw("перепись: репортёр") > 0)
 	c:Slash("/chillzone", "нетакой")
 	T.eq(#sent, 0, "неизвестная команда управления не уходит в чат")
-	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон" }) do
-		c:Slash(cmd, "settings")
-		T.same(sent[#sent], { "A", "settings" }, cmd .. " не перехватывает слово команды")
-		T.eq(c.ns.UI.Current(), "settings", "отправка текста не меняет вкладку")
+	local args = {}
+	c.ns.Command("custom", function(arg) args[#args + 1] = arg end)
+	for _, cmd in ipairs({ "/chillzone", "/cz", "/чз", "/чиллзон" }) do
+		c:Slash(cmd, "  SeTtInGs  ")
+		T.eq(c.ns.UI.Current(), "settings", cmd .. " выполняет команду")
+		local before = c:Saw("перепись: репортёр")
+		c:Slash(cmd, "status")
+		T.eq(c:Saw("перепись: репортёр"), before + 1, cmd .. " выполняет status")
+		c:Slash(cmd, "custom Имя Фамилия")
+		T.eq(args[#args], "Имя Фамилия", "аргументы переданы обработчику")
 	end
-	T.eq(#sent, 3)
+	T.eq(#sent, 0, "известные команды не уходят в чат")
+	T.eq(#args, 4)
+	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон" }) do
+		for _, text in ipairs({ "привет " .. LINK, "settingsfoo текст", "нетакой" }) do
+			c:Slash(cmd, text)
+			T.same(sent[#sent], { "A", text }, cmd .. " отправляет обычный текст")
+		end
+	end
+	T.eq(#sent, 9)
 	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("slash: нумерованные каналы отправляют слова команд, ошибка команды не уходит в чат", function()
+	local _, c = SlashClient()
+	local sent = {}
+	c.ns.Chat.Send = function(tier, text) sent[#sent + 1] = { tier, text } end
+	for _, prefix in ipairs({ "/cz", "/чз" }) do
+		for i, tier in ipairs({ "A", "C", "L" }) do
+			c:Slash(prefix .. i, "status")
+			T.same(sent[#sent], { tier, "status" })
+		end
+	end
+	c.ns.Command("broken", function() error("ошибка команды") end)
+	c:Slash("/cz", "broken")
+	T.eq(#sent, 6, "ошибка не превращается в сообщение")
+	T.eq(#c.ns.db.errors, 1, "ошибка перехвачена")
 end)
 
 T.test("slash: все алиасы оставляют ввод в игровом чате до Enter", function()
@@ -89,7 +115,7 @@ T.test("slash: все алиасы оставляют ввод в игровом
 		for i = 1, 2 do
 			local game = c.env["ChatFrame" .. i .. "EditBox"]
 			game:Show(); game:SetFocus()
-			for _, text in ipairs({ cmd, cmd .. " ", cmd .. " привет " .. LINK }) do
+			for _, text in ipairs({ cmd, cmd .. " ", cmd .. " settings", cmd .. " status", cmd .. " привет " .. LINK }) do
 				game:SetText(text)
 				local changed = game.scripts.OnTextChanged
 				if changed then changed(game, true) end
