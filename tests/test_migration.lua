@@ -114,7 +114,7 @@ local function Shown(client)
     return box
 end
 
-T.test("migration: главного корня нет в игре — каталог просим раз в полчаса и молча", function()
+T.test("migration: главного корня нет в игре — связь пробуем раз в полчаса и молча", function()
     local w, c = Build()
     c.k:Logout(); c.o:Logout()
     c.n = w:Client({ first = "Новый", surname = "Северный", guild = c.v.guild, rank = 3 })
@@ -126,11 +126,13 @@ T.test("migration: главного корня нет в игре — катал
     local function Probes()
         local n = 0
         for _, e in ipairs(w.log) do
-            if e.from == c.n:Name() and e.target == c.k:Name() and e.msg:find("^RP~") then n = n + 1 end
+            -- Первая ошибка после KP отменяет и оставшиеся куски, и следующий RP.
+            -- Считаем все шёпоты, чтобы лишние пакеты тоже нарушали ограничение.
+            if e.from == c.n:Name() and e.target == c.k:Name() then n = n + 1 end
         end
         return n
     end
-    T.eq(Probes(), 1, "главный корень спрошен")
+    T.eq(Probes(), 1, "главному корню отправлен только первый пакет")
     w:Run(25 * 60)
     T.eq(Probes(), 1, "после «нет такого игрока» не чаще раза в полчаса")
     w:Run(10 * 60)

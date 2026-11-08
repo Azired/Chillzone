@@ -721,6 +721,28 @@ T.test("relay: реле вышло из игры — сообщение уход
 	T.no(hidden, "через 60 с строка уже не скрывается")
 end)
 
+T.test("relay: ошибка Forever снимает аренду репортёра и остаётся скрытой", function()
+	local _, c = Build()
+	local gk = c.A.ns.Util.GuildKey("Чиллзон Север")
+	local relay
+	for _, cl in pairs(c) do
+		local held = cl.ns.Relay.Reporters()[gk]
+		if held and held.key == Key(cl, c.V:Name()) then relay = cl; break end
+	end
+	T.ok(relay, "есть реле с арендой Веры")
+	local text = ('Персонаж по имени "%s" в игре не найден.'):format(c.V:Name())
+	relay.ns.Comm.SendNow("WHISPER", "ZZ~test", c.V:Name())
+	relay:Fire("CHAT_MSG_SYSTEM", text)
+	T.eq(relay.ns.Relay.Reporters()[gk], nil, "аренда снята сразу")
+	for _ = 1, 2 do
+		local hidden = false
+		for _, filter in ipairs(relay.filters.CHAT_MSG_SYSTEM or {}) do
+			if filter(nil, "CHAT_MSG_SYSTEM", text) then hidden = true end
+		end
+		T.ok(hidden, "строка скрыта и после снятия аренды, в каждом окне")
+	end
+end)
+
 T.test("relay: Q1 после /reload восполняет перепись", function()
 	local w, c = Build()
 	-- Мира перезаходит с пустыми данными.
