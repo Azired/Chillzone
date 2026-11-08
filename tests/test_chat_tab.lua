@@ -156,6 +156,52 @@ T.test("chat tab: ввод в Chattynator отправляет в союз и в
 	T.eq(#ns.db.errors, 0)
 end)
 
+T.test("chat tab: Chattynator отображает смайлы Hepega в истории и новых строках", function()
+	local h, ns, env = BuildChattynator()
+	local emote = { frames = 2 }
+	local markup = "|TInterface\\AddOns\\Hepega\\HYPE.tga:18:18|t"
+	local hepega = {
+		VERSION = "0.9.0", DB = { enabled = true }, Lookup = { HYPE = emote, HIDDEN = {} },
+		IsEnabled = function(_, name) return name ~= "HIDDEN" end,
+		GetChatEmoteSize = function(_, frame)
+			T.eq(frame, h.messages)
+			return 18
+		end,
+		GetEmoteMarkup = function(_, entry, size, frame)
+			T.eq(entry, emote)
+			T.eq(size, 18)
+			T.eq(frame, 0)
+			return markup
+		end,
+	}
+	env.ForeverSmileChat = hepega
+	ns.char.chatMirror = true
+	local link = "|cff1eff00|Hitem:25|h[HYPE монета]|h|r"
+	local body = "HYPE " .. link .. " HYPE, HIDDEN |Tfake|t"
+	local function Show()
+		ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", body)
+	end
+	Show()
+	h:Mount(1)
+	Show()
+	local messages = h.messages.lines
+	local rendered = markup .. " " .. link .. " HYPE, HIDDEN ||Tfake||t"
+	T.eq(#messages, 2)
+	T.eq(messages[1]:sub(-#rendered), rendered)
+	T.eq(messages[2], messages[1])
+	T.eq(ns.Chat.History("A")[2].x, body)
+	local native = h.client.printed
+	T.eq(native[#native], ns.Chat.Format("A", "Чиллзон", "Автор Чата", "MAGE", body))
+	hepega.DB.enabled = false
+	Show()
+	T.eq(messages[3], native[#native])
+	hepega.DB.enabled = true
+	hepega.GetEmoteMarkup = function() error("Hepega unavailable") end
+	Show()
+	T.eq(messages[4], native[#native])
+	T.eq(#ns.db.errors, 0)
+end)
+
 T.test("chat tab: кнопка доступна прямо в общем канале Chillzone", function()
 	local h, ns = Build()
 	ns.UI.OpenChat("G", false)

@@ -154,12 +154,14 @@ function Chat.GuildTag(guild)
 	return L.CHAT_GUILD_TAGS[U.Fold(name)] or name
 end
 
-function Chat.Format(tier, guild, sender, class, text)
+function Chat.Format(tier, guild, sender, class, text, formatBody)
 	local name = U.Display(sender)
 	local color = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
 	if color and color.colorStr then name = "|c" .. color.colorStr .. name .. "|r" end
 	local g = Chat.GuildTag(guild)
-	return Chat.Tag(tier) .. " |cff999999<" .. g .. ">|r |Hplayer:" .. (U.TellName(sender) or "?") .. "|h[" .. name .. "]|h: " .. Codec.SanitizeChat(text)
+	local body = Codec.SanitizeChat(text)
+	if formatBody then body = formatBody(body) end
+	return Chat.Tag(tier) .. " |cff999999<" .. g .. ">|r |Hplayer:" .. (U.TellName(sender) or "?") .. "|h[" .. name .. "]|h: " .. body
 end
 
 -- Цвет строк канала: чат гильдии и офицеров — как в игре, уровни «Чиллзон» — свои.
