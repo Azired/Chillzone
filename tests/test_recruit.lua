@@ -201,13 +201,14 @@ T.test("заявки: офицер вне выдачи поиска по гил�
 		return out
 	end
 	Search(w, c)
+	-- Ответ J2 ждёт в очереди за служебными пакетами; даём ему прийти до проверки.
+	w:Run(11)
 	local R, U = c.R.ns.Recruit, c.R.ns.Util
 	T.eq(#R.Officers("Чиллзон Север"), 0, "глава назван, но не найден")
 	local kind, name, hint = R.NextSearch()
 	T.eq(kind, "verify")
 	T.eq(U.Key(name), U.Key(leader))
 	T.eq(hint.name, "Чиллзон Север")
-	w:Run(11)
 	T.ok(R.Search())
 	T.eq(c.R.whoQueries[#c.R.whoQueries], '"' .. leader .. '"', "запрос по имени, как /who \"Имя Фамилия\"")
 	w:Run(1)
