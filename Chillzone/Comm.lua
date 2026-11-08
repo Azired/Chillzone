@@ -64,6 +64,10 @@ local function Unavailable(target)
 	return untilAt ~= nil and ns.Now() < untilAt
 end
 
+local function Tracing()
+	return ns.db and ns.db.settings and ns.db.settings.debug
+end
+
 -- Одно сообщение прямо сейчас: true или false, код.
 function Comm.SendNow(dist, msg, target, logged)
 	if Comm.InLockdown() then return false, LOCKDOWN end
@@ -75,6 +79,9 @@ function Comm.SendNow(dist, msg, target, logged)
 	end
 	local send = (logged and C_ChatInfo.SendAddonMessageLogged) or C_ChatInfo.SendAddonMessage
 	local ok, res = pcall(send, ns.PREFIX, msg, dist, to)
+	if dist == "WHISPER" and Tracing() then
+		ns.Log("шёпот %s, тип %s, logged=%s: результат %s", to, msg:sub(1, 2), tostring(logged == true), ok and tostring(res) or "ошибка Lua")
+	end
 	if dist == "WHISPER" and ((ok and res == TARGET_OFFLINE) or Unavailable(target)) then
 		Comm.stats.fails = Comm.stats.fails + 1
 		if ok and res == TARGET_OFFLINE then MarkUnavailable(U.Key(target), "код TargetOffline") end
@@ -128,6 +135,23 @@ end
 -- Фильтр не меняет состояние: его могут вызвать несколько окон до или после события.
 ---------------------------------------------------------------------------
 local notFound
+-- Обычный журнал не содержит отправок с результатом 0. Для разбора спама нужны и они,
+-- и ответы, которые не распознал шаблон. Собираем их только при /chillzone debug,
+-- только рядом с нашим шёпотом, без содержимого пакетов и без чтения secret-строк.
+local function TraceSystem(text)
+	if not Tracing() then return end
+	local recent, now = false, ns.Now()
+	for _, at in pairs(Comm.lastWhisper) do
+		if now - at <= WHISPER_FRESH then recent = true; break end
+	end
+	if not recent then return end
+	if type(issecretvalue) == "function" and issecretvalue(text) then
+		ns.Log("ответ системы после шёпота: защищённая строка")
+	elseif type(text) == "string" then
+		ns.Log("ответ системы после шёпота: %q", (text:gsub("|", "||")))
+	end
+end
+
 local function OursNotFound(text)
 	if type(text) ~= "string" then return nil end
 	if type(issecretvalue) == "function" and issecretvalue(text) then return nil end
@@ -141,6 +165,7 @@ local function OursNotFound(text)
 end
 
 ns.RegisterEvent("CHAT_MSG_SYSTEM", function(text)
+	TraceSystem(text)
 	local key = OursNotFound(text)
 	if not key then return end
 	MarkUnavailable(key, "системная строка")

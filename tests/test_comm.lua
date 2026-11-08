@@ -156,3 +156,52 @@ T.test("comm: Forever — синхронная ошибка не вызывае�
 	T.eq(comm.stats.dropped, 1)
 	T.eq(#c.ns.db.errors, 0, "насос не завершает отменённое задание повторно")
 end)
+
+T.test("comm: диагностика — принятый API шёпот виден с адресатом и кодом", function()
+	local _, c, comm = Fresh()
+	c.ns.db.settings.debug = true
+	T.ok(comm.SendNow("WHISPER", "KQ~private-payload", TARGET))
+	local log = table.concat(c.ns.db.log, "\n")
+	T.ok(log:find(TARGET, 1, true), "виден фактический адресат")
+	T.ok(log:find("KQ", 1, true), "виден тип пакета")
+	T.ok(log:find("результат 0", 1, true), "успех API не выдаётся за подтверждённую доставку")
+	T.no(log:find("private-payload", 1, true), "содержимое пакета не записывается")
+end)
+
+T.test("comm: диагностика — нераспознанная системная строка после шёпота", function()
+	local w, c, comm = Fresh()
+	c.ns.db.settings.debug = true
+	local text = 'Неизвестный ответ |cffffff00"Ника Маковка"|r'
+	local before = #c.ns.db.log
+	c:Fire("CHAT_MSG_SYSTEM", text)
+	T.eq(#c.ns.db.log, before, "до служебного шёпота системные строки не собираются")
+	comm.SendNow("WHISPER", "KQ~test", TARGET)
+	c:Fire("CHAT_MSG_SYSTEM", text)
+	local log = table.concat(c.ns.db.log, "\n")
+	T.ok(log:find("ответ системы после шёпота", 1, true))
+	T.ok(log:find("||cffffff00", 1, true), "разметка видна в журнале, а не применяется")
+	local n = #c.ns.db.log
+	w.now = w.now + 11
+	c:Fire("CHAT_MSG_SYSTEM", text)
+	T.eq(#c.ns.db.log, n, "давние шёпоты не включают запись посторонних строк")
+end)
+
+T.test("comm: диагностика — закрытая строка не читается и не скрывается", function()
+	local _, c, comm = Fresh()
+	c.ns.db.settings.debug = true
+	comm.SendNow("WHISPER", "KQ~test", TARGET)
+	local secret = setmetatable({}, { __tostring = function() error("чтение закрытого текста") end })
+	c.env.issecretvalue = function(value) return rawequal(value, secret) end
+	c:Fire("CHAT_MSG_SYSTEM", secret)
+	T.ok(table.concat(c.ns.db.log, "\n"):find("защищённая строка", 1, true))
+	T.no(Hidden(c, secret), "нельзя скрывать неизвестную закрытую строку")
+	T.eq(#c.ns.db.errors, 0, "защищённый текст не индексируется и не форматируется")
+end)
+
+T.test("comm: диагностика — без debug подробные записи отключены", function()
+	local _, c, comm = Fresh()
+	local before = #c.ns.db.log
+	comm.SendNow("WHISPER", "KQ~private-payload", TARGET)
+	c:Fire("CHAT_MSG_SYSTEM", "Неизвестный ответ системы")
+	T.eq(#c.ns.db.log, before)
+end)
