@@ -3,6 +3,19 @@ local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
 local Build, Whisper
 
+-- Изолированные проверки ключей и сообщений предполагают уже подключённую гильдию.
+-- Сам подписанный допуск проверяется через обычный Wow.World в test_union.
+local function AdmittedWorld()
+    local w = Wow.World()
+    local create = w.Client
+    function w:Client(opts)
+        local c = create(self, opts)
+        if opts.guild then c.ns.store.security.union[c.ns.Util.GuildKey(opts.guild)] = { active = true, issued = 0, revision = 0 } end
+        return c
+    end
+    return w
+end
+
 T.test("security: raw outsider whispers never enter alliance chat", function()
     local w = Wow.World()
     w:Guild("Чиллзон")
@@ -141,7 +154,7 @@ Build = function()
     w:Guild("Чиллзон Север")
     w:Guild("Орден Чиллзона")
     local c = {}
-    c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1 })
+    c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 0 })
     c.M = w:Client({ first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3 })
     c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
     c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 3 })
@@ -234,7 +247,7 @@ T.test("security: a root replacement during real catalog verification cancels ne
     local Ed, cred = c.A.ns.Ed25519, c.A.ns.Security.MyCertificate()
     local now, guild = c.A.ns.ServerTime(), "Чиллзон Восток"
     local body = Fields("GUILDROOT", { c.A.ns.group, c.A.ns.faction, guild,
-        c.V:Name(), c.V.ns.Security.MyCertificate().public, now, now + 600 })
+        c.V:Name(), c.V.ns.Security.MyCertificate().public, now, now + 600, "1", 1 })
     local wire = "KA~" .. Ed.ToB64(cred.raw) .. "~" .. Ed.ToB64(body) .. "~" .. Ed.ToB64(Ed.Sign(Seed(c.A), body))
     local newPublic
     for _, item in pairs(c.X.ns.db.securityKeys) do newPublic = item.public end
@@ -428,6 +441,8 @@ T.test("security: priority queue and peer discovery have hard bounds", function(
 end)
 
 T.test("security: additional readers cause no author-to-reader confirmation traffic", function()
+    -- При этом порядке таймеров повторные просьбы сертификата вытесняли чат каталогами.
+    math.randomseed(2)
     local w, c = Build()
     local readers = {}
     for i = 1, 12 do readers[i] = w:Client({ first = "Читатель" .. i, surname = "Севера", guild = "Чиллзон Север", rank = 3 }) end
@@ -486,7 +501,7 @@ T.test("security: the guild root is set by hand once, a late officer cannot spli
 end)
 
 T.test("security: известный корень без сертификата не отправляет главу снова делать init", function()
-    local w = Wow.World()
+    local w = AdmittedWorld()
     w:Guild("Чиллзон Север")
     local O = w:Client({ first = "Олег", surname = "Опытный", guild = "Чиллзон Север", rank = 1 })
     local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
@@ -508,7 +523,7 @@ T.test("security: известный корень без сертификата 
 end)
 
 T.test("security: подсказка без корня и ожидание собственного сертификата различаются", function()
-    local w = Wow.World()
+    local w = AdmittedWorld()
     w:Guild("Чиллзон Север")
     local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
     w:Run(30)
@@ -529,7 +544,7 @@ T.test("security: подсказка без корня и ожидание со�
 end)
 
 T.test("security: потерянный ключ корневого персонажа не выглядит как ожидание сертификата", function()
-    local w = Wow.World()
+    local w = AdmittedWorld()
     w:Guild("Чиллзон Север")
     local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
     w:Run(30)
@@ -786,7 +801,7 @@ T.test("security: выдача продолжается, если корень �
 end)
 
 T.test("security: поток чата не задерживает выдачу сертификата новичку", function()
-    local w = Wow.World()
+    local w = AdmittedWorld()
     w:Guild("Чиллзон Север")
     local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
     w:Run(30)
@@ -807,7 +822,7 @@ T.test("security: поток чата не задерживает выдачу �
 end)
 
 T.test("security: новый ключ корневого персонажа не блокирует действующее делегирование", function()
-    local w = Wow.World()
+    local w = AdmittedWorld()
     w:Guild("Чиллзон Север")
     local P = w:Client({ first = "Peepo", surname = "Ignore", guild = "Чиллзон Север", rank = 1 })
     local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
@@ -912,7 +927,7 @@ for _, started in ipairs({ false, true }) do
 end
 
 T.test("security: массовая выдача сертификатов не задерживает чат издателя", function()
-    local w = Wow.World()
+    local w = AdmittedWorld()
     w:Guild("Чиллзон Север")
     local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
     local M = {}
@@ -936,7 +951,7 @@ T.test("security: массовая выдача сертификатов не з
 end)
 
 T.test("security: повторные объявления корней не обгоняют чат", function()
-    local w = Wow.World()
+    local w = AdmittedWorld()
     w:Guild("Чиллзон Север")
     local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
     local M = w:Client({ first = "Миша", surname = "Мирный", guild = "Чиллзон Север", rank = 3 })

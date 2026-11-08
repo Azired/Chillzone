@@ -201,6 +201,7 @@ local function NewFrame(c, name)
 	function methods.HasFocus(self) return c.focus == self end
 	function methods.SetChecked(self, on) self.checked = on and true or false end
 	function methods.GetChecked(self) return self.checked end
+	function methods.SetEnabled(self, on) self.enabled = on and true or false end
 	function methods.AddMessage(self, t) self.lines[#self.lines + 1] = t end
 	function methods.Clear(self) self.lines = {} end
 	function methods.AtBottom() return true end
@@ -451,7 +452,12 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		if not f:find("^libs/") or f == "libs/Ed25519.lua" then
-			T.load({ f }, c.env, c.ns)
+			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua") then
+				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
+				setfenv(chunk, c.env)("Chillzone", c.ns)
+			else
+				T.load({ f }, c.env, c.ns)
+			end
 			if f == "Config.lua" then
 				for k, v in pairs(opts.config or {}) do c.ns.Config[k] = v end
 			end

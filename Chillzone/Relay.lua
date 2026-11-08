@@ -25,6 +25,14 @@ local known = {} -- [Key] = { key, name, verified, asked, down }: реле, о �
 local reporters = {}
 local regOf = {} -- (я реле) [Key репортёра] = guildKey
 local claims = {} -- (я реле) [guildKey] = { name, key, t }: кому отказано при живой аренде
+-- Решение главы доходит до действующего репортёра даже после исключения гильдии:
+-- обычный RP от неё уже не пройдёт проверку членства.
+ns.On("UNION_POLICY", function(guild, wire)
+	if not U.IsMainGuild(ns.MyGuild()) then return end
+	local held = reporters[U.GuildKey(guild)]
+	if held then ns.Comm.Send("WHISPER", wire, { target = held.name, prio = true,
+		key = "union-reporter:" .. U.GuildKey(guild) }) end
+end)
 local seen = {} -- [ключ дедупа] = время
 local rate = {} -- [Key автора] = { n, t0 }
 local hold = {} -- сообщения, пока ни одно реле не ответило
@@ -34,6 +42,7 @@ Relay.stats = { forwarded = 0, delivered = 0, dropped = 0, untrusted = 0 }
 
 local REG_TTL = 60 -- репортёр продлевает аренду раз в 15 секунд; без продления она истекает
 Relay.REG_TTL = REG_TTL
+local PONG_GAP = 5 -- реле отвечает одному адресату не чаще; вопрос раньше остаётся без ответа
 
 local function Now() return ns.Now() end
 
@@ -184,7 +193,7 @@ end
 ---------------------------------------------------------------------------
 -- Пинги и офлайн
 ---------------------------------------------------------------------------
-local Out -- вперёд
+local Out, FlushHold -- вперёд
 
 local function MarkDown(e, why)
 	local now = Now()
@@ -196,12 +205,17 @@ local function MarkDown(e, why)
 	for _, m in ipairs(list or {}) do
 		if now - m.t <= 15 then Out(m.mode, m.inner) end
 	end
+	-- Очередь могла ждать ответа именно от него.
+	FlushHold()
 	ns.Fire("RELAYS")
 end
 
 local function Ask(e, payload)
 	local now = Now()
 	if e.asked and now - e.asked < C.RELAY_TIMEOUT then return end
+	-- Реле промолчало бы, и живое реле попало бы в офлайн на RELAY_DOWN. Аренда от пропуска
+	-- не страдает: следующая попытка через 15 секунд, а живёт аренда REG_TTL.
+	if e.verified and now - e.verified < PONG_GAP then return end
 	e.asked = now
 	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
 	ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key })
@@ -341,7 +355,7 @@ local function Hold(mode, inner)
 	while #hold > C.RELAY_HOLD do table.remove(hold, 1) end
 end
 
-local function FlushHold()
+function FlushHold()
 	if #hold == 0 then return end
 	local list = hold
 	hold = {}
@@ -370,6 +384,19 @@ function Relay.Pick()
 	return pick and known[pick] or nil
 end
 
+-- Рядовой годится, когда офицеры молчат, а не когда их ещё не спросили: аренд у него обычно
+-- нет, и строка дошла бы только до своей гильдии. Опрос в главной гильдии идёт лишь при
+-- отправке, а рядовых новичок слышит в GUILD раньше, чем успевает спросить офицеров. Имя без
+-- сертификата (корень, подсказка из ответа реле) может оказаться офицером, поэтому тоже в счёт.
+local function SeniorUnasked(pick)
+	local now, p = Now(), Pool()
+	if p.officer[pick.key] then return false end
+	for _, e in ipairs(Top()) do
+		if not Verified(e, now) and (p.officer[e.key] or not p.trust[e.key]) then return true end
+	end
+	return false
+end
+
 -- mode: "L" (отчёт: новый заменяет старый) или "P" (каждое: чат). inner: подписанный S1.
 -- Реле главной гильдии рассылает само, только если у него есть чужие репортёры; иначе, как
 -- и все, шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту.
@@ -386,7 +413,7 @@ function Out(mode, inner)
 		return true
 	end
 	local e = Relay.Pick()
-	if not e then
+	if not e or SeniorUnasked(e) then
 		Hold(mode, inner)
 		Relay.PingAll()
 		return false
@@ -499,7 +526,7 @@ end
 local function Pong(sender)
 	local k = U.Key(sender)
 	local now = Now()
-	if lastPong[k] and now - lastPong[k] < 5 then return end
+	if lastPong[k] and now - lastPong[k] < PONG_GAP then return end
 	lastPong[k] = now
 	ns.Security.SendPolicies(sender)
 	ns.Security.Introduce(sender)
@@ -640,6 +667,7 @@ end
 ns.On("WHISPER_UNAVAILABLE", function(k)
 	local e = known[k]
 	if e then MarkDown(e, "не в игре") end
+	ns.Security.ContactAway(k)
 	local gk = regOf[k]
 	local reporter = gk and reporters[gk]
 	if reporter and reporter.key == k then
@@ -716,7 +744,8 @@ ns.Command("relay", function(arg)
 	name = U.Trim(name)
 	local store = ns.store
 	if cmd == "add" and name ~= "" then
-		if not ns.Security.Link(name) then ns.Print(L.AUTH_NEED_OFFICER) end
+		local ok, why = ns.Security.Link(name)
+		if not ok and why then ns.Print(why) end
 		return
 	elseif (cmd == "del" or cmd == "remove") and name ~= "" then
 		local k = U.Key(name)

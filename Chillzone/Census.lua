@@ -226,6 +226,20 @@ ns.On("ROSTER", function(r)
 	if ns.IsMember() then ns.Data.SetLocal(r) end
 end)
 
+-- Состав мог прийти уже после первого H1: подключённый клиент сразу участвует
+-- в выборах, не ждёт минутного таймера и публикует свой прочитанный ростер. Только при
+-- входе в состав: глава продлевает решения раз в 10 минут, и привет на каждое было бы лишним.
+local wasMember = false
+ns.On("UNION", function()
+	local member = ns.IsMember()
+	if member and not wasMember then
+		if ns.Roster.report then ns.Data.SetLocal(ns.Roster.report) end
+		Census.SendHello()
+	end
+	wasMember = member
+	Census.Track()
+end)
+
 -- Чужой отчёт приходит только внутри конверта реле.
 ns.Comm.On("R1", function(msg, sender, dist, ctx)
 	if dist ~= "RELAY" or not ctx or not ctx.authenticated then return end

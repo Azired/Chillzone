@@ -18,6 +18,7 @@ Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько (б�
 -- очереди: так поток чата их не задерживает бесконечно, а пачка сертификатов — строки чата.
 Comm.PRIO_BOOTSTRAP = 2
 Comm.PRIO_CONTROL = 3
+Comm.PRIO_LINK = 4 -- ручное соединение обгоняет фоновые опросы и их повторы
 
 -- Ответы игры «не сейчас»: AddonMessageThrottle (3), ChannelThrottle (8), GeneralError (9),
 -- AddOnMessageLockdown (11). Сообщение остаётся на месте, очередь ждёт всё дольше.
@@ -63,7 +64,7 @@ local function Unavailable(target)
 end
 
 -- Одно сообщение прямо сейчас: true или false, код.
-function Comm.SendNow(dist, msg, target, logged)
+function Comm.SendNow(dist, msg, target, logged, prefix)
 	if Comm.InLockdown() then return false, LOCKDOWN end
 	local to = nil
 	if dist == "WHISPER" then
@@ -72,7 +73,7 @@ function Comm.SendNow(dist, msg, target, logged)
 		Comm.lastWhisper[U.Key(target)] = ns.Now()
 	end
 	local send = (logged and C_ChatInfo.SendAddonMessageLogged) or C_ChatInfo.SendAddonMessage
-	local ok, res = pcall(send, ns.PREFIX, msg, dist, to)
+	local ok, res = pcall(send, prefix or ns.PREFIX, msg, dist, to)
 	if ok and IsSuccess(res) then
 		Comm.stats.sent = Comm.stats.sent + 1
 		refusedInRow = 0
@@ -83,7 +84,7 @@ function Comm.SendNow(dist, msg, target, logged)
 		waitUntil = ns.Now() + RETRY_WAIT[math.min(refusedInRow, #RETRY_WAIT)]
 	end
 	Comm.stats.fails = Comm.stats.fails + 1
-	ns.Log("не отправлено %s: %s", dist, tostring(res))
+	ns.Log("не отправлено %s для %s: %s", dist, to or "гильдии", tostring(res))
 	if ok then return false, res end
 	return false, "error"
 end
@@ -163,15 +164,18 @@ end
 -- В очередь. opts: target (шёпот), key (новое заменяет ещё не начатое с тем же ключом),
 -- prio (true или числовой приоритет, больше — раньше), logged (текст игрока), done(ok, why).
 -- before — перед заданием с этим ключом того же приоритета, даже если оно уже отправляется.
+-- prefix — явно старый транспорт для каталогов 0.8; новые KA/UQ по умолчанию отделены.
 function Comm.Send(dist, payload, opts)
 	opts = opts or {}
 	if type(payload) ~= "string" or payload == "" then return false end
 	if dist == "WHISPER" and not opts.target then return false end
 	if dist == "WHISPER" and Unavailable(opts.target) then return false end
+	local kind = payload:sub(1, 2)
+	local prefix = opts.prefix or ((kind == "KA" or kind == "UQ") and ns.Config.UNION_PREFIX) or ns.PREFIX
 	local now = ns.Now()
 	if opts.key then
 		for i, job in ipairs(queue) do
-			if job.key == opts.key and job.i == 1 then
+			if job.key == opts.key and job.prefix == prefix and job.i == 1 then
 				job.parts, job.at, job.target, job.done = Codec.Pack(payload, NewId()), now, opts.target, opts.done
 				job.guard = opts.guard
 				-- Ответ на срочный запрос мог заменить ещё не отправленное объявление.
@@ -187,6 +191,7 @@ function Comm.Send(dist, payload, opts)
 		end
 	end
 	local job = {
+		prefix = prefix,
 		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1,
 		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done, guard = opts.guard,
 	}
@@ -229,7 +234,7 @@ local function PumpOnce(prioOnly)
 		Finish(job, false, "no guild")
 		return true
 	end
-	local sent, why = Comm.SendNow(job.dist, job.parts[job.i], job.target, job.logged)
+	local sent, why = Comm.SendNow(job.dist, job.parts[job.i], job.target, job.logged, job.prefix)
 	if not sent then
 		if RETRYABLE[why] then
 			if why ~= LOCKDOWN then job.tries = job.tries + 1 end
@@ -298,25 +303,31 @@ function Comm.Inject(inner, origin, ctx)
 end
 
 local function OnAddon(prefix, msg, dist, sender)
-	if prefix ~= ns.PREFIX or not ns.me or type(msg) ~= "string" or type(sender) ~= "string" then return end
+	local control = ns.Config.UNION_PREFIX and prefix == ns.Config.UNION_PREFIX
+	if (prefix ~= ns.PREFIX and not control) or not ns.me or type(msg) ~= "string" or type(sender) ~= "string" then return end
 	if dist ~= "GUILD" and dist ~= "WHISPER" then return end
 	sender = U.Normal(sender)
 	local realm = sender:match("%-([^%-]+)$")
 	if realm and realm ~= ns.realm and U.GroupOf(realm) ~= ns.group then return end
 	if ns.IsMe(sender) then return end
 	if dist == "GUILD" and (not ns.Roster.Fresh() or ns.Roster.RankOf(sender) == nil) then return end
-	local key = U.Key(sender)
-	if key then unavailable[key] = nil end
+	local senderKey = U.Key(sender)
+	if senderKey then unavailable[senderKey] = nil end
 	if msg:byte(1) == 67 then -- "C": кусок
-		local a = assemblers[dist]
+		local key = prefix .. ":" .. dist
+		local a = assemblers[key]
 		if not a then
 			a = Codec.NewAssembler()
-			assemblers[dist] = a
+			assemblers[key] = a
 		end
 		msg = Codec.Feed(a, U.Key(sender), msg, ns.Now())
 		if not msg then return end
 	end
-	Comm.Dispatch(msg, sender, dist, nil)
+	local kind = msg:sub(1, 2)
+	if control and kind ~= "KA" and kind ~= "UQ" then return end
+	if kind == "UQ" and not control then return end
+	local ctx = (kind == "KA" or kind == "UQ") and { unionControl = control and true or false } or nil
+	Comm.Dispatch(msg, sender, dist, ctx)
 end
 
 ns.RegisterEvent("CHAT_MSG_ADDON", OnAddon)
@@ -324,6 +335,7 @@ ns.RegisterEvent("CHAT_MSG_ADDON_LOGGED", OnAddon)
 
 if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
 	C_ChatInfo.RegisterAddonMessagePrefix(ns.PREFIX)
+	if ns.Config.UNION_PREFIX then C_ChatInfo.RegisterAddonMessagePrefix(ns.Config.UNION_PREFIX) end
 end
 
 ns.On("LOGIN", function()
