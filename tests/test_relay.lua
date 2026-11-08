@@ -800,8 +800,8 @@ T.test("relay: офицер не в игре — очередь новичка �
 	end
 end)
 
--- Главная гильдия и две подключённые: main — участники главной (первый задаёт корень), Север и
--- Орден знают сертификаты общей тройки реле top. Юг подключается позже и знает только корень.
+-- Главная гильдия и две подключённые: main — участники главной (root — глава, он же корень),
+-- Север и Орден знают сертификаты общей тройки реле top. Юг подключается позже и знает только корень.
 local function PartialNetwork(main, top)
 	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 7)
 	local w = Wow.World()
@@ -843,15 +843,15 @@ local function NoErrors(c)
 	for name, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, name .. ": ошибки " .. table.concat(cl.ns.db.errors, " | ")) end
 end
 
--- Рядовые с меньшими ключами идут раньше главы, пока сертификат главы неизвестен.
+-- Рядовые с меньшими ключами идут раньше офицера, пока сертификат офицера неизвестен.
 local RANK_AND_FILE = {
-	root = { "Арагорн", "Светлый", 1 }, K = { "Карл", "Великий", 0 },
+	root = { "Карл", "Великий", 0 }, O = { "Олег", "Старший", 1 },
 	R1 = { "Вадим", "Рядовой", 3 }, R2 = { "Галина", "Рядовая", 3 },
 	R3 = { "Дарья", "Рядовая", 3 }, R4 = { "Евгений", "Рядовой", 3 },
 }
 
 T.test("relay: реле вне тройки с арендой одной гильдии пишет всем гильдиям", function()
-	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "K", "R1" })
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "O", "R1" })
 	ConnectSouth(w, c)
 	for _ = 1, 200 do
 		if Lease(c.R2, "Чиллзон Юг") then break end
@@ -869,37 +869,42 @@ T.test("relay: реле вне тройки с арендой одной гил�
 end)
 
 T.test("relay: новая гильдия узнаёт общую тройку от реле вне её", function()
-	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "K", "R1" })
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "O", "R1" })
 	ConnectSouth(w, c)
 	w:Run(180)
-	T.ok(Lease(c.K, "Чиллзон Юг"), "Юг зарегистрировался у главы: тройка та же, что у всех")
+	T.ok(Lease(c.O, "Чиллзон Юг"), "Юг зарегистрировался у офицера: тройка та же, что у всех")
 	T.eq(Lease(c.R2, "Чиллзон Юг"), nil, "у рядовой вне тройки аренда Юга истекла")
-	local text = "глава пишет после подключения Юга"
-	c.K:Slash("/cz1", text)
+	local text = "офицер пишет после подключения Юга"
+	c.O:Slash("/cz1", text)
 	w:Run(30)
 	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
 	NoErrors(c)
 end)
 
 T.test("relay: отчёты доходят до гильдии, зарегистрированной только вне общей тройки", function()
-	-- Корень — четвёртый офицер, в общую тройку не входит. Рядовые с малыми ключами идут у Юга
-	-- сразу за корнем, поэтому никого из общей тройки Юг сначала не спрашивает.
+	-- Корень — глава с большим ключом, в общую тройку офицеров не входит. Рядовые с малыми ключами
+	-- идут у Юга сразу за корнем, поэтому никого из общей тройки Юг сначала не спрашивает.
 	local w, c = PartialNetwork({
-		root = { "Ярослав", "Старший", 1 }, O1 = { "Богдан", "Бравый", 1 },
-		O2 = { "Виктор", "Верный", 1 }, O3 = { "Глафира", "Гордая", 0 },
+		root = { "Ярослав", "Старший", 0 }, O1 = { "Богдан", "Бравый", 1 },
+		O2 = { "Виктор", "Верный", 1 }, O3 = { "Глафира", "Гордая", 1 },
 		R1 = { "Адам", "Рядовой", 3 }, R2 = { "Алина", "Рядовая", 3 },
 	}, { "O1", "O2", "O3" })
 	ConnectSouth(w, c)
 	w:Run(180)
+	-- Отчёт длинный и идёт кусками в общей очереди: ждём приход, а не фиксированную паузу.
 	local function Fresh(reader, reporter, guild)
 		w:Run(65)
 		reporter.ns.Roster.Scan()
+		local st = reporter.ns.Roster.report.st
 		reporter.ns.Census.MaybeReport(true)
-		w:Run(30)
-		local sent = assert(reporter.ns.Codec.DecodeReport(reporter.ns.Census.lastRaw:match("^S1~[^~]+~%d+~%d+~[^~]+~(.+)$")))
-		local row = reader.ns.Data.Row(guild)
+		local row
+		for _ = 1, 120 do
+			row = reader.ns.Data.Row(guild)
+			if row and row.r and row.r.st >= st then break end
+			w:Run(1)
+		end
 		T.ok(row and row.r, reader:Name() .. " знает " .. guild)
-		T.eq(row.r.st, sent.st, reader:Name() .. " получил свежий отчёт " .. guild)
+		T.ok(row.r.st >= st, reader:Name() .. " получил свежий отчёт " .. guild .. ": " .. row.r.st .. " против " .. st)
 	end
 	Fresh(c.J, c.V, "Чиллзон Север")
 	Fresh(c.J, c.G, "Орден Чиллзона")
