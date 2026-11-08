@@ -33,7 +33,7 @@ local function Errors(c)
     end
 end
 
-T.test("migration: участник обновляется до главы и сохраняет чат с 0.8", function()
+T.test("migration: участник обновляется до главы и сохраняет чат со старой версией", function()
     local w, c = Build()
     c.b = Upgrade(w, c.b)
     T.ok(c.b.ns.IsMember(), "существующая гильдия остаётся в объединении сразу после обновления")
@@ -41,10 +41,10 @@ T.test("migration: участник обновляется до главы и с
     w:Run(45)
     c.b:Slash("/cz1", "новый клиент пишет старому")
     w:Run(40)
-    T.eq(c.k:Saw("новый клиент пишет старому"), 1, "0.8 получила подписанную строку 0.9")
+    T.eq(c.k:Saw("новый клиент пишет старому"), 1, "старая версия получила подписанную строку новой")
     c.k:Slash("/cz1", "старый клиент пишет новому")
     w:Run(40)
-    T.eq(c.b:Saw("старый клиент пишет новому"), 1, "0.9 получила подписанную строку 0.8")
+    T.eq(c.b:Saw("старый клиент пишет новому"), 1, "новая версия получила подписанную строку старой")
     Errors(c)
 end)
 
@@ -67,7 +67,7 @@ T.test("migration: глава обновляется последним, сос�
     Errors(c)
 end)
 
-T.test("migration: новый клиент получает старое доверие от 0.8 до обновления главы", function()
+T.test("migration: новый клиент получает старое доверие от прежней версии до обновления главы", function()
     local w, c = Build()
     c.n = w:Client({ first = "Новый", surname = "Северный", guild = "Чиллзон Север", rank = 3 })
     c.v.ns.Roster.Scan()
@@ -80,7 +80,7 @@ T.test("migration: новый клиент получает старое дов�
     Errors(c)
 end)
 
-T.test("migration: корни и версия 0.8 от офицера не заменяют подписанный каталог", function()
+T.test("migration: корни и прежняя версия от офицера не заменяют подписанный каталог", function()
     local w, c = Build()
     c.k:Logout(); c.o:Logout()
     c.n = w:Client({ first = "Новый", surname = "Северный", guild = c.v.guild, rank = 3 })
@@ -92,7 +92,7 @@ T.test("migration: корни и версия 0.8 от офицера не за�
     -- Тот же офицер может переслать проверенный каталог главной гильдии, но не заменить его KT.
     c.v.ns.Security.SendPolicies(c.n:Name())
     w:Run(25)
-    T.ok(c.n.ns.IsMember(), "получен настоящий подписанный каталог 0.8")
+    T.ok(c.n.ns.IsMember(), "получен настоящий подписанный каталог прежней версии")
     Errors(c)
 end)
 
@@ -153,7 +153,7 @@ T.test("migration: старый офицер и каталог не отменя
     for _, target in ipairs({ c.k, c.v, c.b }) do
         c.o.ns.Comm.Send("WHISPER", old, { target = target:Name() })
     end
-    -- Офицер 0.8 продолжает раздавать прежние KT по GUILD.
+    -- Офицер прежней версии продолжает раздавать прежние KT по GUILD.
     w:Run(120)
     for _, target in ipairs({ c.k, c.v, c.b }) do
         T.ok(target.ns.store.security.governed)
@@ -218,7 +218,7 @@ T.test("migration: решение главы принимается только
         .. "~" .. Ed.ToB64(Ed.Sign(Ed.FromB64(saved.seed), body))
     ns.Comm.Send("WHISPER", wire, { target = c.b:Name(), prefix = ns.Config.PREFIX })
     w:Run(20)
-    T.no(c.b.ns.Util.IsMemberGuild(guild), "девять полей не принимаются на префиксе 0.8")
+    T.no(c.b.ns.Util.IsMemberGuild(guild), "девять полей не принимаются на прежнем префиксе")
     ns.Comm.Send("WHISPER", wire, { target = c.b:Name() })
     w:Run(20)
     T.ok(c.b.ns.Util.IsMemberGuild(guild), "та же подпись принимается на префиксе решений главы")

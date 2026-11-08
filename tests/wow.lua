@@ -452,7 +452,7 @@ function World:Client(opts)
 	for _, f in ipairs(T.tocFiles()) do
 		if not f:find("^libs/") or f == "libs/Ed25519.lua" then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua") then
-				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.8/" .. f))
+				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)
 			else
 				T.load({ f }, c.env, c.ns)

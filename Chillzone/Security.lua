@@ -819,6 +819,12 @@ local function ReplyLink(key, p)
                   and pinned and pinned.public == p.public and pinned.name == p.name
           end, done = Done })
     if not queued and p.queued then Done(false, "queue") end
+    -- Решение главы могло прийти раньше потерянного ответа: без корня инициатор его отбросил.
+    local decision = S.CanManageUnion() and Store().policies[U.GuildKey(p.guild)]
+    if decision and not decision.legacy and decision.expires > ns.ServerTime() then
+        ns.Comm.Send("WHISPER", decision.wire, { target = p.target, prio = ns.Comm.PRIO_LINK,
+            key = "union-contact:" .. U.GuildKey(p.guild), guard = S.CanManageUnion })
+    end
     ns.Security.Introduce(p.target, nil, true)
 end
 local function TickLinks()
@@ -937,13 +943,14 @@ function S.Accept(name)
     if not CanLinkHere() then return false, ns.L.UNION_ONLY_LEADER end
     if not root then return false, ns.L.AUTH_LINK_ROOT end
     if not p or ns.Now() > p.untilAt then return false, ns.L.AUTH_LINK_NO_REQUEST:format(U.Display(name)) end
+    if not U.IsMemberGuild(p.guild) and not S.CanManageUnion() then return false, ns.L.UNION_ONLY_LEADER end
     if not Pin(p.guild, p.name, p.public, true) then return false, ns.L.AUTH_LINK_CONFLICT end
     pending[key] = nil
     p.localGuild, p.localRoot, p.untilAt = ns.MyGuild(), root, ns.Now() + LINK_TTL
     acceptedLinks[key] = p
     Confirmed(p.guild, p.public)
-    ReplyLink(key, p)
     Admit(p.guild, p.name, p.public, p.target)
+    ReplyLink(key, p)
     ns.Fire("UNION")
     ns.Print(ns.L.AUTH_ACCEPTED, p.guild, p.target)
     return true

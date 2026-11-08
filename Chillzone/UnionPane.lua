@@ -16,12 +16,13 @@ local function Button(parent, text, width, fn)
 end
 local function Connect()
     if not S.CanManageUnion() then return end
-    if S.Link(ns.Util.Trim(input:GetText())) then
+    local ok, why = S.Link(ns.Util.Trim(input:GetText()))
+    if ok then
         input:SetText("")
         input:ClearFocus()
         message:SetText(L.UNION_SENT)
     else
-        message:SetText(L.UNION_LINK_FAILED)
+        message:SetText(why or L.UNION_LINK_FAILED)
     end
 end
 function P.Build(parent)
@@ -79,7 +80,8 @@ function P.Render()
                 local entry = row.entry
                 local key = (entry.known and "add:" or "remove:") .. entry.guild
                 if entry.request then
-                    if not S.Accept(entry.contact) then message:SetText(L.UNION_ACCEPT_FAILED) end
+                    local ok, why = S.Accept(entry.contact)
+                    if not ok then message:SetText(why or L.UNION_ACCEPT_FAILED) end
                 elseif confirming ~= key then
                     confirming = key
                 elseif entry.known then

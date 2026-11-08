@@ -34,7 +34,6 @@ Relay.stats = { forwarded = 0, delivered = 0, dropped = 0, untrusted = 0 }
 
 local REG_TTL = 60 -- репортёр продлевает аренду раз в 15 секунд; без продления она истекает
 Relay.REG_TTL = REG_TTL
-local WHISPER_FRESH = 10 -- системное «нет такого игрока» относится к шёпоту не старше
 
 local function Now() return ns.Now() end
 
@@ -635,49 +634,19 @@ function Relay.PruneLearned()
 end
 
 ---------------------------------------------------------------------------
--- «Нет такого игрока» после моего шёпота: реле или репортёр, у которого аренда, не в игре.
--- Строка скрывается; реле помечается недоступным, аренда репортёра снимается сразу, а не
--- через REG_TTL: шептать ему дальше бесполезно.
+-- Транспорт подтвердил недоступность адресата: меняем реле или снимаем аренду репортёра
+-- сразу, не дожидаясь REG_TTL. Очередь этому адресату уже отменена в Comm.
 ---------------------------------------------------------------------------
-local notFound
-local function NotFound(text)
-	if type(text) ~= "string" then return nil end
-	if type(issecretvalue) == "function" and issecretvalue(text) then return nil end
-	if not notFound then
-		local f = type(ERR_CHAT_PLAYER_NOT_FOUND_S) == "string" and ERR_CHAT_PLAYER_NOT_FOUND_S or nil
-		if not f then return nil end
-		notFound = "^" .. (f:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"):gsub("%%%%s", "(.+)")) .. "$"
-	end
-	return text:match(notFound)
-end
-
--- Чей шёпот не дошёл: запись known (реле) и/или ключ репортёра с арендой у меня.
-local function OursNotFound(text)
-	local who = NotFound(text)
-	if not who then return nil end
-	local k = U.Key(who)
-	local t = k and ns.Comm.lastWhisper[k]
-	if not t or Now() - t > WHISPER_FRESH then return nil end
-	local gk = regOf[k]
-	return known[k], gk and reporters[gk] and reporters[gk].key == k and k or nil
-end
-
-ns.RegisterEvent("CHAT_MSG_SYSTEM", function(text)
-	local e, reporter = OursNotFound(text)
+ns.On("WHISPER_UNAVAILABLE", function(k)
+	local e = known[k]
 	if e then MarkDown(e, "не в игре") end
-	if reporter then
-		local gk = regOf[reporter]
+	local gk = regOf[k]
+	local reporter = gk and reporters[gk]
+	if reporter and reporter.key == k then
 		ns.Log("репортёр %s не в игре: аренда гильдии %s снята", U.Display(reporters[gk].name), gk)
-		reporters[gk], regOf[reporter] = nil, nil
+		reporters[gk], regOf[k] = nil, nil
 	end
 end)
-
-if ChatFrame_AddMessageEventFilter then
-	ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, text)
-		local e, reporter = OursNotFound(text)
-		return e ~= nil or reporter ~= nil
-	end)
-end
 
 ---------------------------------------------------------------------------
 -- Расписание, команды, статус
