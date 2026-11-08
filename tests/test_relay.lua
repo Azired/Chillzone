@@ -800,6 +800,116 @@ T.test("relay: офицер не в игре — очередь новичка �
 	end
 end)
 
+-- Главная гильдия и две подключённые: main — участники главной (первый задаёт корень), Север и
+-- Орден знают сертификаты общей тройки реле top. Юг подключается позже и знает только корень.
+local function PartialNetwork(main, top)
+	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 7)
+	local w = Wow.World()
+	for _, g in ipairs({ "Чиллзон", "Чиллзон Север", "Орден Чиллзона", "Чиллзон Юг" }) do w:Guild(g) end
+	local c = {}
+	for id, m in pairs(main) do
+		c[id] = w:Client({ first = m[1], surname = m[2], guild = "Чиллзон", rank = m[3] })
+	end
+	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2 })
+	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0 })
+	w:Run(30)
+	w:Init(c.root, c.V, c.G)
+	w:Pair(c.V, c.root)
+	w:Pair(c.G, c.root)
+	for _, target in ipairs({ c.V, c.G }) do
+		for _, id in ipairs(top) do
+			c.root.ns.Security.Introduce(target:Name(), c[id].ns.Security.MyCertificate().raw)
+		end
+	end
+	w:Run(200)
+	return w, c
+end
+
+local function ConnectSouth(w, c)
+	c.J = w:Client({ first = "Юрий", surname = "Южный", guild = "Чиллзон Юг", rank = 0 })
+	w:Run(30)
+	w:Init(c.J)
+	w:Pair(c.J, c.root)
+end
+
+-- Живая аренда гильдии guild у реле cl или nil.
+local function Lease(cl, guild)
+	local held = cl.ns.Relay.Reporters()[cl.ns.Util.GuildKey(guild)]
+	return held and cl.ns.Now() - held.t <= cl.ns.Relay.REG_TTL and held or nil
+end
+
+local function NoErrors(c)
+	for name, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, name .. ": ошибки " .. table.concat(cl.ns.db.errors, " | ")) end
+end
+
+-- Рядовые с меньшими ключами идут раньше главы, пока сертификат главы неизвестен.
+local RANK_AND_FILE = {
+	root = { "Арагорн", "Светлый", 1 }, K = { "Карл", "Великий", 0 },
+	R1 = { "Вадим", "Рядовой", 3 }, R2 = { "Галина", "Рядовая", 3 },
+	R3 = { "Дарья", "Рядовая", 3 }, R4 = { "Евгений", "Рядовой", 3 },
+}
+
+T.test("relay: реле вне тройки с арендой одной гильдии пишет всем гильдиям", function()
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "K", "R1" })
+	ConnectSouth(w, c)
+	for _ = 1, 200 do
+		if Lease(c.R2, "Чиллзон Юг") then break end
+		w:Run(1)
+	end
+	T.ok(Lease(c.R2, "Чиллзон Юг"), "Юг зарегистрировался у Галины")
+	T.eq(Lease(c.R2, "Чиллзон Север"), nil, "Север у Галины не зарегистрирован")
+	T.eq(Lease(c.R2, "Орден Чиллзона"), nil, "Орден у Галины не зарегистрирован")
+	T.ok(c.R2.ns.Relay.Serving(), "Галина считает, что обслуживает гильдии")
+	local text = "рядовая с арендой одной гильдии"
+	c.R2:Slash("/cz1", text)
+	w:Run(30)
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+end)
+
+T.test("relay: новая гильдия узнаёт общую тройку от реле вне её", function()
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "K", "R1" })
+	ConnectSouth(w, c)
+	w:Run(180)
+	T.ok(Lease(c.K, "Чиллзон Юг"), "Юг зарегистрировался у главы: тройка та же, что у всех")
+	T.eq(Lease(c.R2, "Чиллзон Юг"), nil, "у рядовой вне тройки аренда Юга истекла")
+	local text = "глава пишет после подключения Юга"
+	c.K:Slash("/cz1", text)
+	w:Run(30)
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+end)
+
+T.test("relay: отчёты доходят до гильдии, зарегистрированной только вне общей тройки", function()
+	-- Корень — четвёртый офицер, в общую тройку не входит. Рядовые с малыми ключами идут у Юга
+	-- сразу за корнем, поэтому никого из общей тройки Юг сначала не спрашивает.
+	local w, c = PartialNetwork({
+		root = { "Ярослав", "Старший", 1 }, O1 = { "Богдан", "Бравый", 1 },
+		O2 = { "Виктор", "Верный", 1 }, O3 = { "Глафира", "Гордая", 0 },
+		R1 = { "Адам", "Рядовой", 3 }, R2 = { "Алина", "Рядовая", 3 },
+	}, { "O1", "O2", "O3" })
+	ConnectSouth(w, c)
+	w:Run(180)
+	local function Fresh(reader, reporter, guild)
+		w:Run(65)
+		reporter.ns.Roster.Scan()
+		reporter.ns.Census.MaybeReport(true)
+		w:Run(30)
+		local sent = assert(reporter.ns.Codec.DecodeReport(reporter.ns.Census.lastRaw:match("^S1~[^~]+~%d+~%d+~[^~]+~(.+)$")))
+		local row = reader.ns.Data.Row(guild)
+		T.ok(row and row.r, reader:Name() .. " знает " .. guild)
+		T.eq(row.r.st, sent.st, reader:Name() .. " получил свежий отчёт " .. guild)
+	end
+	Fresh(c.J, c.V, "Чиллзон Север")
+	Fresh(c.J, c.G, "Орден Чиллзона")
+	Fresh(c.V, c.J, "Чиллзон Юг")
+	for _, id in ipairs({ "O1", "O2", "O3" }) do
+		T.ok(Lease(c[id], "Чиллзон Юг"), id .. ": Юг зарегистрирован у общей тройки")
+	end
+	NoErrors(c)
+end)
+
 T.test("relay: реле вышло из игры — сообщение уходит через другое", function()
 	local w, c = Build()
 	local pick = c.B.ns.Relay.Pick()

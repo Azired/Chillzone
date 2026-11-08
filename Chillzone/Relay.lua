@@ -167,6 +167,7 @@ end
 -- Три доступных реле сверху списка: у них регистрируются репортёры, через них идут
 -- сообщения. Я сам стою в общем списке, если я реле, но в ответ не попадаю: так клиенты
 -- главной гильдии и репортёры видят одну и ту же тройку. Опрос ограничен ею, а не всеми.
+-- Второе значение — попал ли в тройку я сам.
 local function Top()
 	local now, list = Now(), {}
 	for _, e in ipairs(Pool().list) do
@@ -174,14 +175,20 @@ local function Top()
 	end
 	if Relay.IAmRelay() then list[#list + 1] = { key = ns.myKey, name = ns.me, self = true } end
 	Rank(list)
-	local out = {}
+	local out, mine = {}, false
 	for i = 1, math.min(3, #list) do
-		if not list[i].self then out[#out + 1] = list[i] end
+		if list[i].self then mine = true else out[#out + 1] = list[i] end
 	end
-	return out
+	return out, mine
 end
 
--- Я реле и у меня зарегистрирован репортёр чужой гильдии: моё сообщение я разошлю сам.
+-- Я реле из общей тройки: у меня зарегистрированы все, кто видит ту же тройку.
+function Relay.InTop()
+	local _, mine = Top()
+	return mine
+end
+
+-- Я реле и у меня зарегистрирован репортёр чужой гильдии: ему моё сообщение я разошлю сам.
 function Relay.Serving()
 	local now, mine = Now(), MyGuildKey()
 	for gk, r in pairs(reporters) do
@@ -398,8 +405,10 @@ local function SeniorUnasked(pick)
 end
 
 -- mode: "L" (отчёт: новый заменяет старый) или "P" (каждое: чат). inner: подписанный S1.
--- Реле главной гильдии рассылает само, только если у него есть чужие репортёры; иначе, как
--- и все, шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту.
+-- Реле главной гильдии рассылает само, если у него есть чужие репортёры; иначе, как и все,
+-- шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту. Реле вне тройки
+-- делает и то и другое: у него зарегистрированы только те, кто ещё не знает общей тройки,
+-- а остальные гильдии ждут сообщение от неё. Дубли отбрасывает получатель (Codec.DedupeKey).
 function Out(mode, inner)
 	if not ns.IsMember() or Codec.InnerType(inner) ~= "S1" then return false end
 	if Relay.IAmRelay() and Relay.Serving() then
@@ -410,7 +419,7 @@ function Out(mode, inner)
 		else
 			Relay.HandleRL(ns.me, mode, inner)
 		end
-		return true
+		if Relay.InTop() then return true end
 	end
 	local e = Relay.Pick()
 	if not e or SeniorUnasked(e) then
@@ -523,6 +532,19 @@ local function GossipList(exceptKey)
 	return out
 end
 
+-- Меня спрашивают, хотя в общей тройке меня нет: спрашивающий не знает сертификатов тех, кто
+-- выше меня, и потому не считает их офицерами. Сам он их не узнает: опрос ограничен его
+-- тройкой. Сертификаты моей тройки ставят его на общий порядок, и моя аренда истекает.
+-- Introduce не повторяет один и тот же сертификат чаще AUTH_INTRODUCE.
+local function ShareTop(target)
+	local top, mine = Top()
+	if mine then return end
+	for _, e in ipairs(top) do
+		local c = ns.Security.Member(C.MAIN_GUILD, e.name)
+		if c then ns.Security.Introduce(target, c.raw) end
+	end
+end
+
 local function Pong(sender)
 	local k = U.Key(sender)
 	local now = Now()
@@ -530,6 +552,7 @@ local function Pong(sender)
 	lastPong[k] = now
 	ns.Security.SendPolicies(sender)
 	ns.Security.Introduce(sender)
+	ShareTop(sender)
 	ns.Comm.Send("WHISPER", Codec.EncodeRelayList(GossipList(k)), { target = sender, prio = true, key = "ry:" .. k })
 end
 
