@@ -212,9 +212,15 @@ end
 
 function Chat.Show(tier, guild, sender, class, text)
 	Chat.stats.shown = Chat.stats.shown + 1
+	local tab = ns.ChatTab and ns.ChatTab.OutputFrame()
+	local mirror
 	if not ns.char or ns.char.chatMirror ~= false then
-		local f = Chat.Frame()
-		if f then f:AddMessage(Chat.Format(tier, guild, sender, class, text)) end
+		mirror = Chat.Frame()
+	end
+	if tab or mirror then
+		local line = Chat.Format(tier, guild, sender, class, text)
+		if tab then tab:AddMessage(line) end
+		if mirror and mirror ~= tab then mirror:AddMessage(line) end
 	end
 	Chat.Remember(tier, guild, sender, class, text)
 end

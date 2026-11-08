@@ -46,6 +46,7 @@ local TEXT_RIGHT, TEXT_RIGHT_ADDON = -24, -24 - ADDON_SIZE - 2
 local TIP_LINKS = { item = true, spell = true, enchant = true, quest = true, talent = true }
 
 local pane, list, chatArea, messages, jump, box, prompt, title, scope, count, people, peopleChild, empty
+local openTab
 local entries, rows = {}, {}
 local current = "A"
 local shown = false
@@ -357,6 +358,7 @@ local function RenderHeader()
 	title:SetText(Codec.Plain(Chat.Label(current)))
 	scope:SetText(Chat.Scope(current, true))
 	scope:SetTextColor(Chat.Color(current))
+	openTab:SetShown(current == "A")
 end
 
 ---------------------------------------------------------------------------
@@ -513,6 +515,27 @@ function ChatPane.Build(host)
 	listInset:SetPoint("BOTTOMRIGHT", 0, -3)
 	if real and listInset.Bg then listInset.Bg:Hide() end
 	listInset:EnableMouse(false)
+	openTab = CreateFrame("Button", nil, list, "UIPanelButtonTemplate")
+	openTab:SetPoint("BOTTOMLEFT", list, "BOTTOMLEFT", 8, 5)
+	openTab:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", -8, 5)
+	openTab:SetHeight(20)
+	openTab:SetText(L.CHAT_TAB_OPEN_SHORT)
+	openTab:SetScript("OnClick", function()
+		ns.SafeCall("open chat tab", function()
+			if ns.ChatTab.Open() then
+				GameTooltip:Hide()
+				ns.UI.Toggle()
+			end
+		end)
+	end)
+	openTab:SetScript("OnEnter", function(self)
+		local tt = Tooltip(self)
+		tt:AddLine(L.CHAT_TAB_OPEN, 1, 0.82, 0)
+		tt:AddLine(L.CHAT_TAB_OPEN_TIP, 1, 1, 1, true)
+		tt:Show()
+	end)
+	openTab:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	openTab:Hide()
 
 	-- Люди справа: TOPLEFT (-165,-63) → BOTTOMRIGHT (-26,28).
 	people = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
@@ -652,7 +675,7 @@ function ChatPane.Build(host)
 		end
 	end)
 	pane:Hide()
-	ChatPane.frames = { pane = pane, messages = messages, box = box, keyButton = keyButton, entries = entries, rows = rows, title = title, scope = scope, prompt = prompt, count = count }
+	ChatPane.frames = { pane = pane, messages = messages, box = box, keyButton = keyButton, entries = entries, rows = rows, title = title, scope = scope, prompt = prompt, count = count, openTab = openTab }
 	return pane
 end
 

@@ -13,6 +13,7 @@ local SUITES = {
 	"test_data",
 	"test_relay",
 	"test_chat",
+	"test_chat_tab",
 	"test_guildmirror",
 	"test_security",
 	"test_signatures",
