@@ -26,6 +26,7 @@ local TABS = {
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
 local frame, body, scroll, child, settings = nil, nil, nil, nil, nil
 local status, heading -- шапка (крупно и мелко) и название вкладки слева вверху
+local titleText -- свой текст заголовка, если у рамки нет SetTitle
 local tabs, rows, checks = {}, {}, {}
 local current = "chat"
 local minimapButton
@@ -280,6 +281,17 @@ end
 ---------------------------------------------------------------------------
 -- Окно
 ---------------------------------------------------------------------------
+-- Заголовок окна (Views.Title): с просьбой обновиться, когда вышла версия новее.
+function UI.RenderTitle()
+	if not frame then return end
+	local text = ns.Views.Title()
+	if titleText then
+		titleText:SetText(text)
+	else
+		pcall(frame.SetTitle, frame, text)
+	end
+end
+
 -- Шапка окна: текст из Views.Status (общий счёт всех гильдий «Чиллзон»).
 function UI.RenderStatus()
 	if not status or not frame:IsShown() then return end
@@ -447,13 +459,11 @@ local function Create()
 		SavePosition(self)
 	end)
 	f:Hide()
-	if type(f.SetTitle) == "function" then
-		pcall(f.SetTitle, f, "Chillzone")
-	else
-		local title = f.TitleText or (f.TitleContainer and f.TitleContainer.TitleText) or f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-		if not f.TitleText then title:SetPoint("TOP", 0, -5) end
-		title:SetText("Chillzone")
+	if type(f.SetTitle) ~= "function" then
+		titleText = f.TitleText or (f.TitleContainer and f.TitleContainer.TitleText) or f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+		if not f.TitleText then titleText:SetPoint("TOP", 0, -5) end
 	end
+	UI.RenderTitle()
 	Portrait(f)
 	-- Крестик закрывает окно без HideUIPanel (та в бою не работает).
 	local close = f.CloseButton or rawget(_G, "ChillzoneFrameCloseButton")
@@ -570,6 +580,7 @@ ns.On("RELAYS", Refresh)
 ns.On("SETTINGS", Refresh)
 ns.On("GUILD_CHANGED", Refresh)
 ns.On("RECRUIT", function() if frame and frame:IsShown() then UI.Render() end end)
+ns.On("UPDATE", function() UI.RenderTitle() end)
 
 ---------------------------------------------------------------------------
 -- Кнопка у миникарты: левый щелчок — окно, правый — круги на карте, перетаскивание — место.

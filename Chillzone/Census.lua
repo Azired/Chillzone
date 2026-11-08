@@ -168,6 +168,7 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	local key = U.Key(sender)
 	local known = peers[key]
 	peers[key] = { t = ns.Now(), z = h.zones, r = h.relay, name = sender, version = h.version }
+	ns.Update.Heard(key, h.version)
 	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее,
 	-- и отметить его в списке людей окна.
 	if not known or known.version ~= h.version then ns.Fire("PEERS") end
@@ -192,6 +193,7 @@ function Census.MaybeReport(force)
 	if signing and now - signing < SIGN_WAIT then return end
 	if not force and now - lastSentAt < C.REPORT_EVERY - 5 then return end
 	r.users = Census.Users()
+	r.version = ns.VERSION
 	local shareable = Codec.Shareable(r, ns.char.shareZones)
 	local raw = Codec.EncodeReport(shareable)
 	-- Время исключаем только из сравнения, не из отправляемого отчёта.
@@ -229,6 +231,8 @@ ns.Comm.On("R1", function(msg, sender, dist, ctx)
 	if dist ~= "RELAY" or not ctx or not ctx.authenticated then return end
 	local r = Codec.DecodeReport(msg)
 	if not r then return end
+	-- Версию берём из любого подписанного отчёта, даже если сам отчёт не нужен (повтор, своя гильдия).
+	ns.Update.Heard(U.Key(sender), r.version)
 	local ok, why = ns.Data.Take(r, msg, sender, nil, ctx)
 	if not ok and why ~= "повтор" then ns.Log("отчёт %s от %s не принят: %s", r.guild, U.Display(sender), tostring(why)) end
 end)

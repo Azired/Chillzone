@@ -16,6 +16,26 @@ T.test("util: Fold переводит все заглавные А–Я и Ё", 
 	T.eq(U.Fold("Чиллзон Север"), "чиллзон север", "смешанное")
 end)
 
+T.test("util: разбор и сравнение версий аддона", function()
+	local _, U = fresh()
+	T.same(U.ParseVersion("0.8.0"), { 0, 8, 0 }, "три числа")
+	T.same(U.ParseVersion("1.2"), { 1, 2 }, "два числа")
+	T.same(U.ParseVersion("1.2.3.4"), { 1, 2, 3, 4 }, "четыре числа")
+	for _, bad in ipairs({ "0.9.0-dev", "1", "1.2.3.4.5", "1..2", "1.2.", ".1.2", "v1.2", "12345.1", "", "1.2 ", 1.2 }) do
+		T.eq(U.ParseVersion(bad), nil, "не версия: " .. tostring(bad))
+	end
+	T.ok(U.VersionNewer("0.9.0", "0.8.0"), "0.9.0 > 0.8.0")
+	T.ok(U.VersionNewer("0.10.0", "0.9.0"), "числа, а не строки: 0.10.0 > 0.9.0")
+	T.ok(U.VersionNewer("1.0", "0.99.99"), "1.0 > 0.99.99")
+	T.ok(U.VersionNewer("0.8.0.1", "0.8.0"), "лишняя часть")
+	T.no(U.VersionNewer("0.8.0", "0.8.0"), "равные")
+	T.no(U.VersionNewer("0.9", "0.9.0"), "0.9 = 0.9.0")
+	T.no(U.VersionNewer("0.8.0", "0.9.0"), "старше")
+	T.no(U.VersionNewer("0.9.0-dev", "0.8.0"), "сборка с хвостом не новее")
+	T.no(U.VersionNewer("0.9.0", "мусор"), "с мусором не сравнивается")
+	T.no(U.VersionNewer(nil, "0.8.0"), "nil")
+end)
+
 T.test("util: правило своей гильдии", function()
 	local _, U = fresh()
 	T.ok(U.IsMemberGuild("Чиллзон"), "Чиллзон")
