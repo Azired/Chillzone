@@ -162,6 +162,8 @@ end)
 
 T.test("relay: согласие делиться зонами переключает репортёра", function()
 	local w, c = Build()
+	for _, cl in pairs(c) do cl:Slash("/chillzone", "zones off") end
+	w:Run(200)
 	c.V:Slash("/chillzone", "zones on")
 	w:Run(200)
 	T.eq(c.B.ns.Census.Reporter(), Key(c.B, "Вера Верная"), "у Бориса")
@@ -208,6 +210,7 @@ T.test("relay: без проверки звания любой участник 
 	T.eq(c.B.ns.Relay.TrustOf("Мира Тихая"), "member", "member credential verified independently of gossip")
 	-- Рядовой Севера с зонами — единственный, кто делится зонами, поэтому репортёр он.
 	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3 })
+	c.B:Slash("/chillzone", "zones off")
 	Ak:Slash("/chillzone", "zones on")
 	w:Run(200)
 	T.eq(Ak.ns.Census.Reporter(), Key(Ak, "Вера Верная"), "zone sharing does not preempt an officer")
@@ -267,6 +270,17 @@ T.test("relay: вопрос сразу после ответа не делает
 	T.no(e.down, "реле живо, хотя второй вопрос пришёлся на его паузу")
 	B.ns.Relay.PingAll()
 	T.ok(e.asked, "после паузы реле снова спрашивают")
+end)
+
+T.test("relay: зонами делится новый персонаж, сохранённый выбор не меняется", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	local fresh = w:Client({ first = "Новый", surname = "Игрок", guild = "Чиллзон", rank = 3 })
+	local db = { chars = { [Key(fresh, "Старый Игрок")] = { shareZones = false } } }
+	local old = w:Client({ first = "Старый", surname = "Игрок", guild = "Чиллзон", rank = 3, db = db })
+	w:Run(1)
+	T.eq(fresh.ns.char.shareZones, true, "новый персонаж")
+	T.eq(old.ns.char.shareZones, false, "выбор уже записан в сохранениях")
 end)
 
 T.test("relay: уровни чата — офицеры и главы", function()
