@@ -42,6 +42,7 @@ Relay.stats = { forwarded = 0, delivered = 0, dropped = 0, untrusted = 0 }
 
 local REG_TTL = 60 -- репортёр продлевает аренду раз в 15 секунд; без продления она истекает
 Relay.REG_TTL = REG_TTL
+local PONG_GAP = 5 -- реле отвечает одному адресату не чаще; вопрос раньше остаётся без ответа
 
 local function Now() return ns.Now() end
 
@@ -210,6 +211,9 @@ end
 local function Ask(e, payload)
 	local now = Now()
 	if e.asked and now - e.asked < C.RELAY_TIMEOUT then return end
+	-- Реле промолчало бы, и живое реле попало бы в офлайн на RELAY_DOWN. Аренда от пропуска
+	-- не страдает: следующая попытка через 15 секунд, а живёт аренда REG_TTL.
+	if e.verified and now - e.verified < PONG_GAP then return end
 	e.asked = now
 	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
 	ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key })
@@ -507,7 +511,7 @@ end
 local function Pong(sender)
 	local k = U.Key(sender)
 	local now = Now()
-	if lastPong[k] and now - lastPong[k] < 5 then return end
+	if lastPong[k] and now - lastPong[k] < PONG_GAP then return end
 	lastPong[k] = now
 	ns.Security.SendPolicies(sender)
 	ns.Security.Introduce(sender)

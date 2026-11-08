@@ -248,6 +248,27 @@ T.test("relay: реле пишет само — без шёпота RL", functio
 	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит") end
 end)
 
+T.test("relay: вопрос сразу после ответа не делает живое реле офлайн", function()
+	local w, c = Build()
+	local B = c.B
+	local e = B.ns.Relay.Known()[Key(B, c.A:Name())]
+	T.ok(e, "Борис знает реле")
+	w:Run(10)
+	e.asked, e.down = nil, nil
+	B.ns.Relay.PingAll()
+	T.ok(e.asked, "вопрос задан")
+	for _ = 1, 100 do
+		w:Run(0.1)
+		if not e.asked then break end
+	end
+	T.no(e.asked, "реле ответило")
+	B.ns.Relay.PingAll()
+	w:Run(B.ns.Config.RELAY_TIMEOUT + 2)
+	T.no(e.down, "реле живо, хотя второй вопрос пришёлся на его паузу")
+	B.ns.Relay.PingAll()
+	T.ok(e.asked, "после паузы реле снова спрашивают")
+end)
+
 T.test("relay: уровни чата — офицеры и главы", function()
 	local w, c = Build()
 	c.B:Slash("/cz2", "можно мне?")
