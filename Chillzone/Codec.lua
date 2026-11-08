@@ -14,7 +14,7 @@
 --   version  версия аддона репортёра (с 0.9.0). Новые поля идут только в конец:
 --            старые клиенты читают первые 21 поле и остальные не замечают.
 -- Кусок:  C<id>:<i>:<n>:<piece>                (аддон-сообщение не длиннее 255 байт)
--- Привет: H1~<версия>~<флаги>                  (z — делится зонами, r — ретранслятор)
+-- Привет: H1~<версия>~<флаги>                  (z — делится зонами, r — ретранслятор, n — нет сертификата)
 -- Запрос: Q1~
 -- Чат:    M1~tier~guild~id~class~text          (tier A|C|L, id 0-9999, class — 2 буквы)
 -- Реле:   RP~fp · RY~Имя1,Имя2 · RR~guild~fp · RU~guild~преемник · RL~mode~inner
@@ -283,15 +283,21 @@ end
 ---------------------------------------------------------------------------
 -- Привет и запрос
 ---------------------------------------------------------------------------
-function Codec.EncodeHello(version, sharesZones, isRelay)
-	return ("H1~%s~%s%s"):format(clean(version), sharesZones and "z" or "", isRelay and "r" or "")
+function Codec.EncodeHello(version, sharesZones, isRelay, unready)
+	return ("H1~%s~%s%s%s"):format(clean(version), sharesZones and "z" or "", isRelay and "r" or "",
+		unready and "n" or "")
 end
 
 function Codec.DecodeHello(s)
 	if type(s) ~= "string" then return nil end
 	local version, flags = s:match("^H1~([^~]*)~?([%a]*)")
 	if not version then return nil end
-	return { version = version:sub(1, 16), zones = flags:find("z", 1, true) ~= nil, relay = flags:find("r", 1, true) ~= nil }
+	return {
+		version = version:sub(1, 16),
+		zones = flags:find("z", 1, true) ~= nil,
+		relay = flags:find("r", 1, true) ~= nil,
+		unready = flags:find("n", 1, true) ~= nil,
+	}
 end
 
 ---------------------------------------------------------------------------

@@ -54,8 +54,9 @@ local function CensusReports(withVeteran)
 	end
 	local c = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0 })
 	local reports = {}
-	-- Только расписание: подпись здесь завершается синхронно. Настоящие подписи
-	-- и проверка сертификатов покрываются сетевыми и adversarial-тестами.
+	-- Только расписание: считаем репортёра сертифицированным, подпись завершаем синхронно.
+	-- Настоящие подписи и выдача сертификатов проверяются в сетевых тестах.
+	c.ns.Security.MyCertificate = function() return {} end
 	c.ns.Security.Seal = function(raw, done) done(raw); return true end
 	c.ns.Relay.Out = function(mode, raw)
 		T.eq(mode, "L", "режим переписи")
@@ -318,6 +319,7 @@ T.test("census: новый репортёр сохраняет прежнего 
 	local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
 	local census, C = A.ns.Census, A.ns.Config
 	local vera, betta = Key(A, V:Name()), Key(A, B:Name())
+	A.ns.Security.MyCertificate = function() return {} end -- проверяем только окно передачи
 	A.ns.Roster.Scan()
 	census.Peers()[vera] = { t = w.now, name = V:Name() }
 	census.Track()
@@ -351,6 +353,7 @@ T.test("census: новый репортёр узнаёт прежнего пос
 	local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
 	local census, C = A.ns.Census, A.ns.Config
 	local vera = Key(A, V:Name())
+	A.ns.Security.MyCertificate = function() return {} end -- проверяем только окно передачи
 	A.ns.Roster.Scan()
 	w.now = C.LOGIN_QUIET
 	census.Track()
@@ -421,6 +424,40 @@ T.test("relay: смена репортёра — чат гильдии не те
 	T.eq(Holders()[Key(c.A, "Борис Быстрый")], nil, "рядовой аренду не перехватил")
 	for name, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, name .. ": без ошибок") end
 	T.eq(#Al.ns.db.errors, 0, "Алла: без ошибок")
+end)
+
+T.test("relay: офицер без сертификата не прерывает доставку чата", function()
+	local w, c = Build()
+	local guild = "Чиллзон Север"
+	local config = c.B.ns.Config
+	local boris = Key(c.B, c.B:Name())
+	-- Вера — единственный издатель. После её выхода аренду держит сертифицированный ветеран.
+	c.V:Logout()
+	w:Run(config.PEER_WINDOW + config.LOGIN_QUIET)
+	T.ok(c.B.ns.Security.MyCertificate(), "у Бориса есть сертификат")
+	T.ok(c.B.ns.Census.IsReporter(), "Борис стал репортёром")
+	c.G:Slash("/cz1", "Строка до входа офицера")
+	w:Run(30)
+	T.eq(c.B:Saw("Строка до входа офицера"), 1)
+
+	local alla = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 1 })
+	w:Run(config.REPORTER_HANDOVER + config.LOGIN_QUIET)
+	T.no(alla.ns.Security.MyCertificate(), "издателя нет, Алла ждёт сертификат")
+	c.G:Slash("/cz1", "Строка в ожидании сертификата")
+	w:Run(30)
+	T.eq(c.B:Saw("Строка в ожидании сертификата"), 1, "доставка сохраняется и после окна передачи")
+	T.eq(c.B.ns.Census.Reporter(), boris, "Борис сохраняет роль репортёра")
+	T.eq(alla.ns.Census.Reporter(), boris, "Алла тоже выбирает Бориса")
+
+	w:Client({ first = c.V.first, surname = c.V.surname, realm = c.V.realm, guild = guild, rank = c.V.rank, db = c.V.ns.db })
+	w:Run(config.REPORTER_HANDOVER + config.LOGIN_QUIET + 30)
+	T.ok(alla.ns.Security.MyCertificate(), "вернувшийся издатель выдал сертификат")
+	T.ok(alla.ns.Census.IsReporter(), "Алла принимает роль репортёра")
+	T.eq(c.B.ns.Census.Reporter(), Key(c.B, alla:Name()), "Борис выбирает Аллу после выдачи")
+	c.G:Slash("/cz1", "Строка после передачи роли")
+	w:Run(30)
+	T.eq(c.B:Saw("Строка после передачи роли"), 1)
+	T.eq(alla:Saw("Строка после передачи роли"), 1)
 end)
 
 T.test("relay: RG от рядового отклоняется — и чат, и отчёт", function()
