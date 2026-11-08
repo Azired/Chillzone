@@ -23,10 +23,16 @@ function GuildChat.CanOfficer()
 	return rank ~= nil and ns.Roster.IsOfficerRank(rank)
 end
 
--- Класс автора: по GUID из события, иначе по ростеру.
+-- Forever может закрыть текст, автора и GUID даже у обычного чата гильдии.
+-- Проверяем до строковых операций; старые клиенты могут не иметь этого API.
+local function IsSecret(value)
+	return type(issecretvalue) == "function" and issecretvalue(value)
+end
+
+-- Класс автора: по доступному GUID из события, иначе по ростеру.
 local function ClassOf(sender, guid)
 	local byGuid = rawget(_G, "GetPlayerInfoByGUID")
-	if guid and guid ~= "" and type(byGuid) == "function" then
+	if not IsSecret(guid) and guid and guid ~= "" and type(byGuid) == "function" then
 		local ok, _, class = pcall(byGuid, guid)
 		if ok and class then return class end
 	end
@@ -38,6 +44,7 @@ local function ClassOf(sender, guid)
 end
 
 function GuildChat.Receive(channel, text, sender, guid)
+	if IsSecret(text) or IsSecret(sender) then return end
 	if not ns.char or type(text) ~= "string" or type(sender) ~= "string" then return end
 	if channel == "G" and GuildChat.IsMirror(text) then return end
 	ns.Chat.Remember(channel, ns.MyGuild(), sender, ClassOf(sender, guid), text)
@@ -46,6 +53,7 @@ end
 -- Читаемая копия общего канала для согильдийцев без аддона. Метка позволяет убрать
 -- её сразу, даже если обычный /g пришёл раньше подписанного сообщения M1.
 function GuildChat.IsMirror(text)
+	if IsSecret(text) then return false end
 	return ns.IsMember() and type(text) == "string" and text:sub(1, #L.GUILD_MIRROR_PREFIX) == L.GUILD_MIRROR_PREFIX
 end
 
