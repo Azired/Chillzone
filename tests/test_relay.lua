@@ -272,7 +272,7 @@ T.test("relay: вопрос сразу после ответа не делает
 	T.ok(e.asked, "после паузы реле снова спрашивают")
 end)
 
-T.test("relay: зонами делится новый персонаж, сохранённый выбор не меняется", function()
+T.test("relay: зоны включаются один раз, дальше решает игрок", function()
 	local w = Wow.World()
 	w:Guild("Чиллзон")
 	local fresh = w:Client({ first = "Новый", surname = "Игрок", guild = "Чиллзон", rank = 3 })
@@ -280,7 +280,12 @@ T.test("relay: зонами делится новый персонаж, сохр
 	local old = w:Client({ first = "Старый", surname = "Игрок", guild = "Чиллзон", rank = 3, db = db })
 	w:Run(1)
 	T.eq(fresh.ns.char.shareZones, true, "новый персонаж")
-	T.eq(old.ns.char.shareZones, false, "выбор уже записан в сохранениях")
+	T.eq(old.ns.char.shareZones, true, "заходивший раньше персонаж")
+	old:Slash("/chillzone", "zones off")
+	old:Logout()
+	local back = w:Client({ first = "Старый", surname = "Игрок", guild = "Чиллзон", rank = 3, db = db })
+	w:Run(1)
+	T.eq(back.ns.char.shareZones, false, "отказ после включения сохраняется")
 end)
 
 T.test("relay: уровни чата — офицеры и главы", function()
