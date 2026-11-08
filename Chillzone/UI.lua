@@ -245,6 +245,11 @@ local function BuildSettings(parent)
 	settings = CreateFrame("Frame", nil, parent)
 	settings:SetAllPoints(parent)
 	Check("map", L.CHECK_MAP, L.CHECK_MAP_TIP, function() return ns.db.settings.showMap end, function(on) ns.Map.SetEnabled(on) end)
+	Check("mapOpenMapWide", L.CHECK_MAP_OPENMAP_WIDE, L.CHECK_MAP_OPENMAP_WIDE_TIP,
+		function() return ns.db.settings.mapOpenMapWide == true end, function(on)
+			ns.db.settings.mapOpenMapWide = on
+			ns.Fire("SETTINGS")
+		end)
 	Check("zones", L.CHECK_ZONES, L.CHECK_ZONES_TIP, function() return ns.char.shareZones end, function(on)
 		ns.char.shareZones = on
 		ns.Print(on and L.ZONES_ON or L.ZONES_OFF)

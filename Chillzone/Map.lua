@@ -14,9 +14,9 @@ if Pins and not (Pins.AddWorldMapIconMap and Pins.RemoveAllWorldMapIcons) then P
 local SHOW_FLAG = HBD_PINS_WORLDMAP_SHOW_CONTINENT or 2
 local SHOW_HERE = 0
 local PIN_EDGE = 2
--- У OpenMap метка зоны 18 точек, настройка размера значков — до 2.
--- Публичный API не сообщает выбранный размер: оставляем место для максимального.
-local OPENMAP_RADIUS = 18
+-- Стандартная метка OpenMap — 18 точек. Увеличенные значки (до 2 раз)
+-- требуют отдельного запаса: выбранный размер публичный API не сообщает.
+local OPENMAP_RADIUS = 9
 local PIN_GAP = 2
 local pool, active = {}, {}
 local queued = false
@@ -52,7 +52,8 @@ local function OffsetPin(pin, shifted, mapScale)
 	local x = 0
 	if shifted then
 		local ownRadius = circle:GetWidth() / 2 + PIN_EDGE
-		x = -ownRadius - (OPENMAP_RADIUS + PIN_GAP) * mapScale / EffectiveScale(circle)
+		local radius = OPENMAP_RADIUS * (ns.db.settings.mapOpenMapWide == true and 2 or 1)
+		x = -ownRadius - (radius + PIN_GAP) * mapScale / EffectiveScale(circle)
 	end
 	if pin.offsetX == x then return end
 	circle:ClearAllPoints()
@@ -61,7 +62,7 @@ local function OffsetPin(pin, shifted, mapScale)
 end
 
 local function UpdateOffsets()
-	if not drawn then return end
+	if not drawn or not WorldMapFrame or not WorldMapFrame:IsShown() or Map.GamepadUI() then return end
 	local shifted = Map.OpenMapActive()
 	if not shifted and not offsetsShifted then return end
 	local scale = EffectiveScale(WorldMapFrame)
@@ -253,6 +254,7 @@ ns.RegisterEvent("ADDON_LOADED", HookWorldMap)
 
 ns.On("DATA", Map.Refresh)
 ns.On("GUILD_CHANGED", Map.Refresh)
+ns.On("SETTINGS", UpdateOffsets)
 
 ns.Command("map", function(arg)
 	arg = ns.Util.Fold(ns.Util.Trim(arg))

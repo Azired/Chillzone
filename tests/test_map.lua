@@ -187,7 +187,7 @@ local function Harness(opts)
 		return manager
 	end
 	if opts.krowi then h:InstallKrowi(true) end
-	local ns = { db = { settings = { showMap = true, mapButton = opts.position } } }
+	local ns = { db = { settings = { showMap = true, mapButton = opts.position, mapOpenMapWide = opts.wide } } }
 	function ns.On(name, fn) h.callbacks[name] = h.callbacks[name] or {}; table.insert(h.callbacks[name], fn) end
 	function ns.Fire(name, ...) for _, fn in ipairs(h.callbacks[name] or {}) do fn(...) end end
 	function ns.RegisterEvent(name, fn) h.events[name] = h.events[name] or {}; table.insert(h.events[name], fn) end
@@ -455,7 +455,7 @@ T.test("map: OpenMap сдвигает кружок с подсказкой, со
 	local function CheckGap()
 		local ratio = circle:GetEffectiveScale() / h.map:GetEffectiveScale()
 		local rightEdge = (circle.point[4] + circle:GetWidth() / 2 + 2) * ratio
-		Near(-18 - rightEdge, 2, "между обводкой CZ и крупнейшей меткой OpenMap остаётся зазор")
+		Near(-9 - rightEdge, 2, "между обводкой CZ и обычной меткой OpenMap остаётся небольшой зазор")
 	end
 	CheckGap()
 	circle.scripts.OnEnter(circle)
@@ -478,7 +478,7 @@ T.test("map: OpenMap сдвигает кружок с подсказкой, со
 	T.eq(h.pins.adds, adds)
 end)
 
-T.test("map: на обзоре маленькие круги ближе к зоне без наложения меток", function()
+T.test("map: компактный и увеличенный отступ разделяют метки при разных масштабах", function()
 	local h = Harness()
 	h.env.OpenMapAPI = { major = 1, IsStitched = function() return true end }
 	h.ns.Map.RefreshNow()
@@ -486,28 +486,89 @@ T.test("map: на обзоре маленькие круги ближе к зо�
 	local circle = entry.anchor.circle
 	local badge = h.env.CreateFrame("Frame", nil, h.map)
 	badge:SetSize(18, 18)
-	for _, uiScale in ipairs({ 0.75, 1, 1.25 }) do
-		h.map:SetScale(uiScale)
-		for _, pinScale in ipairs({ 1, 1.2 }) do
-			entry.holder:SetScale(pinScale)
-			local previous
-			for _, width in ipairs({ 16, 25, 34 }) do
-				circle:SetSize(width, width)
-				h:Tick()
-				local ratio = circle:GetEffectiveScale() / h.map:GetEffectiveScale()
-				local distance = -circle.point[4] * ratio
-				T.ok(distance < 43, "обзор не сохраняет прежний чрезмерный сдвиг 48")
-				if previous then T.ok(distance > previous, "маленький кружок ближе к центру зоны") end
-				previous = distance
-				for _, iconScale in ipairs({ 0.6, 1, 2 }) do
-					badge:SetScale(iconScale)
-					local leftEdge = -badge:GetWidth() / 2 * badge:GetEffectiveScale() / h.map:GetEffectiveScale()
-					local rightEdge = (circle.point[4] + width / 2 + 2) * ratio
-					T.ok(leftEdge - rightEdge >= 2 - 0.00001, "обводка и обе области наведения разделены")
+	for _, wide in ipairs({ false, true }) do
+		h.ns.db.settings.mapOpenMapWide = wide
+		h.ns.Fire("SETTINGS")
+		for _, uiScale in ipairs({ 0.75, 1, 1.25 }) do
+			h.map:SetScale(uiScale)
+			for _, pinScale in ipairs({ 1, 1.2 }) do
+				entry.holder:SetScale(pinScale)
+				local previous
+				for _, width in ipairs({ 16, 25, 34 }) do
+					circle:SetSize(width, width)
+					h:Tick()
+					local ratio = circle:GetEffectiveScale() / h.map:GetEffectiveScale()
+					local distance = -circle.point[4] * ratio
+					T.ok(distance < (wide and 43 or 34), "компактный режим не резервирует место под двойной размер OpenMap")
+					if previous then T.ok(distance > previous, "маленький кружок ближе к центру зоны") end
+					previous = distance
+					for _, iconScale in ipairs(wide and { 0.6, 1, 1.5, 2 } or { 0.6, 1 }) do
+						badge:SetScale(iconScale)
+						local leftEdge = -badge:GetWidth() / 2 * badge:GetEffectiveScale() / h.map:GetEffectiveScale()
+						local rightEdge = (circle.point[4] + width / 2 + 2) * ratio
+						T.ok(leftEdge - rightEdge >= 2 - 0.00001, "обводка и обе области наведения разделены")
+					end
 				end
 			end
 		end
 	end
+end)
+
+T.test("map: смена отступа сразу передвигает метки без перерегистрации", function()
+	local h = Harness()
+	h.env.OpenMapAPI = { major = 1, IsStitched = function() return true end }
+	h.ns.Map.RefreshNow()
+	local entry = h.pins.entries[1]
+	local circle, adds = entry.anchor.circle, h.pins.adds
+	local function Distance()
+		return -circle.point[4] * circle:GetEffectiveScale() / h.map:GetEffectiveScale()
+	end
+	local compact = Distance()
+	h.ns.db.settings.mapOpenMapWide = true
+	h.ns.Fire("SETTINGS")
+	Near(Distance() - compact, 9, "галочка увеличивает отступ сразу, до следующего кадра")
+	T.eq(h.pins.adds, adds, "переключение настройки сохраняет метки HBD")
+	h.map:Hide()
+	local anchors = circle.anchors
+	h.ns.db.settings.mapOpenMapWide = false
+	h.ns.Fire("SETTINGS")
+	T.eq(circle.anchors, anchors, "закрытая карта не переставляет метки")
+	h.map:Show()
+	Near(Distance(), compact, "изменение при закрытой карте видно после открытия")
+	T.eq(h.pins.adds, adds)
+	T.eq(entry.x, 0.5); T.eq(entry.y, 0.5)
+	anchors = circle.anchors
+	h.gamepad = true
+	h.ns.db.settings.mapOpenMapWide = true
+	h.ns.Fire("SETTINGS")
+	h:Tick()
+	T.eq(circle.anchors, anchors, "при геймпаде настройка не переставляет оставшиеся метки")
+	h.gamepad = false
+	h:Tick()
+	Near(Distance() - compact, 9, "после возврата к мыши применяется сохранённый режим")
+end)
+
+T.test("map: сохранённый увеличенный отступ переживает скрытие кругов и обычную карту", function()
+	local h = Harness({ wide = true })
+	local stitched = true
+	h.env.OpenMapAPI = { major = 1, IsStitched = function() return stitched end }
+	h.ns.Map.RefreshNow()
+	local circle = h.pins.entries[1].anchor.circle
+	local wideOffset = circle.point[4]
+	local ratio = circle:GetEffectiveScale() / h.map:GetEffectiveScale()
+	Near(-18 - (wideOffset + circle:GetWidth() / 2 + 2) * ratio, 2, "сохранённый режим применяется при первом построении")
+	h.ns.Map.SetEnabled(false)
+	T.eq(#h.pins.entries, 0)
+	h.ns.Map.SetEnabled(true)
+	T.eq(h.pins.entries[1].anchor.circle, circle, "повторно используется прежний кружок")
+	Near(circle.point[4], wideOffset)
+	stitched = false
+	h:Tick()
+	T.eq(circle.point[4], 0, "обычная карта остаётся без смещения")
+	T.eq(h.ns.db.settings.mapOpenMapWide, true)
+	stitched = true
+	h:Tick()
+	Near(circle.point[4], wideOffset, "возврат в OpenMap восстанавливает выбранный отступ")
 end)
 
 T.test("map: обычная карта и неисправный OpenMap оставляют кружки в центре", function()
