@@ -125,6 +125,16 @@ local function SelectedWindow()
 	return frame, native, hosted
 end
 
+function ChatTab.InputFor(frame)
+	if input and input:IsShown() and anchor and (not frame or frame == anchor)
+		and SelectedWindow() == anchor then return input end
+end
+
+function ChatTab.FocusedInput()
+	local box = ChatTab.InputFor()
+	if box and box:HasFocus() then return box end
+end
+
 -- Hepega 0.9.0 уже рисует свои смайлы в строках Chillzone. Его окно выбора
 -- ищет поле ввода через GetActiveEditBox, отдельного API для стороннего поля нет.
 local function SmilePicker()

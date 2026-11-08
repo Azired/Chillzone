@@ -16,6 +16,7 @@ local U = ns.Util
 local L = ns.L
 local Codec = ns.Codec
 local Chat = ns.Chat
+local ChatLinks = ns.ChatLinks
 local Views = ns.Views
 
 local ChatPane = {}
@@ -43,7 +44,6 @@ local ROLE_ICON = {
 local ADDON_ICON = "Interface\\Icons\\Spell_Nature_Tranquility"
 local ADDON_SIZE = 12
 local TEXT_RIGHT, TEXT_RIGHT_ADDON = -24, -24 - ADDON_SIZE - 2
-local TIP_LINKS = { item = true, spell = true, enchant = true, quest = true, talent = true }
 
 local pane, list, chatArea, messages, jump, box, prompt, title, scope, count, people, peopleChild, empty
 local openTab
@@ -227,27 +227,6 @@ function ChatPane.Reload()
 	UpdateJump()
 end
 
-local function LinkType(link)
-	return type(link) == "string" and link:match("^([^:]+)") or nil
-end
-
-local function OnLinkEnter(self, link)
-	if not TIP_LINKS[LinkType(link) or ""] then return end
-	GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
-	if pcall(GameTooltip.SetHyperlink, GameTooltip, link) then GameTooltip:Show() else GameTooltip:Hide() end
-end
-
-local function OnLinkClick(_, link, text)
-	local kind = LinkType(link)
-	if kind == "player" then
-		local name = link:match("^player:([^:]+)")
-		if name then ChatPane.WhisperTo(name) end
-	elseif TIP_LINKS[kind or ""] and IsShiftKeyDown and IsShiftKeyDown() and box then
-		box:Insert(text)
-		box:SetFocus()
-	end
-end
-
 ---------------------------------------------------------------------------
 -- Люди справа (CommunitiesMemberListEntryTemplate)
 ---------------------------------------------------------------------------
@@ -410,10 +389,11 @@ end
 
 -- Шёпот из окна: «/w Имя Фамилия » в нашем поле, курсор в конце.
 function ChatPane.WhisperTo(name)
-	if not box or type(name) ~= "string" then return end
-	name = U.TellName(name) or name
-	box:SetText("/w " .. Codec.Plain(name) .. " ")
-	box:SetFocus()
+	ChatLinks.Whisper(box, name)
+end
+
+function ChatPane.FocusedInput()
+	if shown and box and box:HasFocus() then return box end
 end
 
 function ChatPane.Focus()
@@ -589,9 +569,7 @@ function ChatPane.Build(host)
 		end
 		UpdateJump()
 	end)
-	messages:SetScript("OnHyperlinkEnter", OnLinkEnter)
-	messages:SetScript("OnHyperlinkLeave", function() GameTooltip:Hide() end)
-	messages:SetScript("OnHyperlinkClick", function(...) ns.SafeCall("chat link", OnLinkClick, ...) end)
+	ChatLinks.Attach(messages, function() return box end)
 	local bar, barReal = Template("EventFrame", chatArea, "MinimalScrollBar")
 	local SU = rawget(_G, "ScrollUtil")
 	if barReal and type(SU) == "table" and type(SU.InitScrollingMessageFrameWithScrollBar) == "function" then
@@ -653,14 +631,6 @@ function ChatPane.Build(host)
 	box:SetScript("OnTextChanged", function(self, user)
 		if user then Drafts()[current] = self:GetText() end
 	end)
-
-	-- Shift-клик предмета из сумки, пока наше поле в фокусе (пост-хук — функция игры остаётся её).
-	local hook = rawget(_G, "hooksecurefunc")
-	if type(hook) == "function" then
-		pcall(hook, "ChatEdit_InsertLink", function(text)
-			if box and shown and type(text) == "string" and box:HasFocus() then box:Insert(text) end
-		end)
-	end
 
 	keyButton = CreateFrame("Button", "ChillzoneChatKey", UIParent)
 	keyButton:RegisterForClicks("AnyDown")

@@ -176,7 +176,53 @@ T.test("chat tab: ввод в Chattynator отправляет в союз и в
 	box.scripts.OnEnterPressed(box)
 	T.same(sent, { { "A", "Ищу хила" } })
 	T.eq(box:GetText(), "")
+
+	local messages = h.messages
+	local click = messages.scripts.OnHyperlinkClick
+	local item = "|cffffffff|Hitem:25|h[Меч]|h|r"
+	T.ok(click, "специальная вкладка обрабатывает щелчки по ссылкам")
+	T.eq(env.ChatFrameUtil.InsertLink(item), false, "пост-хук не меняет ответ игры")
+	T.eq(box:GetText(), "", "ввод без фокуса не принимает ссылку из сумки")
+	box:SetFocus()
+	T.eq(env.ChatFrameUtil.InsertLink(item), false)
+	T.eq(box:GetText(), item, "предмет из сумки вставляется один раз")
+	box:SetText("")
+	box:ClearFocus()
+	h.client.shift = true
+	click(messages, "item:25", item, "LeftButton")
+	h.client.shift = false
+	T.eq(box:GetText(), item, "Shift-клик по ссылке переносит её в поле союза")
+	T.ok(box:HasFocus())
+	local inspected
+	env.ItemRefTooltip = env.CreateFrame("GameTooltip")
+	env.ItemRefTooltip.ItemRefSetHyperlink = function(_, link) inspected = link end
+	click(messages, "item:25", item, "LeftButton")
+	T.eq(inspected, "item:25", "обычный щелчок открывает подсказку предмета")
+	T.eq(box:GetText(), item)
+
+	local menus, whispers = {}, {}
+	env.FriendsFrame_ShowDropdown = function(name, connected) menus[#menus + 1] = { name, connected } end
+	env.SendChatMessage = function(message, channel, _, target)
+		whispers[#whispers + 1] = { message, channel, target }
+	end
+	local player = "player:Глеб Гордый"
+	click(messages, player, "[Глеб Гордый]", "RightButton")
+	T.same(menus, { { "Глеб Гордый", 1 } })
+	T.eq(box:GetText(), item, "ПКМ открывает меню и сохраняет черновик")
+	click(messages, player, "[Глеб Гордый]", "LeftButton")
+	T.eq(box:GetText(), "/w Глеб Гордый ", "ЛКМ подготавливает шёпот в поле союза")
+	T.ok(box:HasFocus())
+	box:Insert("Привет")
+	box.scripts.OnEnterPressed(box)
+	T.same(whispers, { { "Привет", "WHISPER", "Глеб Гордый" } })
+	T.eq(#sent, 1, "личное сообщение не попадает в общий канал")
+	T.eq(box:GetText(), "")
+
+	box:SetFocus()
+	box:SetText("Черновик союза")
 	holder:Hide()
+	T.eq(env.ChatFrameUtil.InsertLink(item), false)
+	T.eq(box:GetText(), "Черновик союза", "скрытая вкладка не принимает ссылку из сумки")
 	box.scripts.OnUpdate(box)
 	T.no(box:IsShown())
 	T.eq(native:GetAlpha(), 0.35)

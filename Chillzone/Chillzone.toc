@@ -27,6 +27,7 @@ Data.lua
 Census.lua
 Relay.lua
 Chat.lua
+ChatLinks.lua
 ChatTab.lua
 ChattynatorTab.lua
 GuildChat.lua

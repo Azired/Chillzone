@@ -378,6 +378,7 @@ local function Env(c)
 			if o:Guid() == guid then return CLASS_LOCAL[o.class], o.class end
 		end
 	end
+	env.ChatFrameUtil = { InsertLink = function() return false end }
 	env.hooksecurefunc = function(name, fn, callback)
 		if type(name) == "table" then
 			local original = name[fn]

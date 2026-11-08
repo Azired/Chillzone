@@ -6,7 +6,6 @@ local ChattynatorTab = {}
 ns.ChattynatorTab = ChattynatorTab
 
 local panels, active, registered = {}, nil, nil
-local tooltipLinks = { item = true, spell = true, enchant = true, quest = true, talent = true }
 
 local function CanRead()
 	return ns.char and ns.char.chatOn and ns.IsMember()
@@ -107,12 +106,7 @@ local function Install(parent)
 		messages:SetScript("OnMouseWheel", function(self, delta)
 			if delta > 0 then self:ScrollUp() else self:ScrollDown() end
 		end)
-		messages:SetScript("OnHyperlinkEnter", function(self, link)
-			if type(link) ~= "string" or not tooltipLinks[link:match("^([^:]+)") or ""] then return end
-			GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
-			if pcall(GameTooltip.SetHyperlink, GameTooltip, link) then GameTooltip:Show() else GameTooltip:Hide() end
-		end)
-		messages:SetScript("OnHyperlinkLeave", function() GameTooltip:Hide() end)
+		ns.ChatLinks.Attach(messages, function() return ns.ChatTab.InputFor(panel) end)
 		panel.messages, panel.dirty = messages, true
 		panels[parent] = panel
 		panel:SetScript("OnShow", function(self) ns.SafeCall("chattynator tab show", SelectPanel, self) end)
