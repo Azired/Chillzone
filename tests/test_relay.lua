@@ -29,8 +29,8 @@ local function Build(opts)
 	if not opts.run or opts.run > 30 then
 		w:Run(30)
 		w:Init(c.A, c.V, c.G)
-		w:Pair(c.V, c.A)
-		w:Pair(c.G, c.A)
+		w:Pair(c.V, c.K)
+		w:Pair(c.G, c.K)
 	end
 	w:Run(opts.run or 400)
 	if not opts.run or opts.run > 30 then
@@ -318,6 +318,7 @@ T.test("census: новый репортёр сохраняет прежнего 
 	local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
 	local census, C = A.ns.Census, A.ns.Config
 	local vera, betta = Key(A, V:Name()), Key(A, B:Name())
+	A.ns.store.security.union[A.ns.Util.GuildKey(A.guild)] = { active = true }
 	A.ns.Roster.Scan()
 	census.Peers()[vera] = { t = w.now, name = V:Name() }
 	census.Track()
@@ -351,6 +352,7 @@ T.test("census: новый репортёр узнаёт прежнего пос
 	local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
 	local census, C = A.ns.Census, A.ns.Config
 	local vera = Key(A, V:Name())
+	A.ns.store.security.union[A.ns.Util.GuildKey(A.guild)] = { active = true }
 	A.ns.Roster.Scan()
 	w.now = C.LOGIN_QUIET
 	census.Track()
@@ -390,7 +392,8 @@ T.test("relay: смена репортёра — чат гильдии не те
 	end
 	w:Run(15); Line(1)
 	w:Run(15); Line(2)
-	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия уже выбрала Аллу")
+	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия уже выбрала Аллу; членство=" .. tostring(Al.ns.IsMember())
+		.. "; сертификат=" .. tostring(Al.ns.Security.MyCertificate() ~= nil) .. "; ошибки=" .. table.concat(Al.ns.db.errors, "; "))
 	T.no(Al.ns.Census.IsReporter(), "Алла после входа ещё молчит")
 	-- Рядовой Севера пробует перехватить аренду, пока она передаётся: назвать себя
 	-- преемником (RU) и зарегистрироваться (RR).
@@ -662,11 +665,24 @@ T.test("relay: участник главной вне тройки реле пи
 	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0 })
 	w:Run(30)
 	w:Init(c.A, c.V, c.G)
-	w:Pair(c.V, c.A)
-	w:Pair(c.G, c.A)
+	w:Pair(c.V, c.K)
+	w:Pair(c.G, c.K)
+	-- Здесь проверяется доставка вне тройки, а не обнаружение: после знакомства с главой
+	-- репортёры получают настоящие сертификаты всех трёх более ранних кандидатов.
+	for _, target in ipairs({ c.V, c.G }) do
+		for _, source in ipairs({ c.A, c.O1, c.O2 }) do
+			c.A.ns.Security.Introduce(target:Name(), source.ns.Security.MyCertificate().raw)
+		end
+	end
 	w:Run(400)
 	T.no(c.M.ns.Relay.Serving(), "у Миры репортёры не регистрируются")
-	T.no(c.K.ns.Relay.Serving(), "у Карла тоже")
+	local candidates = {}
+	for _, cl in ipairs({ c.V, c.G }) do
+		for _, e in ipairs(cl.ns.Relay.Candidates()) do
+			candidates[#candidates + 1] = cl:Name() .. ": " .. e.name .. "=" .. tostring(cl.ns.Relay.TrustOf(e.name))
+		end
+	end
+	T.no(c.K.ns.Relay.Serving(), "у Карла тоже: " .. table.concat(candidates, "; "))
 	c.M:Slash("/cz1", "рядовая главной пишет всем")
 	w:Run(5)
 	c.K:Slash("/cz1", "глава вне тройки пишет всем")

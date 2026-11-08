@@ -17,6 +17,8 @@ local SUITES = {
 	"test_guildmirror",
 	"test_security",
 	"test_link",
+	"test_union",
+	"test_migration",
 	"test_signatures",
 	"test_recruit",
 	"test_recruit_sync",

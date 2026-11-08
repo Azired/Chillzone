@@ -209,7 +209,7 @@ function Recruit.OnRoute(msg, sender, dist, ctx)
 	for entry in list:gmatch("[^;]+") do
 		local guild, free, names = entry:match("^([^=]+)=(%d+)=(.*)$")
 		free = tonumber(free)
-		if guild and U.IsMemberGuild(guild) and free and free <= Codec.GUILD_CAP and n < 8 then
+		if guild and #guild <= 96 and not guild:find("[|%c]") and free and free <= Codec.GUILD_CAP and n < 8 then
 			local contacts = {}
 			for name in names:gmatch("[^/]+") do
 				if #contacts < 2 and #name <= 120 then contacts[#contacts + 1] = name end

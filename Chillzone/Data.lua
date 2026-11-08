@@ -137,7 +137,7 @@ function Data.Summary(now)
 	now = now or ns.ServerTime()
 	local out = {}
 	for _, row in pairs(Guilds()) do
-		if row.r and now - (row.st or 0) <= C.KEEP then
+		if row.r and U.IsMemberGuild(row.guild) and now - (row.st or 0) <= C.KEEP then
 			local fresh = now - (row.st or 0) <= C.FRESH or row.mine
 			local recent = now - (row.st or 0) <= C.TOTAL_KEEP or row.mine
 			out[#out + 1] = {
@@ -216,7 +216,7 @@ function Data.Cached(now)
 	now = now or ns.ServerTime()
 	local out = {}
 	for gk, row in pairs(Guilds()) do
-		if not row.mine and row.signed and row.origin and now - (row.st or 0) <= C.TOTAL_KEEP then
+		if not row.mine and row.signed and row.origin and U.IsMemberGuild(row.guild) and now - (row.st or 0) <= C.TOTAL_KEEP then
 			out[#out + 1] = { key = gk, raw = row.signed, origin = row.origin }
 		end
 	end
