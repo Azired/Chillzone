@@ -13,7 +13,11 @@ if Pins and not (Pins.AddWorldMapIconMap and Pins.RemoveAllWorldMapIcons) then P
 
 local SHOW_FLAG = HBD_PINS_WORLDMAP_SHOW_CONTINENT or 2
 local SHOW_HERE = 0
-local OPENMAP_OFFSET = 48
+local PIN_EDGE = 2
+-- У OpenMap метка зоны 18 точек, настройка размера значков — до 2.
+-- Публичный API не сообщает выбранный размер: оставляем место для максимального.
+local OPENMAP_RADIUS = 18
+local PIN_GAP = 2
 local pool, active = {}, {}
 local queued = false
 local drawn = false
@@ -41,10 +45,15 @@ local function EffectiveScale(frame)
 end
 
 -- HBD и OpenMap двигают внешний якорь. Круг вместе с областью наведения смещаем
--- внутри него, сохраняя координаты зоны. Масштаб карты не меняет видимый отступ.
+-- внутри него, сохраняя координаты зоны. Отступ покрывает радиусы значков и
+-- небольшой зазор: маленькие круги на обзоре не уходят далеко от своих зон.
 local function OffsetPin(pin, shifted, mapScale)
 	local circle = pin.circle
-	local x = shifted and -OPENMAP_OFFSET * mapScale / EffectiveScale(circle) or 0
+	local x = 0
+	if shifted then
+		local ownRadius = circle:GetWidth() / 2 + PIN_EDGE
+		x = -ownRadius - (OPENMAP_RADIUS + PIN_GAP) * mapScale / EffectiveScale(circle)
+	end
 	if pin.offsetX == x then return end
 	circle:ClearAllPoints()
 	circle:SetPoint("CENTER", pin, "CENTER", x, 0)
@@ -94,8 +103,8 @@ local function CreatePin()
 	p.edge = p:CreateTexture(nil, "BACKGROUND", nil, -1)
 	p.edge:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask")
 	p.edge:SetVertexColor(0.5, 0.83, 0.76, 0.95)
-	p.edge:SetPoint("TOPLEFT", -2, 2)
-	p.edge:SetPoint("BOTTOMRIGHT", 2, -2)
+	p.edge:SetPoint("TOPLEFT", -PIN_EDGE, PIN_EDGE)
+	p.edge:SetPoint("BOTTOMRIGHT", PIN_EDGE, -PIN_EDGE)
 	p.bg = p:CreateTexture(nil, "BACKGROUND", nil, 1)
 	p.bg:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask")
 	p.bg:SetVertexColor(0.04, 0.1, 0.1, 0.9)

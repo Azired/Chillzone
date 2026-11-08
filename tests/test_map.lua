@@ -452,7 +452,12 @@ T.test("map: OpenMap сдвигает кружок с подсказкой, со
 	T.ok(circle.mouse)
 	T.eq(circle.count, 3)
 	T.same(circle.guilds, { Chillzone = 2, Ally = 1 })
-	Near(circle.point[4] * circle:GetEffectiveScale() / h.map:GetEffectiveScale(), -48)
+	local function CheckGap()
+		local ratio = circle:GetEffectiveScale() / h.map:GetEffectiveScale()
+		local rightEdge = (circle.point[4] + circle:GetWidth() / 2 + 2) * ratio
+		Near(-18 - rightEdge, 2, "между обводкой CZ и крупнейшей меткой OpenMap остаётся зазор")
+	end
+	CheckGap()
 	circle.scripts.OnEnter(circle)
 	T.eq(h.env.GameTooltip:GetOwner(), circle)
 	T.eq(h.env.GameTooltip.lines[1][1], "Ясеневый лес")
@@ -462,15 +467,47 @@ T.test("map: OpenMap сдвигает кружок с подсказкой, со
 	T.eq(circle.anchors, anchors, "без изменения масштаба якорь не переписывается")
 	entry.holder:SetScale(2)
 	h:Tick()
-	Near(circle.point[4] * circle:GetEffectiveScale() / h.map:GetEffectiveScale(), -48)
+	CheckGap()
 	T.eq(h.pins.adds, adds, "зум не перерегистрирует метки")
 	entry.anchor:ClearAllPoints()
 	entry.anchor:SetPoint("CENTER", entry.holder, "CENTER", 0, 0)
-	Near(circle.point[4] * circle:GetEffectiveScale() / h.map:GetEffectiveScale(), -48, "HBD меняет только внешний якорь")
+	CheckGap()
 	h.env.OpenMapAPI.IsStitched = function() return false end
 	h:Tick()
 	T.eq(circle.point[4], 0)
 	T.eq(h.pins.adds, adds)
+end)
+
+T.test("map: на обзоре маленькие круги ближе к зоне без наложения меток", function()
+	local h = Harness()
+	h.env.OpenMapAPI = { major = 1, IsStitched = function() return true end }
+	h.ns.Map.RefreshNow()
+	local entry = h.pins.entries[1]
+	local circle = entry.anchor.circle
+	local badge = h.env.CreateFrame("Frame", nil, h.map)
+	badge:SetSize(18, 18)
+	for _, uiScale in ipairs({ 0.75, 1, 1.25 }) do
+		h.map:SetScale(uiScale)
+		for _, pinScale in ipairs({ 1, 1.2 }) do
+			entry.holder:SetScale(pinScale)
+			local previous
+			for _, width in ipairs({ 16, 25, 34 }) do
+				circle:SetSize(width, width)
+				h:Tick()
+				local ratio = circle:GetEffectiveScale() / h.map:GetEffectiveScale()
+				local distance = -circle.point[4] * ratio
+				T.ok(distance < 43, "обзор не сохраняет прежний чрезмерный сдвиг 48")
+				if previous then T.ok(distance > previous, "маленький кружок ближе к центру зоны") end
+				previous = distance
+				for _, iconScale in ipairs({ 0.6, 1, 2 }) do
+					badge:SetScale(iconScale)
+					local leftEdge = -badge:GetWidth() / 2 * badge:GetEffectiveScale() / h.map:GetEffectiveScale()
+					local rightEdge = (circle.point[4] + width / 2 + 2) * ratio
+					T.ok(leftEdge - rightEdge >= 2 - 0.00001, "обводка и обе области наведения разделены")
+				end
+			end
+		end
+	end
 end)
 
 T.test("map: обычная карта и неисправный OpenMap оставляют кружки в центре", function()
