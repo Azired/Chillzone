@@ -73,8 +73,7 @@ T.test("slash: управление только через /chillzone, алиа
 	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон" }) do
 		c:Slash(cmd, "settings")
 		T.same(sent[#sent], { "A", "settings" }, cmd .. " не перехватывает слово команды")
-		c:Slash(cmd, "")
-		T.eq(c.ns.UI.Current(), "settings", "пустая команда не меняет вкладку")
+		T.eq(c.ns.UI.Current(), "settings", "отправка текста не меняет вкладку")
 	end
 	T.eq(#sent, 3)
 	T.eq(#c.ns.db.errors, 0)
@@ -128,21 +127,39 @@ T.test("slash: отмена и исправление команды не отк
 	T.eq(c.ns.UI.Current(), nil)
 end)
 
-T.test("slash: пустые команды дают подсказку без отправки и открытия окна", function()
+T.test("slash: пустые команды открывают нужный канал без отправки и подсказки", function()
 	local w, c = SlashClient()
 	local sent = 0
 	c.ns.Chat.Send = function() sent = sent + 1 end
-	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон", "/cz1", "/чз1", "/cz2", "/чз2", "/cz3", "/чз3" }) do
+	local aliases = { ["/cz"] = "A", ["/чз"] = "A", ["/чиллзон"] = "A",
+		["/cz1"] = "A", ["/чз1"] = "A", ["/cz2"] = "C", ["/чз2"] = "C", ["/cz3"] = "L", ["/чз3"] = "L" }
+	for cmd, tier in pairs(aliases) do
+		c:Slash("/chillzone", "settings")
 		for _, text in ipairs({ "", "   " }) do
-			local before = c:Saw(c.ns.L.CHAT_USAGE)
+			local before = #c.printed
 			c:Slash(cmd, text)
 			w:Run(0)
-			T.eq(c:Saw(c.ns.L.CHAT_USAGE), before + 1, cmd .. " показывает подсказку")
-			T.eq(c.ns.UI.Current(), nil, cmd .. " не открывает окно")
+			T.eq(c.ns.UI.Current(), "chat", cmd .. " открывает окно")
+			T.eq(c.ns.ChatPane.Current(), tier, cmd .. " выбирает канал")
+			T.ok(c.ns.ChatPane.frames.box:HasFocus(), cmd .. " ставит курсор в поле")
+			T.eq(#c.printed, before, cmd .. " ничего не печатает в чат")
 		end
 	end
 	T.eq(sent, 0)
 	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("slash: пустая команда сохраняет черновик и повторно не закрывает окно", function()
+	local _, c = SlashClient()
+	c:Slash("/cz", "")
+	local box = c.ns.ChatPane.frames.box
+	T.ok(box, "поле открытого окна")
+	box:SetText("черновик " .. LINK)
+	box.scripts.OnTextChanged(box, true)
+	c:Slash("/cz", "")
+	T.eq(c.ns.UI.Current(), "chat")
+	T.eq(box:GetText(), "черновик " .. LINK)
+	T.eq(c.ns.Chat.stats.sent, 0)
 end)
 
 T.test("slash: недоступный канал отклоняет отправку без открытия окна", function()
@@ -159,6 +176,9 @@ T.test("slash: недоступный канал отклоняет отправ
 	c:Slash("/cz3", "сообщение главам")
 	w:Run(0)
 	T.eq(c:Saw("можно писать только с нужным рангом"), 2)
+	c:Slash("/cz2", "")
+	c:Slash("/cz3", "   ")
+	T.eq(c:Saw("можно писать только с нужным рангом"), 4, "пустая команда тоже проверяет канал")
 	T.eq(c.ns.Chat.stats.sent, 0)
 	T.eq(c.ns.UI.Current(), nil)
 	T.eq(#c.ns.db.errors, 0)

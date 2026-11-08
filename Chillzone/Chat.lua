@@ -422,7 +422,11 @@ for i, tier in ipairs({ "A", "C", "L" }) do
 	_G["SLASH_CHILLZONE" .. tier .. "2"] = "/чз" .. i
 	SlashCmdList["CHILLZONE" .. tier] = function(msg)
 		if U.Trim(msg) == "" then
-			ns.Print(L.CHAT_USAGE)
+			if Chat.MyLevel() < Chat.TIER_LEVEL[tier] then
+				ns.Print(L.CHAT_NO_RIGHTS, L["TIER_" .. tier])
+				return
+			end
+			ns.SafeCall("/cz" .. i, ns.UI.OpenChat, tier, true)
 			return
 		end
 		ns.SafeCall("/cz" .. i, Chat.Send, tier, msg or "")
