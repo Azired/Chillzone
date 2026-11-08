@@ -404,11 +404,17 @@ local function SeniorUnasked(pick)
 	return false
 end
 
+-- Сразу после входа и /reload аренды пусты, а репортёры других гильдий возвращаются не разом:
+-- тому, кто перезашёл сам, нужно больше минуты, чтобы снова стать репортёром.
+local function Settled()
+	return ns.loginAt ~= nil and Now() - ns.loginAt >= C.RELAY_SETTLE
+end
+
 -- mode: "L" (отчёт: новый заменяет старый) или "P" (каждое: чат). inner: подписанный S1.
 -- Реле главной гильдии рассылает само, если у него есть чужие репортёры; иначе, как и все,
--- шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту. Реле вне тройки
--- делает и то и другое: у него зарегистрированы только те, кто ещё не знает общей тройки,
--- а остальные гильдии ждут сообщение от неё. Дубли отбрасывает получатель (Codec.DedupeKey).
+-- шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту. Реле вне тройки и
+-- только что вошедшее реле делают и то и другое: у них зарегистрированы не все гильдии,
+-- остальные ждут сообщение от общей тройки. Дубли отбрасывает получатель (Codec.DedupeKey).
 function Out(mode, inner)
 	if not ns.IsMember() or Codec.InnerType(inner) ~= "S1" then return false end
 	if Relay.IAmRelay() and Relay.Serving() then
@@ -419,7 +425,7 @@ function Out(mode, inner)
 		else
 			Relay.HandleRL(ns.me, mode, inner)
 		end
-		if Relay.InTop() then return true end
+		if Relay.InTop() and Settled() then return true end
 	end
 	local e = Relay.Pick()
 	if not e or SeniorUnasked(e) then

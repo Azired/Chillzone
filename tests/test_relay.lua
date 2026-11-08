@@ -868,6 +868,46 @@ T.test("relay: реле вне тройки с арендой одной гил�
 	NoErrors(c)
 end)
 
+T.test("relay: перезашедшее реле из тройки пишет всем, пока аренды неполные", function()
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "O", "R1" })
+	-- Перезаход без паузы: репортёры не успевают заметить, что реле выходило.
+	local db = c.O.ns.db
+	c.O:Logout()
+	c.O = w:Client({ first = "Олег", surname = "Старший", guild = "Чиллзон", rank = 1, db = db })
+	local back, have, miss = c.O, "Чиллзон Север", "Орден Чиллзона"
+	-- Пока реле не прочитало ростер, RR теряются, и следующий придёт через REG_EVERY.
+	for _ = 1, 60 do
+		if Lease(back, have) or Lease(back, miss) then break end
+		w:Run(1)
+	end
+	if not Lease(back, have) then have, miss = miss, have end
+	T.ok(Lease(back, have), "одна из гильдий уже зарегистрировалась")
+	-- Вторая гильдия ещё не успела: её репортёр сам недавно зашёл.
+	back.ns.Relay.Reporters()[back.ns.Util.GuildKey(miss)] = nil
+	T.ok(back.ns.Relay.Serving(), "реле обслуживает гильдию")
+	T.ok(back.ns.Relay.InTop(), "реле в общей тройке")
+	local text = "сразу после перезахода"
+	back:Slash("/cz1", text)
+	w:Run(30)
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+
+	-- Когда все вернулись, лишний путь через тройку закрывается.
+	w:Run(back.ns.Config.RELAY_SETTLE)
+	T.ok(Lease(back, "Чиллзон Север") and Lease(back, "Орден Чиллзона"), "аренды обеих гильдий")
+	local picks, pick = 0, back.ns.Relay.Pick
+	back.ns.Relay.Pick = function()
+		picks = picks + 1
+		return pick()
+	end
+	text = "реле давно в игре"
+	back:Slash("/cz1", text)
+	w:Run(30)
+	T.eq(picks, 0, "через других реле строка не идёт")
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+end)
+
 T.test("relay: новая гильдия узнаёт общую тройку от реле вне её", function()
 	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "O", "R1" })
 	ConnectSouth(w, c)
