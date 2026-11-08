@@ -38,3 +38,4 @@ CensusPane.lua
 Debug.lua
 UI.lua
 Map.lua
+MapControls.lua

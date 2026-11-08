@@ -18,6 +18,7 @@ local SUITES = {
 	"test_signatures",
 	"test_recruit",
 	"test_recruit_sync",
+	"test_map",
 }
 
 for _, name in ipairs(SUITES) do

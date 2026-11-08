@@ -131,6 +131,10 @@ L.IGNORE_OFF = "%s больше не в игноре"
 L.PIN_TOTAL = "участников «Чиллзон»: %s"
 L.MAP_ON = "круги на карте включены"
 L.MAP_OFF = "круги на карте выключены"
+L.MAP_BUTTON_HIDE = "Левый щелчок — скрыть круги Chillzone"
+L.MAP_BUTTON_SHOW = "Левый щелчок — показать круги Chillzone"
+L.MAP_BUTTON_DRAG = "Shift и перетаскивание — переместить кнопку"
+L.MAP_BUTTON_RESET = "Shift и правый щелчок — вернуть в общий ряд"
 
 -- Окно
 L.TAB_CHAT = "Чат"
