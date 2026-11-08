@@ -31,6 +31,8 @@ local handlers = {}
 local assemblers = {}
 local nextId = math.random(0, 1000)
 local refusedInRow, waitUntil = 0, 0
+local unavailable = {} -- [Key] = до какого времени не шептать недоступному адресату
+local WHISPER_FRESH = 10 -- системная ошибка относится только к недавней отправке аддона
 Comm.stats = { sent = 0, recv = 0, fails = 0, retried = 0, dropped = 0, queued = 0 }
 Comm.lastWhisper = {} -- [Key] = когда шептали (для системного «нет такого игрока»)
 
@@ -54,11 +56,18 @@ local function IsSuccess(res)
 	return res == nil or res == true or res == 0
 end
 
+local function Unavailable(target)
+	local key = U.Key(target)
+	local untilAt = key and unavailable[key]
+	return untilAt ~= nil and ns.Now() < untilAt
+end
+
 -- Одно сообщение прямо сейчас: true или false, код.
 function Comm.SendNow(dist, msg, target, logged)
 	if Comm.InLockdown() then return false, LOCKDOWN end
 	local to = nil
 	if dist == "WHISPER" then
+		if Unavailable(target) then return false, "offline" end
 		to = U.TellName(target)
 		Comm.lastWhisper[U.Key(target)] = ns.Now()
 	end
@@ -90,6 +99,45 @@ local function Finish(job, ok, why)
 	if job.done then ns.SafeCall("send done", job.done, ok, why) end
 end
 
+---------------------------------------------------------------------------
+-- «Нет такого игрока» относится ко всем служебным шёпотам, включая обмен ключами.
+-- На Forever серверная строка может отличаться от локализованного шаблона клиента.
+-- Фильтр не меняет состояние: его могут вызвать несколько окон до или после события.
+---------------------------------------------------------------------------
+local notFound
+local function OursNotFound(text)
+	if type(text) ~= "string" then return nil end
+	if type(issecretvalue) == "function" and issecretvalue(text) then return nil end
+	if not notFound and type(ERR_CHAT_PLAYER_NOT_FOUND_S) == "string" then
+		notFound = "^" .. (ERR_CHAT_PLAYER_NOT_FOUND_S:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"):gsub("%%%%s", "(.+)")) .. "$"
+	end
+	local who = (notFound and text:match(notFound)) or text:match('^Персонаж по имени "(.+)" в игре не найден%.$')
+	local key = who and U.Key(who)
+	local at = key and Comm.lastWhisper[key]
+	if at and ns.Now() - at <= WHISPER_FRESH then return key end
+end
+
+ns.RegisterEvent("CHAT_MSG_SYSTEM", function(text)
+	local key = OursNotFound(text)
+	if not key then return end
+	local now = ns.Now()
+	if unavailable[key] and now < unavailable[key] then return end
+	unavailable[key] = now + ns.Config.RELAY_DOWN
+	-- Сначала снимок: done может поставить в очередь другое сообщение.
+	local cancelled = {}
+	for _, job in ipairs(queue) do
+		if job.dist == "WHISPER" and U.Key(job.target) == key then cancelled[#cancelled + 1] = job end
+	end
+	for _, job in ipairs(cancelled) do Finish(job, false, "offline") end
+	ns.Fire("WHISPER_UNAVAILABLE", key)
+end)
+
+if ChatFrame_AddMessageEventFilter then
+	ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, text)
+		return OursNotFound(text) ~= nil
+	end)
+end
+
 local function Priority(prio)
 	return prio == true and 1 or (type(prio) == "number" and prio or 0)
 end
@@ -119,6 +167,7 @@ function Comm.Send(dist, payload, opts)
 	opts = opts or {}
 	if type(payload) ~= "string" or payload == "" then return false end
 	if dist == "WHISPER" and not opts.target then return false end
+	if dist == "WHISPER" and Unavailable(opts.target) then return false end
 	local now = ns.Now()
 	if opts.key then
 		for i, job in ipairs(queue) do
@@ -256,6 +305,8 @@ local function OnAddon(prefix, msg, dist, sender)
 	if realm and realm ~= ns.realm and U.GroupOf(realm) ~= ns.group then return end
 	if ns.IsMe(sender) then return end
 	if dist == "GUILD" and (not ns.Roster.Fresh() or ns.Roster.RankOf(sender) == nil) then return end
+	local key = U.Key(sender)
+	if key then unavailable[key] = nil end
 	if msg:byte(1) == 67 then -- "C": кусок
 		local a = assemblers[dist]
 		if not a then
@@ -279,6 +330,12 @@ ns.On("LOGIN", function()
 	ns.Every(Comm.SEND_INTERVAL, "send pump", Comm.Pump, true)
 	ns.Every(30, "assembler gc", function()
 		local now = ns.Now()
+		for key, at in pairs(Comm.lastWhisper) do
+			if now - at > WHISPER_FRESH then Comm.lastWhisper[key] = nil end
+		end
+		for key, untilAt in pairs(unavailable) do
+			if now >= untilAt then unavailable[key] = nil end
+		end
 		for _, a in pairs(assemblers) do Codec.Gc(a, now) end
 	end)
 end)
