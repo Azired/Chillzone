@@ -193,7 +193,7 @@ end
 ---------------------------------------------------------------------------
 -- Пинги и офлайн
 ---------------------------------------------------------------------------
-local Out -- вперёд
+local Out, FlushHold -- вперёд
 
 local function MarkDown(e, why)
 	local now = Now()
@@ -205,6 +205,8 @@ local function MarkDown(e, why)
 	for _, m in ipairs(list or {}) do
 		if now - m.t <= 15 then Out(m.mode, m.inner) end
 	end
+	-- Очередь могла ждать ответа именно от него.
+	FlushHold()
 	ns.Fire("RELAYS")
 end
 
@@ -353,7 +355,7 @@ local function Hold(mode, inner)
 	while #hold > C.RELAY_HOLD do table.remove(hold, 1) end
 end
 
-local function FlushHold()
+function FlushHold()
 	if #hold == 0 then return end
 	local list = hold
 	hold = {}
@@ -382,6 +384,19 @@ function Relay.Pick()
 	return pick and known[pick] or nil
 end
 
+-- Рядовой годится, когда офицеры молчат, а не когда их ещё не спросили: аренд у него обычно
+-- нет, и строка дошла бы только до своей гильдии. Опрос в главной гильдии идёт лишь при
+-- отправке, а рядовых новичок слышит в GUILD раньше, чем успевает спросить офицеров. Имя без
+-- сертификата (корень, подсказка из ответа реле) может оказаться офицером, поэтому тоже в счёт.
+local function SeniorUnasked(pick)
+	local now, p = Now(), Pool()
+	if p.officer[pick.key] then return false end
+	for _, e in ipairs(Top()) do
+		if not Verified(e, now) and (p.officer[e.key] or not p.trust[e.key]) then return true end
+	end
+	return false
+end
+
 -- mode: "L" (отчёт: новый заменяет старый) или "P" (каждое: чат). inner: подписанный S1.
 -- Реле главной гильдии рассылает само, только если у него есть чужие репортёры; иначе, как
 -- и все, шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту.
@@ -398,7 +413,7 @@ function Out(mode, inner)
 		return true
 	end
 	local e = Relay.Pick()
-	if not e then
+	if not e or SeniorUnasked(e) then
 		Hold(mode, inner)
 		Relay.PingAll()
 		return false

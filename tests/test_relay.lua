@@ -734,6 +734,72 @@ T.test("relay: участник главной вне тройки реле пи
 	for n, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, n .. ": без ошибок") end
 end)
 
+-- Новичок главной гильдии, как в первые минуты после установки: из реле он слышал только
+-- рядовую Миру, а корень Арагорна ещё не спрашивал.
+local function Newcomer()
+	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 7)
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	w:Guild("Чиллзон Север")
+	local c = {}
+	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1 })
+	c.O1 = w:Client({ first = "Богдан", surname = "Бравый", guild = "Чиллзон", rank = 1 })
+	c.O2 = w:Client({ first = "Виктор", surname = "Верный", guild = "Чиллзон", rank = 1 })
+	c.K = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, class = "PALADIN" })
+	c.M = w:Client({ first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3, class = "PRIEST" })
+	c.N = w:Client({ first = "Новичок", surname = "Главный", guild = "Чиллзон", rank = 3 })
+	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	w:Run(30)
+	w:Init(c.A, c.V)
+	w:Pair(c.V, c.K)
+	for _, source in ipairs({ c.A, c.O1, c.O2 }) do
+		c.A.ns.Security.Introduce(c.V:Name(), source.ns.Security.MyCertificate().raw)
+	end
+	w:Run(400)
+	local N, U = c.N.ns, c.N.ns.Util
+	local mira, root = U.Key(c.M:Name()), U.Key(c.A:Name())
+	local certificates = N.Security.Certificates
+	N.Security.Certificates = function(guild)
+		local out = {}
+		for _, cert in ipairs(certificates(guild)) do
+			if U.Key(cert.name) == mira then out[#out + 1] = cert end
+		end
+		return out
+	end
+	N.Census.Peers = function() return {} end
+	N.Relay.Invalidate()
+	N.Relay.Candidates()
+	local now = N.Now()
+	for _, e in pairs(N.Relay.Known()) do e.verified, e.asked, e.down = nil, nil, nil end
+	N.Relay.Known()[mira].verified = now
+	T.eq(N.Relay.Pick().key, mira, "из подтверждённых у новичка только Мира")
+	T.no(c.M.ns.Relay.Serving(), "у Миры нет аренд чужих гильдий")
+	return w, c, root
+end
+
+T.test("relay: новичок главной спрашивает офицера раньше, чем писать через рядового", function()
+	local w, c, root = Newcomer()
+	c.N:Slash("/cz1", "первая строка новичка")
+	w:Run(30)
+	T.eq(c.V:Saw("первая строка новичка"), 1, "строка дошла до другой гильдии")
+	T.eq(c.A:Saw("первая строка новичка"), 1, "своя гильдия видит один раз")
+	T.ok(c.N.ns.Relay.Known()[root].verified, "офицер подтверждён")
+	T.eq(c.N.ns.Relay.HoldSize(), 0, "очередь разобрана")
+	for n, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, n .. ": без ошибок") end
+end)
+
+T.test("relay: офицер не в игре — очередь новичка не ждёт таймера", function()
+	local w, c, root = Newcomer()
+	c.A:Logout()
+	c.N:Slash("/cz1", "офицера нет в игре")
+	w:Run(5)
+	T.ok(c.N.ns.Relay.Known()[root].down, "офицер помечен недоступным")
+	T.eq(c.N.ns.Relay.HoldSize(), 0, "строка не осталась в очереди")
+	for n, cl in pairs(c) do
+		if n ~= "A" then T.eq(#cl.ns.db.errors, 0, n .. ": без ошибок") end
+	end
+end)
+
 T.test("relay: реле вышло из игры — сообщение уходит через другое", function()
 	local w, c = Build()
 	local pick = c.B.ns.Relay.Pick()
