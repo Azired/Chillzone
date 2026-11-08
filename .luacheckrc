@@ -68,6 +68,7 @@ read_globals = {
 	"debugprofilestop",
 	"GuildRoster",
 	"IsInGuild",
+	"InCombatLockdown",
 	"IsShiftKeyDown",
 	"LeaveChannelByName",
 	"LoadAddOn",
@@ -92,6 +93,7 @@ read_globals = {
 
 	-- библиотеки и их глобалы
 	"LibStub",
+	"OpenMapAPI",
 	"HBD_PINS_WORLDMAP_SHOW_CONTINENT",
 }
 

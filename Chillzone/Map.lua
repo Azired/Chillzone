@@ -13,9 +13,11 @@ if Pins and not (Pins.AddWorldMapIconMap and Pins.RemoveAllWorldMapIcons) then P
 
 local SHOW_FLAG = HBD_PINS_WORLDMAP_SHOW_CONTINENT or 2
 local SHOW_HERE = 0
+local OPENMAP_OFFSET = 48
 local pool, active = {}, {}
 local queued = false
 local drawn = false
+local offsetsShifted = false
 Map.dirty = true
 
 function Map.GamepadUI()
@@ -24,6 +26,38 @@ function Map.GamepadUI()
 	if not current or gamepad == nil then return false end
 	local ok, style = pcall(current)
 	return ok and style == gamepad
+end
+
+function Map.OpenMapActive()
+	local api = OpenMapAPI
+	if type(api) ~= "table" or api.major ~= 1 or type(api.IsStitched) ~= "function" then return false end
+	local ok, on = pcall(api.IsStitched)
+	return ok and on and true or false
+end
+
+local function EffectiveScale(frame)
+	local scale = frame and frame.GetEffectiveScale and frame:GetEffectiveScale()
+	return type(scale) == "number" and scale > 0 and scale < math.huge and scale or 1
+end
+
+-- HBD и OpenMap двигают внешний якорь. Круг вместе с областью наведения смещаем
+-- внутри него, сохраняя координаты зоны. Масштаб карты не меняет видимый отступ.
+local function OffsetPin(pin, shifted, mapScale)
+	local circle = pin.circle
+	local x = shifted and -OPENMAP_OFFSET * mapScale / EffectiveScale(circle) or 0
+	if pin.offsetX == x then return end
+	circle:ClearAllPoints()
+	circle:SetPoint("CENTER", pin, "CENTER", x, 0)
+	pin.offsetX = x
+end
+
+local function UpdateOffsets()
+	if not drawn then return end
+	local shifted = Map.OpenMapActive()
+	if not shifted and not offsetsShifted then return end
+	local scale = EffectiveScale(WorldMapFrame)
+	for _, pin in ipairs(active) do OffsetPin(pin, shifted, scale) end
+	offsetsShifted = shifted
 end
 
 local function ShortCount(n)
@@ -48,7 +82,13 @@ local function PinEnter(self)
 end
 
 local function CreatePin()
-	local p = CreateFrame("Frame", nil, UIParent)
+	local anchor = CreateFrame("Frame", nil, UIParent)
+	anchor:SetSize(20, 20)
+	anchor:EnableMouse(false)
+	local p = CreateFrame("Frame", nil, anchor)
+	anchor.circle = p
+	p:SetPoint("CENTER", anchor, "CENTER", 0, 0)
+	anchor.offsetX = 0
 	p:SetSize(20, 20)
 	p:EnableMouse(true)
 	p.edge = p:CreateTexture(nil, "BACKGROUND", nil, -1)
@@ -65,7 +105,7 @@ local function CreatePin()
 	p.text:SetTextColor(1, 1, 1)
 	p:SetScript("OnEnter", PinEnter)
 	p:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	return p
+	return anchor
 end
 
 -- Город — не дочерняя карта своей зоны (Штормград лежит в Восточных королевствах, а не в
@@ -102,6 +142,7 @@ end
 local function Clear()
 	if drawn and Pins then Pins:RemoveAllWorldMapIcons(Map) end
 	drawn = false
+	offsetsShifted = false
 	for i = #active, 1, -1 do
 		active[i]:Hide()
 		pool[#pool + 1] = active[i]
@@ -112,9 +153,13 @@ end
 local function Place(mapID, x, y, flag, key, count, guilds, size)
 	local p = table.remove(pool) or CreatePin()
 	p:SetSize(size, size)
-	p.text:SetText(ShortCount(count))
-	p.key, p.count, p.guilds = key, count, guilds
+	p.circle:SetSize(size, size)
+	p.circle.text:SetText(ShortCount(count))
+	p.circle.key, p.circle.count, p.circle.guilds = key, count, guilds
 	Pins:AddWorldMapIconMap(Map, p, mapID, x, y, flag)
+	local shifted = Map.OpenMapActive()
+	OffsetPin(p, shifted, EffectiveScale(WorldMapFrame))
+	if shifted then offsetsShifted = true end
 	active[#active + 1] = p
 	drawn = true
 end
@@ -171,14 +216,31 @@ local function QuietProvider()
 	end
 end
 
-ns.On("LOGIN", function()
-	ns.SafeCall("map provider", QuietProvider)
-	if WorldMapFrame then
-		WorldMapFrame:HookScript("OnShow", function()
-			if Map.dirty then ns.SafeCall("map shown", Map.RefreshNow) end
-		end)
+local hookedMap, loggedIn
+local function HookWorldMap()
+	local frame = WorldMapFrame
+	if not loggedIn or not ns.db or not frame or hookedMap == frame then return end
+	hookedMap = frame
+	local function Shown()
+		if Map.dirty then ns.SafeCall("map shown", Map.RefreshNow) end
+		UpdateOffsets()
 	end
+	frame:HookScript("OnShow", Shown)
+	-- Только у видимой карты; меняем якорь круга лишь при изменении масштаба
+	-- или режима OpenMap. Перерегистрация меток при каждом зуме не нужна.
+	frame:HookScript("OnUpdate", UpdateOffsets)
+	if frame:IsShown() then Shown() end
+end
+
+ns.On("LOGIN", function()
+	loggedIn = true
+	ns.SafeCall("map provider", QuietProvider)
+	HookWorldMap()
 end)
+
+-- Blizzard_WorldMap может загрузиться уже после входа. Повторные события
+-- других аддонов не добавляют второй обработчик к тому же окну.
+ns.RegisterEvent("ADDON_LOADED", HookWorldMap)
 
 ns.On("DATA", Map.Refresh)
 ns.On("GUILD_CHANGED", Map.Refresh)
