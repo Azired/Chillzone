@@ -19,6 +19,7 @@ Util.lua
 Core.lua
 Codec.lua
 Comm.lua
+Diagnostics.lua
 Zones.lua
 Roster.lua
 libs\Ed25519.lua
@@ -41,6 +42,7 @@ ChatPane.lua
 RecruitPane.lua
 CensusPane.lua
 Debug.lua
+JournalPane.lua
 UnionPane.lua
 UI.lua
 Map.lua

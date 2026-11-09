@@ -258,7 +258,12 @@ T.test("guild import: чужая и своя реплики, повторы со
 	DeliverWire(w, a, nil, packetsA[1].wire, "GUILD")
 	local ownAt = b.ns.ServerTime()
 	w:GuildSay(b, own, "GUILD")
-	w:Run(10)
+	T.ok(Wait(w, function()
+		for _, c in ipairs({ a, b, observer }) do
+			if History(c, b.guild, b, own, "MAGE", ownAt) ~= 1 then return false end
+		end
+		return true
+	end, 20), "исходный G1 доставлен всем до проверки повторного RG")
 	T.eq(#packetsB, 1)
 	T.ok(observer.ns.ServerTime() - ownAt < 30, "повтор RG свежий")
 	DeliverWire(w, a, nil, a.ns.Codec.EncodeRM("RG", packetsB[1].mode, b:Name(), packetsB[1].wire), "GUILD")

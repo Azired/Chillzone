@@ -33,7 +33,9 @@ end
 
 local function OnClick(getBox, link, text, button)
 	local kind = LinkType(link)
-	if kind == "addon" and ns.Chat.TagTier(link, button) == "A" then
+	if kind == "addon" and button == "RightButton" then
+		ns.Chat.TagClick(link, text, button)
+	elseif kind == "addon" and ns.Chat.TagTier(link, button) == "A" then
 		local box = getBox()
 		if box then box:SetFocus() end
 	elseif kind == "player" then

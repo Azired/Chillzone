@@ -283,13 +283,13 @@ T.test("comm: диагностика — принятый API шёпот вид�
 	T.no(log:find("private-payload", 1, true), "содержимое пакета не записывается")
 end)
 
-T.test("comm: диагностика — нераспознанная системная строка после шёпота", function()
+T.test("comm: диагностика — системные строки не зависят от давности наших шёпотов", function()
 	local w, c, comm = Fresh()
 	c.ns.db.settings.debug = true
 	local text = 'Неизвестный ответ |cffffff00"Ника Маковка"|r'
 	local before = #c.ns.db.log
 	c:Fire("CHAT_MSG_SYSTEM", text)
-	T.eq(#c.ns.db.log, before, "до служебного шёпота системные строки не собираются")
+	T.eq(#c.ns.db.log, before + 1, "ответ виден даже без служебного шёпота")
 	comm.SendNow("WHISPER", "KQ~test", TARGET)
 	c:Fire("CHAT_MSG_SYSTEM", text)
 	local log = table.concat(c.ns.db.log, "\n")
@@ -298,7 +298,7 @@ T.test("comm: диагностика — нераспознанная систе
 	local n = #c.ns.db.log
 	w.now = w.now + 11
 	c:Fire("CHAT_MSG_SYSTEM", text)
-	T.eq(#c.ns.db.log, n, "давние шёпоты не включают запись посторонних строк")
+	T.eq(#c.ns.db.log, n + 1, "отложенные ответы тоже видны")
 end)
 
 T.test("comm: диагностика — закрытая строка не читается и не скрывается", function()

@@ -198,6 +198,8 @@ local function NewFrame(c, name)
 	function methods.CreateTexture() return NewFrame(c) end
 	function methods.SetText(self, t) self.text = t or "" end
 	function methods.GetText(self) return self.text end
+	function methods.GetStringHeight(self) return 14 * (1 + select(2, self.text:gsub("\n", ""))) end
+	function methods.Click(self) if self.scripts.OnClick then self.scripts.OnClick(self) end end
 	function methods.Insert(self, t) self.text = self.text .. (t or "") end
 	function methods.SetFocus(self) c.focus = self end
 	function methods.ClearFocus(self) if c.focus == self then c.focus = nil end end
@@ -219,6 +221,8 @@ local function Env(c)
 	local w = c.world
 	local env = {}
 	env._G = env
+	env.UIParent = NewFrame(c, "UIParent")
+	env.UIParent.GetEffectiveScale = function() return 1 end
 	env.bit = require("bit")
 	env.debugprofilestop = function() return os.clock() * 1000 end
 	env.GetTime = function() return w.now end
@@ -254,6 +258,7 @@ local function Env(c)
 	c.invites, c.partyInvites, c.whoQueries = {}, {}, {}
 	env.InviteUnit = function(name) c.partyInvites[#c.partyInvites + 1] = name end
 	env.IsMouseButtonDown = function(button) return c.mouseDown == button end
+	env.GetCursorPosition = function() return 400, 300 end
 	env.CanGuildInvite = function()
 		if c.canInvite ~= nil then return c.canInvite end
 		return c.guild ~= nil and c.rank <= 1
@@ -391,6 +396,8 @@ local function Env(c)
 	env.hooksecurefunc = function(name, fn, callback)
 		if type(name) == "table" then
 			local original = name[fn]
+			c.hooks[fn] = c.hooks[fn] or {}
+			table.insert(c.hooks[fn], callback)
 			name[fn] = function(...)
 				local result = original(...)
 				callback(...)
@@ -398,7 +405,7 @@ local function Env(c)
 			end
 			return
 		end
-		if name == "SendWho" then
+		if name == "SendWho" or name == "SendChatMessage" then
 			local original = env[name]
 			env[name] = function(...)
 				local result = original(...)
@@ -409,6 +416,7 @@ local function Env(c)
 		c.hooks[name] = c.hooks[name] or {}
 		table.insert(c.hooks[name], fn)
 	end
+	env.debugstack = function() return "Interface\\AddOns\\OtherAddon\\Sender.lua:42: вызов" end
 	env.GetBindingKey = function(action) if action == "OPENCHAT" then return "ENTER" end end
 	env.ClearOverrideBindings = function(owner)
 		for k, b in pairs(c.bindings) do if b.owner == owner then c.bindings[k] = nil end end
@@ -442,7 +450,26 @@ local function Env(c)
 		local win = c.windows[i] or { name = "" }
 		return win.name, 14, 1, 1, 1, 0, win.shown == true, false, win.docked
 	end
-	env.NUM_CHAT_WINDOWS = 2
+	env.NUM_CHAT_WINDOWS = 10
+	c.createdWindows = {}
+	env.FCF_GetNumActiveChatFrames = function()
+		local count = 0
+		for _, win in pairs(c.windows) do
+			if win.shown or win.docked then count = count + 1 end
+		end
+		return count
+	end
+	env.FCF_CanOpenNewWindow = function()
+		return env.FCF_GetNumActiveChatFrames() < env.NUM_CHAT_WINDOWS
+	end
+	env.FCF_OpenNewWindow = function(name, noDefaultChannels)
+		assert(not c.combat, "создание вкладки в бою")
+		c.createdWindows[#c.createdWindows + 1] = { name = name, noDefaultChannels = noDefaultChannels }
+		for i = 3, env.NUM_CHAT_WINDOWS do
+			local win = c.windows[i]
+			if not win or not (win.shown or win.docked) then return c:ChatWindow(i, name), i end
+		end
+	end
 	env.SlashCmdList = {}
 	env.UISpecialFrames = {}
 	env.RAID_CLASS_COLORS = {}
