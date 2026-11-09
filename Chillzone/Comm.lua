@@ -70,7 +70,7 @@ local function Tracing()
 end
 
 -- Одно сообщение прямо сейчас: true или false, код.
-function Comm.SendNow(dist, msg, target, logged, prefix)
+function Comm.SendNow(dist, msg, target, logged, prefix, kind, source)
 	if Comm.InLockdown() then return false, LOCKDOWN end
 	local to = nil
 	if dist == "WHISPER" then
@@ -79,9 +79,9 @@ function Comm.SendNow(dist, msg, target, logged, prefix)
 		Comm.lastWhisper[U.Key(target)] = ns.Now()
 	end
 	local send = (logged and C_ChatInfo.SendAddonMessageLogged) or C_ChatInfo.SendAddonMessage
-	local ok, res = pcall(send, prefix or ns.PREFIX, msg, dist, to)
+	local ok, res = ns.Diagnostics.SendAddon(send, prefix or ns.PREFIX, msg, dist, to, logged, source)
 	if dist == "WHISPER" and Tracing() then
-		ns.Log("шёпот %s, тип %s, logged=%s: результат %s", to, msg:sub(1, 2), tostring(logged == true), ok and tostring(res) or "ошибка Lua")
+		ns.Log("шёпот %s, тип %s, logged=%s: результат %s", to, kind or msg:sub(1, 2), tostring(logged == true), ok and tostring(res) or "ошибка Lua")
 	end
 	if dist == "WHISPER" and ((ok and res == TARGET_OFFLINE) or Unavailable(target)) then
 		Comm.stats.fails = Comm.stats.fails + 1
@@ -136,37 +136,25 @@ end
 -- Фильтр не меняет состояние: его могут вызвать несколько окон до или после события.
 ---------------------------------------------------------------------------
 local notFound
--- Обычный журнал не содержит отправок с результатом 0. Для разбора спама нужны и они,
--- и ответы, которые не распознал шаблон. Собираем их только при /chillzone debug,
--- только рядом с нашим шёпотом, без содержимого пакетов и без чтения secret-строк.
-local function TraceSystem(text)
-	if not Tracing() then return end
-	local recent, now = false, ns.Now()
-	for _, at in pairs(Comm.lastWhisper) do
-		if now - at <= WHISPER_FRESH then recent = true; break end
-	end
-	if not recent then return end
-	if type(issecretvalue) == "function" and issecretvalue(text) then
-		ns.Log("ответ системы после шёпота: защищённая строка")
-	elseif type(text) == "string" then
-		ns.Log("ответ системы после шёпота: %q", (text:gsub("|", "||")))
-	end
-end
-
-local function OursNotFound(text)
+function Comm.NotFoundKey(text)
 	if type(text) ~= "string" then return nil end
 	if type(issecretvalue) == "function" and issecretvalue(text) then return nil end
 	if not notFound and type(ERR_CHAT_PLAYER_NOT_FOUND_S) == "string" then
 		notFound = "^" .. (ERR_CHAT_PLAYER_NOT_FOUND_S:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"):gsub("%%%%s", "(.+)")) .. "$"
 	end
 	local who = (notFound and text:match(notFound)) or text:match('^Персонаж по имени "(.+)" в игре не найден%.$')
-	local key = who and U.Key(who)
+	return who and U.Key(who)
+end
+
+local function OursNotFound(text)
+	local key = Comm.NotFoundKey(text)
+	local last = key and ns.Diagnostics.Enabled() and ns.Diagnostics.LastSend(key)
+	if last and not last.owned then return nil end
 	local at = key and Comm.lastWhisper[key]
 	if at and ns.Now() - at <= WHISPER_FRESH then return key end
 end
 
 ns.RegisterEvent("CHAT_MSG_SYSTEM", function(text)
-	TraceSystem(text)
 	local key = OursNotFound(text)
 	if not key then return end
 	MarkUnavailable(key, "системная строка")
@@ -208,6 +196,7 @@ function Comm.Send(dist, payload, opts)
 	if dist == "WHISPER" and not opts.target then return false end
 	if dist == "WHISPER" and Unavailable(opts.target) then return false end
 	local kind = payload:sub(1, 2)
+	local source = dist == "WHISPER" and ns.Diagnostics.Callsite() or nil
 	local prefix = opts.prefix or ((kind == "KA" or kind == "UQ" or kind == "UO") and ns.Config.UNION_PREFIX) or ns.PREFIX
 	local now = ns.Now()
 	if opts.key then
@@ -215,6 +204,7 @@ function Comm.Send(dist, payload, opts)
 			if job.key == opts.key and job.prefix == prefix and job.i == 1 then
 				job.parts, job.at, job.target, job.done = Codec.Pack(payload, NewId()), now, opts.target, opts.done
 				job.guard = opts.guard
+				job.kind, job.source = kind, source
 				-- Ответ на срочный запрос мог заменить ещё не отправленное объявление.
 				local promoted = Priority(opts.prio) > Priority(job.prio)
 				if promoted then job.prio = opts.prio end
@@ -228,6 +218,7 @@ function Comm.Send(dist, payload, opts)
 		end
 	end
 	local job = {
+		kind = kind, source = source,
 		prefix = prefix,
 		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1,
 		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done, guard = opts.guard,
@@ -271,7 +262,7 @@ local function PumpOnce(prioOnly)
 		Finish(job, false, "no guild")
 		return true
 	end
-	local sent, why = Comm.SendNow(job.dist, job.parts[job.i], job.target, job.logged, job.prefix)
+	local sent, why = Comm.SendNow(job.dist, job.parts[job.i], job.target, job.logged, job.prefix, job.kind, job.source)
 	-- Синхронное событие или TargetOffline могли уже отменить и это задание.
 	if job.finished then return true end
 	if not sent then

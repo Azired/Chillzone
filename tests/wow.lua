@@ -196,6 +196,8 @@ local function NewFrame(c, name)
 	function methods.CreateTexture() return NewFrame(c) end
 	function methods.SetText(self, t) self.text = t or "" end
 	function methods.GetText(self) return self.text end
+	function methods.GetStringHeight(self) return 14 * (1 + select(2, self.text:gsub("\n", ""))) end
+	function methods.Click(self) if self.scripts.OnClick then self.scripts.OnClick(self) end end
 	function methods.Insert(self, t) self.text = self.text .. (t or "") end
 	function methods.SetFocus(self) c.focus = self end
 	function methods.ClearFocus(self) if c.focus == self then c.focus = nil end end
@@ -389,6 +391,8 @@ local function Env(c)
 	env.hooksecurefunc = function(name, fn, callback)
 		if type(name) == "table" then
 			local original = name[fn]
+			c.hooks[fn] = c.hooks[fn] or {}
+			table.insert(c.hooks[fn], callback)
 			name[fn] = function(...)
 				local result = original(...)
 				callback(...)
@@ -396,7 +400,7 @@ local function Env(c)
 			end
 			return
 		end
-		if name == "SendWho" then
+		if name == "SendWho" or name == "SendChatMessage" then
 			local original = env[name]
 			env[name] = function(...)
 				local result = original(...)
@@ -407,6 +411,7 @@ local function Env(c)
 		c.hooks[name] = c.hooks[name] or {}
 		table.insert(c.hooks[name], fn)
 	end
+	env.debugstack = function() return "Interface\\AddOns\\OtherAddon\\Sender.lua:42: вызов" end
 	env.GetBindingKey = function(action) if action == "OPENCHAT" then return "ENTER" end end
 	env.ClearOverrideBindings = function(owner)
 		for k, b in pairs(c.bindings) do if b.owner == owner then c.bindings[k] = nil end end
@@ -422,8 +427,9 @@ local function Env(c)
 		c.filters[event] = c.filters[event] or {}
 		table.insert(c.filters[event], fn)
 	end
+	env.ChatFrameUtil = { InsertLink = function() return false end }
 	if c.chatFilterAPI == "modern" then
-		env.ChatFrameUtil = { AddMessageEventFilter = AddChatFilter }
+		env.ChatFrameUtil.AddMessageEventFilter = AddChatFilter
 	else
 		env.ChatFrame_AddMessageEventFilter = AddChatFilter
 	end

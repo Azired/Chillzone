@@ -32,8 +32,8 @@ function ns.Log(fmt, ...)
 	if not db then return end
 	local log = db.log
 	log[#log + 1] = (date and date("%m-%d %H:%M:%S ") or "") .. msg
-	while #log > 300 do table.remove(log, 1) end
-	if db.settings.debug then ns.Print("|cff999999" .. msg .. "|r") end
+	while #log > 1000 do table.remove(log, 1) end
+	ns.logRevision = (ns.logRevision or 0) + 1
 end
 
 ---------------------------------------------------------------------------
@@ -46,8 +46,11 @@ function ns.SafeCall(where, fn, ...)
 		local db = ns.db
 		if db then
 			db.errors = db.errors or {}
-			table.insert(db.errors, 1, ("%s: %s"):format(where, tostring(err)))
+			local stamp = date and date("%m-%d %H:%M:%S") or "?"
+			local record = ("[%s, v%s] %s: %s"):format(stamp, ns.VERSION, where, tostring(err))
+			table.insert(db.errors, 1, record)
 			while #db.errors > 20 do table.remove(db.errors) end
+			ns.Log("ошибка Lua: %s", record)
 		end
 		if not warnedError then
 			warnedError = true
@@ -229,7 +232,7 @@ function ns.IsMember()
 end
 
 ---------------------------------------------------------------------------
--- Управление: /chillzone <команда> [аргументы]. Короткие алиасы принадлежат чату.
+-- Управление: /chillzone <команда> [аргументы]; короткие алиасы также принимают текст чата.
 ---------------------------------------------------------------------------
 local commands, order = {}, {}
 function ns.Command(name, fn, help)
@@ -271,27 +274,35 @@ ns.Command("status", function()
 end, L.HELP_STATUS)
 
 ns.Command("debug", function()
-	ns.db.settings.debug = not ns.db.settings.debug
-	ns.Print(ns.db.settings.debug and L.DEBUG_ON or L.DEBUG_OFF)
+	ns.Diagnostics.SetEnabled(not ns.Diagnostics.Enabled())
+	ns.UI.Toggle("journal")
 end, L.HELP_DEBUG)
 
 ns.Command("log", function(arg)
 	local n = tonumber(arg) or 20
-	local log = ns.db.log
-	for i = math.max(1, #log - n + 1), #log do DEFAULT_CHAT_FRAME:AddMessage("|cff999999" .. log[i] .. "|r") end
-	for i = 1, math.min(3, #(ns.db.errors or {})) do DEFAULT_CHAT_FRAME:AddMessage("|cffff6060" .. ns.db.errors[i] .. "|r") end
+	ns.UI.Toggle("journal")
+	ns.JournalPane.SetLimit(math.max(1, math.floor(n)))
 end, L.HELP_LOG)
+
+ns.Command("journal", function() ns.UI.Toggle("journal") end, L.HELP_JOURNAL)
+
+-- true — команда найдена, даже если её обработчик завершился ошибкой.
+-- Короткие алиасы отправляют в чат только текст, не совпавший с командой.
+function ns.RunCommand(msg)
+	if not ns.me then return false end
+	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
+	name = U.Fold(name or "")
+	local c = commands[name]
+	if not c then return false end
+	ns.SafeCall("/chillzone " .. name, c.fn, rest)
+	return true
+end
 
 SLASH_CHILLZONE1 = "/chillzone"
 SlashCmdList.CHILLZONE = function(msg)
 	if not ns.me then return end
-	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
-	name = U.Fold(name or "")
-	if name == "" then
+	if U.Trim(msg) == "" then
 		if ns.UI and ns.UI.Toggle then return ns.UI.Toggle() end
-		name = "help"
 	end
-	local c = commands[name]
-	if not c then c = commands.help end
-	ns.SafeCall("/chillzone " .. name, c.fn, rest)
+	if not ns.RunCommand(msg) then ns.RunCommand("help") end
 end
