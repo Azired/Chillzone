@@ -89,6 +89,196 @@ local function BuildChattynator()
 	return h, ns, env
 end
 
+-- Поведение штатного OpenChat: обычный Enter использует override, ввод со слэшем — поле WoW.
+local function EnableFocusAPI(h, ns, env)
+	local current
+	local api = env.ChatFrameUtil
+	api.SetChatFocusOverride = function(box) current = box end
+	api.GetChatFocusOverride = function() return current end
+	api.ClearChatFocusOverride = function() current = nil end
+	api.OpenChat = function(text, frame)
+		if not frame and current and (current.supportsSlashCommands or not text or text:sub(1, 1) ~= "/") then
+			current:SetFocus()
+			if text then current:SetText(text) end
+			return
+		end
+		local native = env.ChatFrame1EditBox
+		native:Show()
+		native:SetFocus()
+		native:SetText(text or "")
+		env.ACTIVE_CHAT_EDIT_BOX = native
+	end
+	env.ChatFrame1.IsVisible = function() return true end
+	env.ChatFrame1.GetFrameLevel = function() return 0 end
+	function h:Select(frame)
+		self.selected = frame
+		self.client:CallHooks("FCF_SelectDockFrame", frame)
+	end
+	function h:CloseNative()
+		env.ChatFrame1EditBox:ClearFocus()
+		env.ChatFrame1EditBox:Hide()
+		env.ACTIVE_CHAT_EDIT_BOX = nil
+	end
+	ns.Fire("SETTINGS")
+	return api
+end
+
+T.test("chat input: Enter отправляет во всех выбранных вкладках, включая основную", function()
+	local h, ns, env = Build()
+	local first = h.client:ChatWindow(3, "Чиллзон")
+	local second = h.client:ChatWindow(4, "Гильдия")
+	local other = h.client:ChatWindow(5, "Торговля")
+	first:Show(); second:Show(); other:Show()
+	ns.Chat.SetWindow("Чиллзон")
+	ns.Chat.ToggleWindow("Гильдия")
+	ns.Chat.ToggleWindow("")
+	local api, sent = EnableFocusAPI(h, ns, env), {}
+	ns.Chat.Send = function(tier, text) sent[#sent + 1] = { tier, text }; return true end
+	for _, frame in ipairs({ env.ChatFrame1, first, second }) do
+		h:Select(frame)
+		T.ok(h.box and api.GetChatFocusOverride() == h.box, "смена вкладки сразу обновляет адресата Enter")
+		api.OpenChat("")
+		T.ok(h.box:HasFocus())
+		h.box:SetText("В союз")
+		h.box.scripts.OnEnterPressed(h.box)
+		T.same(sent[#sent], { "A", "В союз" })
+	end
+	T.eq(#sent, 3)
+	h:Select(other)
+	T.eq(api.GetChatFocusOverride(), nil, "невыбранная вкладка возвращает штатный Enter")
+	api.OpenChat("")
+	T.ok(env.ChatFrame1EditBox:HasFocus())
+	T.eq(h.client.bindings.ENTER, nil, "бинды Enter не подменяются")
+	h:CloseNative()
+	h:Select(first)
+	h.client.combat = true
+	api.OpenChat("")
+	T.ok(h.box:HasFocus(), "готовая строка принимает Enter и в бою")
+	h.box:SetText("Из боя")
+	h.box.scripts.OnEnterPressed(h.box)
+	T.same(sent[4], { "A", "Из боя" })
+	api.OpenChat("/cast Ледяная стрела")
+	T.eq(env.ChatFrame1EditBox:GetText(), "/cast Ледяная стрела")
+	T.ok(env.ChatFrame1EditBox:HasFocus(), "явная команда попала в штатное поле")
+	T.eq(#sent, 4, "команда не ушла в союз")
+	h:Tick()
+	T.eq(api.GetChatFocusOverride(), nil, "ввод WoW с фокусом сохраняет управление")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat input: снятие галочки, выход из союза и чужой override", function()
+	local h, ns, env = Build()
+	local first = h.client:ChatWindow(3, "Чиллзон")
+	local second = h.client:ChatWindow(4, "Гильдия")
+	first:Show(); second:Show()
+	ns.Chat.SetWindow("Чиллзон")
+	ns.Chat.ToggleWindow("Гильдия")
+	local api = EnableFocusAPI(h, ns, env)
+	h:Select(first)
+	T.ok(api.GetChatFocusOverride())
+	ns.Chat.ToggleWindow("Чиллзон")
+	T.eq(api.GetChatFocusOverride(), nil, "снятие галочки действует сразу")
+	h:Select(second)
+	T.ok(api.GetChatFocusOverride())
+	local box = h.box
+	local foreign = env.CreateFrame("EditBox")
+	api.SetChatFocusOverride(foreign)
+	h:Tick()
+	T.eq(api.GetChatFocusOverride(), foreign, "настройка другого аддона не перехватывается")
+	ns.char.chatOn = false
+	ns.Fire("SETTINGS")
+	T.eq(api.GetChatFocusOverride(), foreign, "при отключении чужой override не очищается")
+	ns.char.chatOn = true
+	api.ClearChatFocusOverride()
+	ns.Fire("SETTINGS")
+	T.eq(api.GetChatFocusOverride(), box)
+	ns.IsMember = function() return false end
+	ns.Fire("UNION")
+	T.eq(api.GetChatFocusOverride(), nil, "потеря доступа возвращает штатный Enter сразу")
+	ns.IsMember = function() return true end
+	ns.Fire("UNION")
+	T.eq(api.GetChatFocusOverride(), box)
+	h.client:Fire("PLAYER_LOGOUT")
+	T.eq(api.GetChatFocusOverride(), nil)
+	h:Tick()
+	T.eq(api.GetChatFocusOverride(), nil, "таймер не возвращает перехват после выхода")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat input: смена вкладки до таймера не отправляет старый черновик", function()
+	local h, ns, env = Build()
+	T.ok(ns.ChatTab.Open())
+	local api = EnableFocusAPI(h, ns, env)
+	h:Tick()
+	local box, sent = h.box, 0
+	api.OpenChat("")
+	box:SetText("Черновик")
+	ns.Chat.Send = function() sent = sent + 1; return true end
+	h.selected = env.ChatFrame2
+	box.scripts.OnEnterPressed(box)
+	T.eq(sent, 0)
+	T.eq(api.GetChatFocusOverride(), nil)
+	T.eq(box:GetText(), "Черновик")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat input: выбранные вкладки Chattynator направляют Enter в союз", function()
+	local h, ns, env = BuildChattynator()
+	local api = env.Chattynator.API
+	env.GUILD = "Гильдия"
+	api.GetWindowsAndTabs = function() return { { "GENERAL", "GUILD" }, { "Торговля", "Союз" } } end
+	api.AddMessageToWindowAndTab = function() end
+	local handler = env.CreateFrame("Frame")
+	local function Window(id)
+		local window = env.CreateFrame("Frame", nil, handler)
+		window.tabIndex = 1
+		function window.GetID() return id end
+		function window.SetTabSelectedAndFilter(self, index) self.tabIndex = index end
+		function window.SetTabSelectedOnly(self, index) self.tabIndex = index end
+		local wrapper = env.CreateFrame("Frame", nil, window)
+		window.ScrollingMessages = env.CreateFrame("Frame", nil, wrapper)
+		return window
+	end
+	local first, second = Window(1), Window(2)
+	function handler.GetChildren() return first, second end
+	api.GetHyperlinkHandler = function() return handler end
+	ns.Chat.SetWindow("Гильдия")
+	ns.Chat.ToggleWindow("Союз")
+	local focus = EnableFocusAPI(h, ns, env)
+	local sent = {}
+	ns.Chat.Send = function(tier, text) sent[#sent + 1] = { tier, text }; return true end
+	first:SetTabSelectedAndFilter(2)
+	T.ok(h.box and focus.GetChatFocusOverride() == h.box, "обычная выбранная вкладка, не специальная")
+	focus.OpenChat("")
+	h.box:SetText("Из гильдии")
+	h.box.scripts.OnEnterPressed(h.box)
+	T.same(sent, { { "A", "Из гильдии" } })
+	second:SetTabSelectedAndFilter(2)
+	T.eq(focus.GetChatFocusOverride(), h.box, "ввод переключился в выбранную вкладку второго окна")
+	focus.OpenChat("")
+	h.box:SetText("Из второго окна")
+	h.box.scripts.OnEnterPressed(h.box)
+	T.same(sent[2], { "A", "Из второго окна" })
+	second:SetTabSelectedAndFilter(1)
+	T.eq(focus.GetChatFocusOverride(), nil, "посторонняя вкладка второго окна сохраняет штатный Enter")
+	first:SetTabSelectedAndFilter(1)
+	T.eq(focus.GetChatFocusOverride(), nil)
+	ns.Chat.ToggleWindow("")
+	T.eq(focus.GetChatFocusOverride(), h.box, "основная вкладка Chattynator тоже выбирается для ввода")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat input: ПКМ по метке работает внутри специальной вкладки Chattynator", function()
+	local h, ns = BuildChattynator()
+	h:Mount(1)
+	h.messages.scripts.OnHyperlinkClick(h.messages, ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "RightButton")
+	T.ok(ns.UI.TagMenu():IsShown())
+	T.eq(h.opened, 0, "ПКМ пока только открывает меню")
+	T.no(ns.Chat.CreateWindow(), "нативное окно не создаётся за скрытым чатом Chattynator")
+	T.eq(h.opened, 0)
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
 T.test("chat tab: копия союза идёт в выбранную вкладку Chattynator", function()
 	local h, ns, env = BuildChattynator()
 	local native = h.client:ChatWindow(4, "Гильдия")

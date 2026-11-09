@@ -24,6 +24,7 @@ local TABS = {
 	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" } },
 	{ key = "debug", text = "TAB_DEBUG", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" } },
+	{ key = "journal", text = "TAB_JOURNAL", icons = { "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "union", text = "TAB_UNION", icons = { "Interface\\Icons\\INV_Misc_GroupLooking" } },
 }
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
@@ -165,6 +166,8 @@ local function Pick(value)
 	RenderPicker()
 end
 
+ns.On("CHAT_WINDOWS", RenderPicker)
+
 local function PickerItem(i)
 	local it = picker.items[i]
 	if it then return it end
@@ -270,6 +273,90 @@ local function BuildPicker()
 	settingsY = settingsY + 30
 end
 
+-- ПКМ по метке канала в чате игры. Своя рамка, как у меню людей: общие dropdown игры не меняем.
+local tagMenu
+
+local function RefreshTagMenu(m)
+	local reason = ns.Chat.WindowCreateError()
+	m.create:SetEnabled(not reason)
+	m.create.text:SetText(reason or L.WINDOW_CREATE)
+	m.create.text:SetFontObject(reason and "GameFontDisableSmall" or "GameFontHighlightSmall")
+end
+
+local function WatchTagMenu(m, dt)
+	local down = IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton")
+	if not down then
+		m.waitForRelease = false
+	elseif not m.waitForRelease and not m:IsMouseOver() then
+		m:Hide()
+		return
+	end
+	m.elapsed = (m.elapsed or 0) + (dt or 0)
+	if m.elapsed >= 0.1 then m.elapsed = 0; RefreshTagMenu(m) end
+end
+
+function UI.TagMenu()
+	if tagMenu then return tagMenu end
+	local m = CreateFrame("Frame", nil, UIParent)
+	m:SetSize(220, 12 + 2 * ITEM_H)
+	m:SetFrameStrata("DIALOG")
+	m:SetClampedToScreen(true)
+	m:EnableMouse(true)
+	local edge = m:CreateTexture(nil, "BACKGROUND", nil, -1)
+	edge:SetPoint("TOPLEFT", -1, 1)
+	edge:SetPoint("BOTTOMRIGHT", 1, -1)
+	edge:SetColorTexture(0.5, 0.5, 0.5, 0.9)
+	local bg = m:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0.06, 0.06, 0.06, 0.96)
+	m.title = m:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	m.title:SetPoint("TOPLEFT", 10, -6)
+	m.title:SetPoint("RIGHT", -10, 0)
+	m.title:SetHeight(ITEM_H)
+	m.title:SetJustifyH("LEFT")
+	local b = CreateFrame("Button", nil, m)
+	b:SetPoint("TOPLEFT", 6, -6 - ITEM_H)
+	b:SetPoint("RIGHT", -6, 0)
+	b:SetHeight(ITEM_H)
+	b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	b.text:SetPoint("LEFT", 4, 0)
+	b.text:SetPoint("RIGHT", -4, 0)
+	b.text:SetJustifyH("LEFT")
+	b.text:SetWordWrap(false)
+	local hl = b:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	hl:SetColorTexture(1, 1, 1, 0.1)
+	b:SetScript("OnClick", function()
+		m:Hide()
+		ns.SafeCall("create chat window", ns.Chat.CreateWindow)
+	end)
+	m.create = b
+	m:SetScript("OnUpdate", WatchTagMenu)
+	m:Hide()
+	tagMenu = m
+	return m
+end
+
+function UI.HideTagMenu()
+	if tagMenu then tagMenu:Hide() end
+end
+
+function UI.OpenTagMenu(tier)
+	if not ns.Chat.TIER_LEVEL[tier] then return false end
+	local m = UI.TagMenu()
+	if m:IsShown() and m.tier == tier then m:Hide(); return true end
+	GameTooltip:Hide()
+	m.tier, m.waitForRelease, m.elapsed = tier, true, 0
+	m.title:SetText(L["TIER_" .. tier])
+	local x, y = GetCursorPosition()
+	local scale = UIParent:GetEffectiveScale() or 1
+	m:ClearAllPoints()
+	m:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x / scale, y / scale)
+	RefreshTagMenu(m)
+	m:Show()
+	return true
+end
+
 -- Цвет текста общего чата: своя палитра. ColorPickerFrame — такой же общий глобал игры, как UIDropDownMenu.
 local SWATCH = 20
 local swatches = {}
@@ -343,10 +430,12 @@ local function BuildSettings(parent)
 	end)
 	Check("chat", L.CHECK_CHAT, L.CHECK_CHAT_TIP, function() return ns.char.chatOn end, function(on)
 		ns.char.chatOn = on
+		ns.Fire("CHAT_WINDOWS")
 		ns.Print(on and L.CHAT_ON or L.CHAT_OFF)
 	end)
 	Check("mirror", L.CHECK_MIRROR, L.CHECK_MIRROR_TIP, function() return ns.char.chatMirror end, function(on)
 		ns.char.chatMirror = on
+		ns.Fire("CHAT_WINDOWS")
 		RenderPicker()
 	end)
 	BuildPicker()
@@ -431,7 +520,8 @@ function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncTabs()
 	if current ~= "union" then ns.UnionPane.Hide() end
-	if not ns.IsMember() and current ~= "settings" and current ~= "union" then current = "join"
+	if current ~= "journal" then ns.JournalPane.Hide() end
+	if not ns.IsMember() and current ~= "settings" and current ~= "union" and current ~= "journal" then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
 	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
 	if current ~= "requests" then ns.RecruitPane.HideInbox() end
@@ -469,6 +559,12 @@ function UI.Render()
 		return
 	end
 	settings:Hide()
+	if current == "journal" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.JournalPane.Show()
+		return
+	end
 	if current == "requests" then
 		scroll:Hide()
 		ns.CensusPane.Hide()
@@ -618,6 +714,7 @@ local function Create()
 	ns.RecruitPane.BuildInbox(body)
 	ns.CensusPane.Build(body)
 	ns.UnionPane.Build(body)
+	ns.JournalPane.Build(body)
 	body:Hide()
 
 	ns.ChatPane.Build(f)
@@ -625,7 +722,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.JournalPane.Hide() end)
 	local elapsed, debugElapsed = 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
