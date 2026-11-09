@@ -411,9 +411,14 @@ local function Env(c)
 	env.InCombatLockdown = function() return c.combat == true end
 	env.IsShiftKeyDown = function() return c.shift == true end
 	env.ChatFrame_RemoveChannel = function() end
-	env.ChatFrame_AddMessageEventFilter = function(event, fn)
+	local function AddChatFilter(event, fn)
 		c.filters[event] = c.filters[event] or {}
 		table.insert(c.filters[event], fn)
+	end
+	if c.chatFilterAPI == "modern" then
+		env.ChatFrameUtil = { AddMessageEventFilter = AddChatFilter }
+	else
+		env.ChatFrame_AddMessageEventFilter = AddChatFilter
 	end
 	env.ChatFrame1EditBox = NewFrame(c, "ChatFrame1EditBox")
 	env.ChatFrame2EditBox = NewFrame(c, "ChatFrame2EditBox")
@@ -438,12 +443,13 @@ local function Env(c)
 end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
--- поверх Config.lua)
+-- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API)
 function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
 		level = opts.level or 60, zone = opts.zone or "Штормград", online = true,
+		chatFilterAPI = opts.chatFilterAPI,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
 	}, Client)

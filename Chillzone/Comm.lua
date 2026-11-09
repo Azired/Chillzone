@@ -23,6 +23,7 @@ Comm.PRIO_LINK = 4 -- ручное соединение обгоняет фон�
 -- Ответы игры «не сейчас»: AddonMessageThrottle (3), ChannelThrottle (8), GeneralError (9),
 -- AddOnMessageLockdown (11). Сообщение остаётся на месте, очередь ждёт всё дольше.
 local LOCKDOWN = 11
+local TARGET_OFFLINE = 12 -- Enum.SendAddonMessageResult.TargetOffline в API Forever
 local RETRYABLE = { [3] = true, [8] = true, [9] = true, [LOCKDOWN] = true }
 local RETRY_WAIT = { 2, 4, 8, 15, 30 }
 local RETRY_MAX = 5
@@ -33,6 +34,7 @@ local assemblers = {}
 local nextId = math.random(0, 1000)
 local refusedInRow, waitUntil = 0, 0
 local unavailable = {} -- [Key] = до какого времени не шептать недоступному адресату
+local MarkUnavailable -- вызывается и по результату отправки, и по системной строке
 local WHISPER_FRESH = 10 -- системная ошибка относится только к недавней отправке аддона
 Comm.stats = { sent = 0, recv = 0, fails = 0, retried = 0, dropped = 0, queued = 0 }
 Comm.lastWhisper = {} -- [Key] = когда шептали (для системного «нет такого игрока»)
@@ -63,6 +65,10 @@ local function Unavailable(target)
 	return untilAt ~= nil and ns.Now() < untilAt
 end
 
+local function Tracing()
+	return ns.db and ns.db.settings and ns.db.settings.debug
+end
+
 -- Одно сообщение прямо сейчас: true или false, код.
 function Comm.SendNow(dist, msg, target, logged, prefix)
 	if Comm.InLockdown() then return false, LOCKDOWN end
@@ -74,6 +80,14 @@ function Comm.SendNow(dist, msg, target, logged, prefix)
 	end
 	local send = (logged and C_ChatInfo.SendAddonMessageLogged) or C_ChatInfo.SendAddonMessage
 	local ok, res = pcall(send, prefix or ns.PREFIX, msg, dist, to)
+	if dist == "WHISPER" and Tracing() then
+		ns.Log("шёпот %s, тип %s, logged=%s: результат %s", to, msg:sub(1, 2), tostring(logged == true), ok and tostring(res) or "ошибка Lua")
+	end
+	if dist == "WHISPER" and ((ok and res == TARGET_OFFLINE) or Unavailable(target)) then
+		Comm.stats.fails = Comm.stats.fails + 1
+		if ok and res == TARGET_OFFLINE then MarkUnavailable(U.Key(target), "код TargetOffline") end
+		return false, "offline"
+	end
 	if ok and IsSuccess(res) then
 		Comm.stats.sent = Comm.stats.sent + 1
 		refusedInRow = 0
@@ -90,6 +104,8 @@ function Comm.SendNow(dist, msg, target, logged, prefix)
 end
 
 local function Finish(job, ok, why)
+	if job.finished then return end
+	job.finished = true
 	for i, j in ipairs(queue) do
 		if j == job then
 			table.remove(queue, i)
@@ -100,12 +116,43 @@ local function Finish(job, ok, why)
 	if job.done then ns.SafeCall("send done", job.done, ok, why) end
 end
 
+MarkUnavailable = function(key, why)
+	local now = ns.Now()
+	if unavailable[key] and now < unavailable[key] then return end
+	unavailable[key] = now + ns.Config.RELAY_DOWN
+	-- Сначала снимок: done может поставить в очередь другое сообщение.
+	local cancelled = {}
+	for _, job in ipairs(queue) do
+		if job.dist == "WHISPER" and U.Key(job.target) == key then cancelled[#cancelled + 1] = job end
+	end
+	for _, job in ipairs(cancelled) do Finish(job, false, "offline") end
+	ns.Log("адресат шёпота %s недоступен: %s, отменено %d", key, why, #cancelled)
+	ns.Fire("WHISPER_UNAVAILABLE", key)
+end
+
 ---------------------------------------------------------------------------
 -- «Нет такого игрока» относится ко всем служебным шёпотам, включая обмен ключами.
 -- На Forever серверная строка может отличаться от локализованного шаблона клиента.
 -- Фильтр не меняет состояние: его могут вызвать несколько окон до или после события.
 ---------------------------------------------------------------------------
 local notFound
+-- Обычный журнал не содержит отправок с результатом 0. Для разбора спама нужны и они,
+-- и ответы, которые не распознал шаблон. Собираем их только при /chillzone debug,
+-- только рядом с нашим шёпотом, без содержимого пакетов и без чтения secret-строк.
+local function TraceSystem(text)
+	if not Tracing() then return end
+	local recent, now = false, ns.Now()
+	for _, at in pairs(Comm.lastWhisper) do
+		if now - at <= WHISPER_FRESH then recent = true; break end
+	end
+	if not recent then return end
+	if type(issecretvalue) == "function" and issecretvalue(text) then
+		ns.Log("ответ системы после шёпота: защищённая строка")
+	elseif type(text) == "string" then
+		ns.Log("ответ системы после шёпота: %q", (text:gsub("|", "||")))
+	end
+end
+
 local function OursNotFound(text)
 	if type(text) ~= "string" then return nil end
 	if type(issecretvalue) == "function" and issecretvalue(text) then return nil end
@@ -119,25 +166,15 @@ local function OursNotFound(text)
 end
 
 ns.RegisterEvent("CHAT_MSG_SYSTEM", function(text)
+	TraceSystem(text)
 	local key = OursNotFound(text)
 	if not key then return end
-	local now = ns.Now()
-	if unavailable[key] and now < unavailable[key] then return end
-	unavailable[key] = now + ns.Config.RELAY_DOWN
-	-- Сначала снимок: done может поставить в очередь другое сообщение.
-	local cancelled = {}
-	for _, job in ipairs(queue) do
-		if job.dist == "WHISPER" and U.Key(job.target) == key then cancelled[#cancelled + 1] = job end
-	end
-	for _, job in ipairs(cancelled) do Finish(job, false, "offline") end
-	ns.Fire("WHISPER_UNAVAILABLE", key)
+	MarkUnavailable(key, "системная строка")
 end)
 
-if ChatFrame_AddMessageEventFilter then
-	ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, text)
-		return OursNotFound(text) ~= nil
-	end)
-end
+ns.AddChatFilter("CHAT_MSG_SYSTEM", function(_, _, text)
+	return OursNotFound(text) ~= nil
+end)
 
 local function Priority(prio)
 	return prio == true and 1 or (type(prio) == "number" and prio or 0)
@@ -235,6 +272,8 @@ local function PumpOnce(prioOnly)
 		return true
 	end
 	local sent, why = Comm.SendNow(job.dist, job.parts[job.i], job.target, job.logged, job.prefix)
+	-- Синхронное событие или TargetOffline могли уже отменить и это задание.
+	if job.finished then return true end
 	if not sent then
 		if RETRYABLE[why] then
 			if why ~= LOCKDOWN then job.tries = job.tries + 1 end
