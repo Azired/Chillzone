@@ -631,10 +631,24 @@ ns.Comm.On("RY", function(msg, sender, dist)
 	ns.Fire("RELAYS")
 end)
 
+-- Роль в сертификате действует AUTH_ROLE_TTL, а реле опрашивает только тот, кто пишет. Без этой
+-- рассылки у молчавшего автора офицеры тройки становятся рядовыми, его тройка расходится с тройкой
+-- репортёров, и первая строка уходит реле без аренд. Introduce шлёт каждый сертификат один раз.
+local function ShareRelayCertificate(e, c)
+	if not ns.Census.IsReporter() or U.IsMainGuild(ns.MyGuild()) then return end
+	for _, top in ipairs(Top()) do
+		if top.key == e.key then
+			ns.Security.Introduce("GUILD", c.raw)
+			return
+		end
+	end
+end
+
 ns.On("AUTH_PEER", function(c, sender)
 	if not U.IsMainGuild(c.guild) or not Relay.TrustOf(sender) or ns.IsMe(sender) then return end
 	local e = Entry(U.Key(sender), sender)
 	e.verified, e.asked, e.down = Now(), nil, nil
+	ShareRelayCertificate(e, c)
 	FlushHold()
 end)
 

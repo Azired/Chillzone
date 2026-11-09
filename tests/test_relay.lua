@@ -1084,6 +1084,42 @@ T.test("relay: новая гильдия узнаёт общую тройку о
 	NoErrors(c)
 end)
 
+T.test("relay: автор после долгого молчания пишет через общую тройку", function()
+	-- Общая тройка — молчащие офицеры, зонами они не делятся. Репортёр главной гильдии — четвёртый
+	-- офицер: только его сертификат расходится с отчётами, но аренд других гильдий у него нет.
+	local w, c = PartialNetwork({
+		root = { "Ярослав", "Старший", 0 }, O1 = { "Богдан", "Бравый", 1 },
+		O2 = { "Виктор", "Верный", 1 }, O3 = { "Глафира", "Гордая", 1 },
+		O4 = { "Дмитрий", "Четвёртый", 1 },
+		R1 = { "Адам", "Рядовой", 3 }, R2 = { "Алина", "Рядовая", 3 },
+	}, { "O1", "O2", "O3" })
+	for _, id in ipairs({ "O1", "O2", "O3" }) do
+		c[id].ns.char.shareZones = false
+		c[id].ns.Census.SendHello()
+	end
+	w:Run(240)
+	T.ok(c.O4.ns.Census.IsReporter(), "репортёр главной — четвёртый офицер")
+	local author = c.B
+	T.no(author.ns.Census.IsReporter(), "Борис не репортёр")
+	-- Автор давно в сети: сертификаты главной гильдии у него уже есть.
+	for _, id in ipairs({ "root", "O1", "O2", "O3", "O4", "R1", "R2" }) do
+		c.root.ns.Security.Introduce(author:Name(), c[id].ns.Security.MyCertificate().raw)
+	end
+	w:Run(30)
+	author:Slash("/cz1", "до молчания")
+	w:Run(60)
+	T.eq(c.G:Saw("до молчания"), 1, "пока роли свежие, строка доходит")
+	w:Run(author.ns.Config.AUTH_ROLE_TTL + 300)
+	for _, id in ipairs({ "O1", "O2", "O3" }) do
+		T.eq(author.ns.Relay.TrustOf(c[id]:Name()), "officer", id .. ": роль у молчавшего автора свежая")
+	end
+	local text = "первая строка после молчания"
+	author:Slash("/cz1", text)
+	w:Run(30)
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+end)
+
 T.test("relay: отчёты доходят до гильдии, зарегистрированной только вне общей тройки", function()
 	-- Корень — глава с большим ключом, в общую тройку офицеров не входит. Рядовые с малыми ключами
 	-- идут у Юга сразу за корнем, поэтому никого из общей тройки Юг сначала не спрашивает.
