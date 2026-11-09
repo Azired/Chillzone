@@ -1182,6 +1182,7 @@ ns.Comm.On("K1", function(msg, sender, dist)
     local raw = Ed.FromB64(public)
     if not raw or #raw ~= 32 then return end
     local k = U.Key(sender)
+    local firstPeer = not keys[k] or keys[k].public ~= public
     keys[k] = { name = sender, public = public, at = ns.Now() }
     -- У участника нет сертификата, а у меня, активного издателя, он есть: первый KP до него
     -- не дошёл (лимит, ещё не было корня). Issue свежий сертификат заново не выдаёт.
@@ -1200,7 +1201,10 @@ ns.Comm.On("K1", function(msg, sender, dist)
     -- После перезагрузки имя то же. Ответить на объявление ключа, чтобы вошедший узнал
     -- репортёра-офицера раньше, чем примет RG, и корень гильдии раньше, чем офицер возьмётся
     -- за /chillzone trust init.
-    NativeTrustReply(flag:find("~u", 1, true) ~= nil)
+    local requested = flag:find("~u", 1, true) ~= nil
+    -- Вошедший офицер мог принести каталог с другого персонажа своего аккаунта.
+    -- Первый K1 соседа запускает доставку, даже если его UQ уже ждёт длинного повтора.
+    NativeTrustReply(requested or (firstPeer and Store().owner ~= nil), requested)
 end)
 ns.Comm.On("KP", function(msg, sender, dist)
     if dist ~= "GUILD" and dist ~= "WHISPER" then return end
