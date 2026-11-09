@@ -38,6 +38,7 @@ read_globals = {
 	"C_FriendList",
 	"C_InputInterfaceStyle",
 	"C_Map",
+	"C_PartyInfo",
 	"C_Timer",
 	"Enum",
 
@@ -60,6 +61,8 @@ read_globals = {
 	"SetWhoToUI",
 	"CanGuildInvite",
 	"GuildInvite",
+	"InviteUnit",
+	"IsMouseButtonDown",
 	"hooksecurefunc",
 	"GetRealmName",
 	"GetServerTime",

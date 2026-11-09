@@ -245,6 +245,63 @@ local function BuildPicker()
 	settingsY = settingsY + 30
 end
 
+-- Цвет текста общего чата: своя палитра. ColorPickerFrame — такой же общий глобал игры, как UIDropDownMenu.
+local SWATCH = 20
+local swatches = {}
+UI.swatches = swatches
+
+local function RenderSwatches()
+	local chosen = ns.Chat.TextColor()
+	for _, s in ipairs(swatches) do s.ring:SetShown(s.hex == chosen) end
+end
+
+local function PickColor(hex)
+	ns.db.settings.chatColor = hex
+	RenderSwatches()
+	ns.ChatPane.Reload()
+end
+
+local function Swatch(i, hex)
+	local s = CreateFrame("Button", nil, settings)
+	s:SetSize(SWATCH, SWATCH)
+	s.hex = hex
+	s.ring = s:CreateTexture(nil, "BACKGROUND", nil, -1)
+	s.ring:SetAllPoints()
+	s.ring:SetColorTexture(1, 1, 1, 1)
+	-- Чёрный зазор: иначе рамка выбранного сливается с белым и жёлтым квадратом.
+	local gap = s:CreateTexture(nil, "BACKGROUND")
+	gap:SetPoint("TOPLEFT", 2, -2)
+	gap:SetPoint("BOTTOMRIGHT", -2, 2)
+	gap:SetColorTexture(0, 0, 0, 1)
+	local fill = s:CreateTexture(nil, "ARTWORK")
+	fill:SetPoint("TOPLEFT", 3, -3)
+	fill:SetPoint("BOTTOMRIGHT", -3, 3)
+	fill:SetColorTexture(ns.Chat.HexToRGB(hex))
+	local hl = s:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	hl:SetColorTexture(1, 1, 1, 0.2)
+	s:SetScript("OnClick", function(self) ns.SafeCall("chat color", PickColor, self.hex) end)
+	SetTip(s, function(tt)
+		tt:AddLine(L.CHAT_COLOR, 1, 0.82, 0)
+		tt:AddLine(L.CHAT_COLOR_TIP, 1, 1, 1, true)
+	end)
+	swatches[i] = s
+	return s
+end
+
+-- Палитра стоит справа на строке следующей настройки: отдельный ряд в окно по высоте не помещается.
+local function BuildSwatches()
+	local label = settings:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	label:SetPoint("TOPLEFT", settings, "TOPLEFT", 260, -settingsY - 6)
+	label:SetText(L.CHAT_COLOR .. ":")
+	local prev, gap = label, 8
+	for i, hex in ipairs(ns.Chat.COLORS) do
+		local s = Swatch(i, hex)
+		s:SetPoint("LEFT", prev, "RIGHT", gap, 0)
+		prev, gap = s, 4
+	end
+end
+
 local function BuildSettings(parent)
 	settings = CreateFrame("Frame", nil, parent)
 	settings:SetAllPoints(parent)
@@ -268,6 +325,7 @@ local function BuildSettings(parent)
 		RenderPicker()
 	end)
 	BuildPicker()
+	BuildSwatches()
 	Check("time", L.CHECK_TIME, L.CHECK_TIME_TIP, function() return ns.char.chatTime end, function(on)
 		ns.char.chatTime = on
 		ns.ChatPane.Reload()
@@ -377,6 +435,7 @@ function UI.Render()
 		settings:Show()
 		for _, c in ipairs(checks) do c:SetChecked(c.get() and true or false) end
 		RenderPicker()
+		RenderSwatches()
 		return
 	end
 	settings:Hide()
