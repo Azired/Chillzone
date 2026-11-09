@@ -305,7 +305,7 @@ T.test("окно: метка в чате игры открывает окно", 
 	end
 	T.ok(line and line:find("|Haddon:Chillzone:chan:A|h[Чиллзон]|h", 1, true), "метка — ссылка")
 	B:CallHooks("SetItemRef", "addon:Chillzone:chan:A", "[Чиллзон]", "RightButton")
-	T.eq(B.ns.UI.Current(), nil, "правый клик ничего не делает")
+	T.eq(B.ns.UI.Current(), nil, "правый клик не открывает окно аддона")
 	B:CallHooks("SetItemRef", "item:19019", "[x]", "LeftButton")
 	T.eq(B.ns.UI.Current(), nil, "чужие ссылки не трогаем")
 	B:CallHooks("SetItemRef", "addon:Chillzone:chan:A", "[Чиллзон]", "LeftButton")
@@ -323,6 +323,171 @@ T.test("окно: без дубля в чат игры строка только
 	T.eq(c.B:Saw("только окно"), 0, "в чат игры не пришло")
 	T.eq(HistoryHas(c.B, "A", "только окно"), 1, "в истории есть")
 	T.eq(c.V:Saw("только окно"), 1, "у других дубль включён")
+end)
+
+T.test("окно: теги гильдий используют выбранный регистр", function()
+	local _, c = SlashClient()
+	local guilds = {
+		{ "ЧИЛЛЗОН", "Чз", "ЧЗ" },
+		{ "Чиллзон Навсегда", "ЧзН", "ЧЗН" },
+		{ "Запомни Навсегда", "Зн", "ЗН" },
+		{ "Другая Гильдия", "Другая Гильдия", "Другая Гильдия" },
+	}
+	T.eq(c.ns.char.chatGuildTagsUpper, false, "по умолчанию смешанный регистр")
+	for _, on in ipairs({ false, true, false }) do
+		c.ns.char.chatGuildTagsUpper = on
+		for _, row in ipairs(guilds) do
+			local tag = "|cff999999<" .. row[on and 3 or 2] .. ">|r"
+			T.ok(c.ns.Chat.Format("A", row[1], c:Name(), c.class, "текст"):find(tag, 1, true), "чат игры")
+			T.ok(c.ns.Views.ChatLine({ g = row[1], s = c:Name(), x = "текст" }, "A", false):find(tag, 1, true), "окно Chillzone")
+		end
+	end
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("окно: теги гильдий переключаются в настройках и сохраняются", function()
+	local w, c = SlashClient()
+	local other = w:Client({ first = "Другой", surname = "Игрок", guild = "Чиллзон", db = c.ns.db })
+	c.ns.UI.OpenChat("A")
+	c.ns.Chat.Show("A", "Чиллзон", c:Name(), c.class, "старая строка")
+	local messages = c.ns.ChatPane.frames.messages
+	c.ns.UI.Toggle("settings")
+	local check = c.ns.UI.guildTagsUpper
+	T.ok(check, "есть переключатель регистра")
+	T.no(check:GetChecked(), "смешанный регистр по умолчанию")
+	for _, on in ipairs({ true, false }) do
+		local previousLine = c.printed[#c.printed]
+		check:SetChecked(on)
+		check.scripts.OnClick(check)
+		T.eq(c.ns.char.chatGuildTagsUpper, on)
+		T.eq(other.ns.char.chatGuildTagsUpper, false, "настройка другого персонажа независима")
+		local tag = on and "<ЧЗ>" or "<Чз>"
+		T.ok(messages.lines[1]:find(tag, 1, true), "история окна перерисована сразу")
+		T.eq(c.ns.Chat.History("A")[1].g, "Чиллзон", "в истории хранится полное имя гильдии")
+		T.eq(c.printed[#c.printed], previousLine, "уже выведенная строка игры прежняя")
+		c:Slash("/chillzone", "history 1")
+		T.ok(c.printed[#c.printed]:find(tag, 1, true), "повторный вывод истории учитывает выбор")
+		c.ns.Chat.Show("A", "Чиллзон", c:Name(), c.class, "новая строка")
+		T.ok(c.printed[#c.printed]:find(tag, 1, true), "новая строка игры")
+		local db = c.ns.db
+		c:Logout()
+		c = w:Client({ first = "Автор", surname = "Чата", guild = "Чиллзон", rank = 0, db = db })
+		c.ns.UI.Toggle("settings")
+		check = c.ns.UI.guildTagsUpper
+		T.eq(check:GetChecked(), on, "выбор сохранён после входа")
+		c.ns.UI.OpenChat("A")
+		messages = c.ns.ChatPane.frames.messages
+		T.ok(messages.lines[1]:find(tag, 1, true), "сохранённая история учитывает выбор")
+		c.ns.UI.Toggle("settings")
+	end
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("метка: ПКМ создаёт вкладку игры и добавляет её к выбранным", function()
+	local _, c = SlashClient()
+	local ui, chat = c.ns.UI, c.ns.Chat
+	local game = c.env.ChatFrame1EditBox
+	game:SetText("черновик в игре")
+	game:SetFocus()
+	local function Right(tier)
+		c:CallHooks("SetItemRef", chat.TAG_LINK .. (tier or "A"), "[Чиллзон]", "RightButton")
+	end
+	Right()
+	local menu = ui.TagMenu()
+	T.ok(menu:IsShown(), "ПКМ открывает меню рядом с курсором")
+	T.eq(menu.title:GetText(), "Чиллзон")
+	T.eq(menu.create.text:GetText(), "Добавить вкладку")
+	T.eq(ui.Current(), nil, "окно Chillzone не открывается")
+	T.ok(game:HasFocus(), "ПКМ не уводит фокус из чата игры")
+	T.eq(game:GetText(), "черновик в игре")
+	T.eq(#c.createdWindows, 0, "сам ПКМ вкладку ещё не создаёт")
+	menu.create.scripts.OnClick(menu.create)
+	T.no(menu:IsShown(), "выбор закрывает меню")
+	T.same(c.createdWindows, { { name = "Чиллзон", noDefaultChannels = true } })
+	T.same(c.ns.char.chatWindows, { "", "Чиллзон" }, "новая вкладка добавлена к существующему выбору")
+	chat.Show("A", c.guild, c:Name(), c.class, "новая вкладка работает")
+	T.eq(Has(c.env.ChatFrame3.lines, "новая вкладка работает"), 1)
+	T.eq(c:Saw("новая вкладка работает"), 1)
+
+	-- Повторное создание не смешивает окна с одинаковым названием.
+	c.ns.char.chatMirror = false
+	Right()
+	menu.create.scripts.OnClick(menu.create)
+	T.eq(c.createdWindows[2].name, "Чиллзон 2")
+	T.eq(c.ns.char.chatMirror, true, "создание включает вывод в чат игры")
+	c:ChatWindow(4, "Чиллзон 2", true)
+	Right("C")
+	menu.create.scripts.OnClick(menu.create)
+	T.eq(c.createdWindows[3].name, "Чиллзон 3", "закрытый выбранный адрес тоже не переиспользуется")
+	T.same(c.ns.char.chatWindows, { "", "Чиллзон", "Чиллзон 2", "Чиллзон 3" })
+	T.eq(#c.ns.db.errors, 0)
+	T.eq(#c:Leaks(), 0)
+end)
+
+T.test("метка: отмена меню, чужие ссылки и боевые переходы", function()
+	local _, c = SlashClient()
+	local ui, chat = c.ns.UI, c.ns.Chat
+	local function Right() c:CallHooks("SetItemRef", chat.TAG_LINK .. "A", "[Чиллзон]", "RightButton") end
+	Right()
+	local menu = ui.TagMenu()
+	Right()
+	T.no(menu:IsShown(), "повторный ПКМ закрывает меню")
+	Right()
+	c.mouseDown = "RightButton"
+	menu.IsMouseOver = function() return false end
+	menu.scripts.OnUpdate(menu, 0.2)
+	T.ok(menu:IsShown(), "нажатие, открывшее меню, не закрывает его сразу")
+	c.mouseDown = nil
+	menu.scripts.OnUpdate(menu, 0.2)
+	c.mouseDown = "LeftButton"
+	menu.scripts.OnUpdate(menu, 0.2)
+	T.no(menu:IsShown(), "новый щелчок мимо закрывает меню")
+	c.mouseDown = nil
+	Right()
+	T.no(chat.TagClick(chat.TAG_LINK .. "X", "", "RightButton"), "неизвестный канал")
+	T.no(chat.TagClick("item:19019", "", "RightButton"), "чужая ссылка")
+	T.no(chat.TagClick(chat.TAG_LINK .. "A", "", "MiddleButton"), "посторонняя кнопка")
+	c:CallHooks("SetItemRef", chat.TAG_LINK .. "A", "[Чиллзон]", "LeftButton")
+	T.no(menu:IsShown(), "левый щелчок закрывает меню и открывает окно")
+	T.eq(ui.Current(), "chat")
+	ui.Toggle()
+	Right()
+	c.combat = true
+	menu.scripts.OnUpdate(menu, 0.2)
+	T.eq(menu.create.enabled, false, "начавшийся бой запрещает создание")
+	T.no(chat.CreateWindow(), "защита работает и если бой начался перед самим действием")
+	T.eq(#c.createdWindows, 0)
+	c.combat = false
+	menu.scripts.OnUpdate(menu, 0.2)
+	T.eq(menu.create.enabled, true, "после боя пункт снова доступен")
+	menu.create.scripts.OnClick(menu.create)
+	T.eq(#c.createdWindows, 1)
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("метка: лимит вкладок, старый API и ошибка создания сохраняют выбор", function()
+	local _, c = SlashClient()
+	local chat = c.ns.Chat
+	for i = 3, c.env.NUM_CHAT_WINDOWS do c:ChatWindow(i, "Окно " .. i) end
+	T.no(chat.CreateWindow(), "лимит проверяется до вызова, который мог бы затереть последнее окно")
+	T.eq(#c.createdWindows, 0)
+	T.same(c.ns.char.chatWindows, { "" })
+	c:ChatWindow(10, "Окно 10", true)
+	c.env.FCF_CanOpenNewWindow = nil
+	T.ok(chat.CreateWindow(), "старый клиент проверяет число открытых окон")
+	T.eq(c.windows[10].name, "Чиллзон")
+	c:ChatWindow(9, "Окно 9", true)
+	local chosen = { "", "Чиллзон" }
+	c.env.FCF_OpenNewWindow = function() return nil end
+	T.no(chat.CreateWindow(), "игра не создала окно")
+	T.same(c.ns.char.chatWindows, chosen)
+	c.env.FCF_OpenNewWindow = function() error("ошибка API") end
+	T.no(chat.CreateWindow(), "ошибка API объясняется игроку")
+	T.same(c.ns.char.chatWindows, chosen)
+	c.env.FCF_OpenNewWindow = nil
+	T.no(chat.CreateWindow(), "API создания отсутствует")
+	T.same(c.ns.char.chatWindows, chosen)
+	T.eq(#c.ns.db.errors, 0)
 end)
 
 T.test("окно: время у строк учитывается и в чате игры", function()
