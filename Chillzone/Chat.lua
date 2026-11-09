@@ -273,7 +273,8 @@ end
 -- Короткая метка гильдии только в строках чата; полное имя хранится в истории.
 function Chat.GuildTag(guild)
 	local name = Codec.Plain(guild or "?")
-	return L.CHAT_GUILD_TAGS[U.Fold(name)] or name
+	local tags = ns.char and ns.char.chatGuildTagsUpper and L.CHAT_GUILD_TAGS_UPPER or L.CHAT_GUILD_TAGS
+	return tags[U.Fold(name)] or name
 end
 
 function Chat.Format(tier, guild, sender, class, text, formatBody)

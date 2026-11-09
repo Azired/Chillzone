@@ -110,11 +110,11 @@ end
 ---------------------------------------------------------------------------
 local settingsY = 16 -- отступ сверху для следующей строки настроек
 
-local function Check(key, text, tip, get, set)
+local function Check(key, text, tip, get, set, x)
 	local c = CreateFrame("CheckButton", nil, settings, "UICheckButtonTemplate")
 	c:SetSize(26, 26)
-	c:SetPoint("TOPLEFT", settings, "TOPLEFT", 16, -settingsY)
-	settingsY = settingsY + 30
+	c:SetPoint("TOPLEFT", settings, "TOPLEFT", x or 16, -settingsY)
+	if not x then settingsY = settingsY + 30 end
 	local label = c:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 	label:SetPoint("LEFT", c, "RIGHT", 4, 0)
 	label:SetText(text)
@@ -444,6 +444,11 @@ local function BuildSettings(parent)
 		ns.char.chatTime = on
 		ns.ChatPane.Reload()
 	end)
+	UI.guildTagsUpper = Check("guildTagsUpper", L.CHECK_GUILD_TAGS_UPPER, L.CHECK_GUILD_TAGS_UPPER_TIP,
+		function() return ns.char.chatGuildTagsUpper end, function(on)
+			ns.char.chatGuildTagsUpper = on
+			ns.ChatPane.Reload()
+		end, 260)
 	Check("minimap", L.CHECK_MINIMAP, L.CHECK_MINIMAP_TIP, function() return not ns.db.settings.minimap.hide end, function(on)
 		ns.db.settings.minimap.hide = not on
 		UI.UpdateMinimapButton()

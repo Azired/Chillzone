@@ -322,7 +322,7 @@ T.test("chat tab: копия союза идёт в выбранную вкла�
 	T.eq(#h.messages.lines, 3)
 end)
 
-T.test("chat tab: несколько вкладок Chattynator получают чат и историю, диагностика остаётся в журнале", function()
+T.test("chat tab: несколько вкладок Chattynator получают чат и историю, журнал остаётся отдельным", function()
 	local h, ns, env = BuildChattynator()
 	env.GUILD = "Гильдия"
 	local tabs = { { "GENERAL", "GUILD", ns.L.CHAT_TAB_NAME }, { "Торговля" } }
@@ -358,19 +358,21 @@ T.test("chat tab: несколько вкладок Chattynator получают
 	T.same(delivered[3], delivered[1])
 	T.same(delivered[4], delivered[2])
 	ns.char.chatMirror = false
-	ns.db.settings.debug = true
+	local printedBefore = #h.client.printed
+	ns.Diagnostics.SetEnabled(true)
 	ns.Log("Журнал союза")
-	T.eq(#delivered, 4, "диагностика не выводится в выбранные вкладки Chattynator")
-	T.ok(table.concat(ns.db.log, "\n"):find("Журнал союза", 1, true), "строка сохранена в журнале")
-	ns.db.settings.debug = false
+	T.eq(#delivered, 4, "запись журнала не попадает во вкладки Chattynator")
+	T.eq(#h.client.printed, printedBefore, "запись журнала не попадает в штатный чат")
+	ns.Diagnostics.SetEnabled(false)
 	ns.db.errors = { "Сохранённая ошибка" }
 	h.client:Slash("/chillzone", "log 1")
-	T.eq(#delivered, 4, "команда журнала не пишет в выбранные вкладки Chattynator")
+	T.eq(ns.UI.Current(), "journal", "команда открывает отдельный журнал")
 	local journal = ns.JournalPane.frames
-	T.ok(journal.pane:IsShown(), "команда открыла отдельный журнал")
-	T.ok(table.concat(journal.messages.lines, "\n"):find("Журнал союза", 1, true), "видна последняя строка журнала")
 	journal.copy.scripts.OnClick(journal.copy)
-	T.ok(journal.box:GetText():find("Сохранённая ошибка", 1, true), "ошибка доступна в копируемом отчёте")
+	T.ok(journal.box:GetText():find("Журнал союза", 1, true), "отчёт содержит запись")
+	T.ok(journal.box:GetText():find("Сохранённая ошибка", 1, true), "отчёт содержит сохранённую ошибку")
+	T.eq(#delivered, 4, "команда log не выводит отчёт в Chattynator")
+	T.eq(#h.client.printed, printedBefore, "команда log не выводит отчёт в штатный чат")
 	ns.db.errors = {}
 
 	ns.char.chatMirror = true
