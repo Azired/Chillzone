@@ -325,6 +325,35 @@ T.test("окно: без дубля в чат игры строка только
 	T.eq(c.V:Saw("только окно"), 1, "у других дубль включён")
 end)
 
+T.test("окно: время у строк учитывается и в чате игры", function()
+	local _, c = SlashClient()
+	local tab = c:ChatWindow(3, "Чиллзон")
+	local stamp = "|cff999999" .. c.env.date("%H:%M", c.ns.ServerTime()) .. "|r "
+	for _, tier in ipairs({ "A", "C", "L" }) do
+		c.ns.UI.OpenChat(tier)
+		local messages = c.ns.ChatPane.frames.messages
+		for _, on in ipairs({ false, true, false }) do
+			c.ns.char.chatTime = on
+			c.ns.Chat.Show(tier, "Чиллзон", c:Name(), "MAGE", "проверка времени")
+			local line = c.printed[#c.printed]
+			T.eq(line:sub(1, #stamp) == stamp, on, "основное окно чата игры")
+			T.eq(messages.lines[#messages.lines]:sub(1, #stamp) == stamp, on, "окно Chillzone")
+
+			c.ns.Chat.SetWindow("Чиллзон")
+			c.ns.Chat.Show(tier, "Чиллзон", c:Name(), "MAGE", "проверка вкладки")
+			T.eq(tab.lines[#tab.lines]:sub(1, #stamp) == stamp, on, "выбранная вкладка чата игры")
+			c.ns.Chat.SetWindow(nil)
+		end
+	end
+	-- История уже добавляет время сама, поэтому не должна получать его дважды.
+	c.ns.char.chatTime = true
+	c:Slash("/chillzone", "history 1")
+	local line = c.printed[#c.printed]
+	T.eq(line:sub(1, #stamp), stamp, "у истории осталось время")
+	T.no(line:find(stamp, #stamp + 1, true), "время не дублируется")
+	T.eq(#c.ns.db.errors, 0)
+end)
+
 T.test("окно: цвет текста общего чата один для окна и чата игры", function()
 	local w, c = Build()
 	local B = c.B
