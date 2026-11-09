@@ -217,15 +217,18 @@ local function MarkDown(e, why)
 	ns.Fire("RELAYS")
 end
 
-local function Ask(e, payload)
+local function Ask(e, payload, renews)
 	local now = Now()
 	if e.asked and now - e.asked < C.RELAY_TIMEOUT then return end
-	-- Реле промолчало бы, и живое реле попало бы в офлайн на RELAY_DOWN. Аренда от пропуска
-	-- не страдает: следующая попытка через 15 секунд, а живёт аренда REG_TTL.
-	if e.verified and now - e.verified < PONG_GAP then return end
-	e.asked = now
+	-- Реле промолчало бы, и живое реле попало бы в офлайн на RELAY_DOWN, поэтому ответа не ждём.
+	-- Регистрация (renews) уходит всё равно: RR продлевает аренду и без ответа, а verified
+	-- обновляют ещё и сертификаты реле, так что пропуски могли идти подряд дольше REG_TTL.
+	local silent = e.verified and now - e.verified < PONG_GAP
+	if silent and not renews then return end
 	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
 	ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key })
+	if silent then return end
+	e.asked = now
 	local asked = now
 	ns.After(C.RELAY_TIMEOUT + 1, "relay timeout", function()
 		if e.asked == asked then MarkDown(e, "нет ответа") end
@@ -272,7 +275,7 @@ function Relay.Register()
 		end
 	end
 	for _, e in ipairs(Top()) do
-		if Usable(e, now) then Ask(e, "RR~" .. Codec.Clean(g) .. "~" .. credential.fp) end
+		if Usable(e, now) then Ask(e, "RR~" .. Codec.Clean(g) .. "~" .. credential.fp, true) end
 	end
 end
 

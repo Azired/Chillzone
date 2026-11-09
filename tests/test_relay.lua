@@ -279,6 +279,27 @@ T.test("relay: вопрос сразу после ответа не делает
 	T.ok(e.asked, "после паузы реле снова спрашивают")
 end)
 
+T.test("relay: регистрация уходит, даже если реле только что подтвердилось", function()
+	local w, c = Build()
+	local V = c.V
+	local gk = V.ns.Util.GuildKey("Чиллзон Север")
+	local e = V.ns.Relay.Known()[Key(V, c.A:Name())]
+	T.ok(e, "Вера знает реле")
+	T.ok(V.ns.Census.IsReporter(), "Вера — репортёр")
+	-- Сертификат реле обновляет verified так же, как ответ: продлевать аренду это не мешает.
+	local ttl = c.A.ns.Relay.REG_TTL
+	for _ = 1, ttl * 2 do
+		e.verified = w.now
+		w:Run(1)
+	end
+	local held = c.A.ns.Relay.Reporters()[gk]
+	T.ok(held and held.key == Key(c.A, V:Name()), "аренда у Веры")
+	T.ok(w.now - held.t <= ttl, "аренда продлевается")
+	T.no(e.asked, "ответа на паузе реле не ждём")
+	T.no(e.down, "живое реле не считается офлайн")
+	T.eq(#V.ns.db.errors, 0, "без ошибок")
+end)
+
 T.test("relay: зоны включаются один раз, дальше решает игрок", function()
 	local w = Wow.World()
 	w:Guild("Чиллзон")
