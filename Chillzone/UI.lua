@@ -165,6 +165,8 @@ local function Pick(value)
 	RenderPicker()
 end
 
+ns.On("CHAT_WINDOWS", RenderPicker)
+
 local function PickerItem(i)
 	local it = picker.items[i]
 	if it then return it end
@@ -427,10 +429,12 @@ local function BuildSettings(parent)
 	end)
 	Check("chat", L.CHECK_CHAT, L.CHECK_CHAT_TIP, function() return ns.char.chatOn end, function(on)
 		ns.char.chatOn = on
+		ns.Fire("CHAT_WINDOWS")
 		ns.Print(on and L.CHAT_ON or L.CHAT_OFF)
 	end)
 	Check("mirror", L.CHECK_MIRROR, L.CHECK_MIRROR_TIP, function() return ns.char.chatMirror end, function(on)
 		ns.char.chatMirror = on
+		ns.Fire("CHAT_WINDOWS")
 		RenderPicker()
 	end)
 	BuildPicker()

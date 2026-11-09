@@ -164,12 +164,14 @@ function Chat.SetWindow(name)
 	if not name or name == "" then
 		ns.char.chatWindows = { "" }
 		windowWarned = {}
+		ns.Fire("CHAT_WINDOWS")
 		return true
 	end
 	local w = WindowByName(name)
 	if not w then return false end
 	ns.char.chatWindows = { w.frame == DEFAULT_CHAT_FRAME and "" or w.name }
 	windowWarned = {}
+	ns.Fire("CHAT_WINDOWS")
 	return true
 end
 
@@ -184,16 +186,19 @@ function Chat.ToggleWindow(name)
 			if #chosen == 1 then return false end
 			table.remove(chosen, i)
 			windowWarned[value] = nil
+			ns.Fire("CHAT_WINDOWS")
 			return true
 		end
 	end
 	if name ~= "" and not w then return false end
 	chosen[#chosen + 1] = name == "" and "" or w.name
+	ns.Fire("CHAT_WINDOWS")
 	return true
 end
 
 function Chat.WindowCreateError()
 	if InCombatLockdown and InCombatLockdown() then return L.WINDOW_CREATE_COMBAT end
+	if type(rawget(_G, "Chattynator")) == "table" then return L.WINDOW_CREATE_CHATTY end
 	if type(FCF_OpenNewWindow) ~= "function" then return L.WINDOW_CREATE_UNAVAILABLE end
 	if type(FCF_CanOpenNewWindow) == "function" then
 		if not FCF_CanOpenNewWindow() then return L.WINDOW_CREATE_LIMIT end
@@ -227,7 +232,7 @@ function Chat.CreateWindow()
 	local chosen = Chat.SelectedWindows()
 	chosen[#chosen + 1] = window.name
 	ns.char.chatMirror = true
-	if ns.UI and ns.UI.Render then ns.UI.Render() end
+	ns.Fire("CHAT_WINDOWS")
 	return true
 end
 
@@ -669,6 +674,7 @@ ns.Command("chat", function(arg)
 	elseif arg == "off" or arg == "выкл" then
 		ns.char.chatOn = false
 	end
+	ns.Fire("CHAT_WINDOWS")
 	ns.Print(ns.char.chatOn and L.CHAT_ON or L.CHAT_OFF)
 end, L.HELP_CHAT_TOGGLE)
 
