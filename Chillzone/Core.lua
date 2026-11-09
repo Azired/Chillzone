@@ -229,7 +229,7 @@ function ns.IsMember()
 end
 
 ---------------------------------------------------------------------------
--- Управление: /chillzone <команда> [аргументы]. Короткие алиасы принадлежат чату.
+-- Управление: /chillzone <команда> [аргументы]; короткие алиасы также принимают текст чата.
 ---------------------------------------------------------------------------
 local commands, order = {}, {}
 function ns.Command(name, fn, help)
@@ -282,16 +282,23 @@ ns.Command("log", function(arg)
 	for i = 1, math.min(3, #(ns.db.errors or {})) do DEFAULT_CHAT_FRAME:AddMessage("|cffff6060" .. ns.db.errors[i] .. "|r") end
 end, L.HELP_LOG)
 
+-- true — команда найдена, даже если её обработчик завершился ошибкой.
+-- Короткие алиасы отправляют в чат только текст, не совпавший с командой.
+function ns.RunCommand(msg)
+	if not ns.me then return false end
+	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
+	name = U.Fold(name or "")
+	local c = commands[name]
+	if not c then return false end
+	ns.SafeCall("/chillzone " .. name, c.fn, rest)
+	return true
+end
+
 SLASH_CHILLZONE1 = "/chillzone"
 SlashCmdList.CHILLZONE = function(msg)
 	if not ns.me then return end
-	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
-	name = U.Fold(name or "")
-	if name == "" then
+	if U.Trim(msg) == "" then
 		if ns.UI and ns.UI.Toggle then return ns.UI.Toggle() end
-		name = "help"
 	end
-	local c = commands[name]
-	if not c then c = commands.help end
-	ns.SafeCall("/chillzone " .. name, c.fn, rest)
+	if not ns.RunCommand(msg) then ns.RunCommand("help") end
 end
