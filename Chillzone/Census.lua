@@ -11,7 +11,8 @@ local L = ns.L
 local Census = {}
 ns.Census = Census
 
-local peers = {} -- [Key] = { t, z, r, name, version }: согильдийцы с аддоном
+local peers = {} -- [Key] = { t, z, r, name, version, unready }: согильдийцы с аддоном
+local helloReady -- готовность, объявленная в последнем H1
 -- С какого момента слушаем приветы своей гильдии (вход, смена гильдии). Каждый клиент шлёт H1
 -- раз в HELLO_EVERY, поэтому через HEARD_ALL молчание согильдийца в игре значит: аддона нет.
 local listenSince
@@ -58,20 +59,28 @@ local function Trusted(key)
 end
 
 -- Ключ репортёра гильдии. withoutMe — выбор без меня: кто пересылает гильдии, пока я после
--- входа молчу (LOGIN_QUIET), хотя гильдия уже выбрала меня.
+-- входа молчу (LOGIN_QUIET), хотя гильдия уже выбрала меня. Вышедшего из игры снимает свежий
+-- ростер: окно приветов (PEER_WINDOW) втрое длиннее аренды у реле, и всё это время гильдия
+-- ждала бы пересылки от того, кого нет. Ростер читают не одновременно, и выбор может
+-- разойтись, но лишь пока кто-то ещё выбирает ушедшего: он ничего не пересылает, а убрать
+-- невыбранного значит не изменить выбор, поэтому двух действующих репортёров не бывает.
 function Census.Reporter(withoutMe)
 	if not ns.myKey then return nil end
 	local now = ns.Now()
 	local live = Live(now)
-	local officers = not withoutMe and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
-	for key in pairs(live) do
-		if ns.Roster.IsOfficerRank(ns.Roster.byKey[key]) then officers = true end
+	local me = not withoutMe and helloReady ~= false and ns.Security.MyCertificate() and ns.myKey or nil
+	local officers = me and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
+	for key, peer in pairs(live) do
+		if peer.unready or ns.Roster.LeftGame(key, peer.t) then
+			live[key] = nil
+		elseif ns.Roster.IsOfficerRank(ns.Roster.byKey[key]) then
+			officers = true
+		end
 	end
 	local function eligible(key)
 		if not Trusted(key) then return false end
 		return not officers or ns.Roster.IsOfficerRank(ns.Roster.byKey[key])
 	end
-	local me = not withoutMe and ns.myKey or nil
 	return Codec.PickReporter(me, ns.char and ns.char.shareZones or false, live, now, C.PEER_WINDOW, eligible)
 end
 
@@ -93,6 +102,8 @@ local inheritedUntil -- до каких пор вошедший репортёр
 
 function Census.Track()
 	local now = ns.Now()
+	-- Сообщить о получении или потере сертификата, не дожидаясь очередного привета.
+	if helloReady ~= (ns.Security.MyCertificate() ~= nil) then Census.SendHello() end
 	local key = Census.Reporter()
 	if key ~= elected then
 		previous = elected and { key = elected, untilAt = now + C.REPORTER_HANDOVER } or nil
@@ -157,8 +168,9 @@ end
 function Census.SendHello()
 	if not ns.IsMember() then return end
 	local R = ns.Relay
-	local hello = Codec.EncodeHello(ns.VERSION, ns.char.shareZones, R and R.IAmRelay() or false)
-	ns.Comm.Send("GUILD", hello, { prio = ns.Comm.PRIO_CONTROL, key = "hello" })
+	local ready = ns.Security.MyCertificate() ~= nil
+	local hello = Codec.EncodeHello(ns.VERSION, ns.char.shareZones, R and R.IAmRelay() or false, not ready)
+	if ns.Comm.Send("GUILD", hello, { prio = ns.Comm.PRIO_CONTROL, key = "hello" }) then helloReady = ready end
 end
 
 ns.Comm.On("H1", function(msg, sender, dist)
@@ -167,7 +179,7 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	if not h then return end
 	local key = U.Key(sender)
 	local known = peers[key]
-	peers[key] = { t = ns.Now(), z = h.zones, r = h.relay, name = sender, version = h.version }
+	peers[key] = { t = ns.Now(), z = h.zones, r = h.relay, name = sender, version = h.version, unready = h.unready }
 	ns.Update.Heard(key, h.version)
 	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее,
 	-- и отметить его в списке людей окна.
@@ -249,6 +261,8 @@ ns.Comm.On("R1", function(msg, sender, dist, ctx)
 	ns.Update.Heard(U.Key(sender), r.version)
 	local ok, why = ns.Data.Take(r, msg, sender, nil, ctx)
 	if not ok and why ~= "повтор" then ns.Log("отчёт %s от %s не принят: %s", r.guild, U.Display(sender), tostring(why)) end
+	-- Перезашедшее реле присылает последний известный ему отчёт, а гильдии нужен только новый.
+	ctx.outdated = why == "старее"
 end)
 
 ---------------------------------------------------------------------------
@@ -306,6 +320,7 @@ end)
 
 ns.On("GUILD_CHANGED", function()
 	wipe(peers)
+	helloReady = nil
 	listenSince = ns.Now()
 	elected, previous, acting, handingUntil = nil, nil, false, nil
 	inheritedUntil = nil

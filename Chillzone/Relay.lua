@@ -167,6 +167,7 @@ end
 -- Три доступных реле сверху списка: у них регистрируются репортёры, через них идут
 -- сообщения. Я сам стою в общем списке, если я реле, но в ответ не попадаю: так клиенты
 -- главной гильдии и репортёры видят одну и ту же тройку. Опрос ограничен ею, а не всеми.
+-- Второе значение — попал ли в тройку я сам.
 local function Top()
 	local now, list = Now(), {}
 	for _, e in ipairs(Pool().list) do
@@ -174,14 +175,20 @@ local function Top()
 	end
 	if Relay.IAmRelay() then list[#list + 1] = { key = ns.myKey, name = ns.me, self = true } end
 	Rank(list)
-	local out = {}
+	local out, mine = {}, false
 	for i = 1, math.min(3, #list) do
-		if not list[i].self then out[#out + 1] = list[i] end
+		if list[i].self then mine = true else out[#out + 1] = list[i] end
 	end
-	return out
+	return out, mine
 end
 
--- Я реле и у меня зарегистрирован репортёр чужой гильдии: моё сообщение я разошлю сам.
+-- Я реле из общей тройки: у меня зарегистрированы все, кто видит ту же тройку.
+function Relay.InTop()
+	local _, mine = Top()
+	return mine
+end
+
+-- Я реле и у меня зарегистрирован репортёр чужой гильдии: ему моё сообщение я разошлю сам.
 function Relay.Serving()
 	local now, mine = Now(), MyGuildKey()
 	for gk, r in pairs(reporters) do
@@ -210,15 +217,18 @@ local function MarkDown(e, why)
 	ns.Fire("RELAYS")
 end
 
-local function Ask(e, payload)
+local function Ask(e, payload, renews)
 	local now = Now()
 	if e.asked and now - e.asked < C.RELAY_TIMEOUT then return end
-	-- Реле промолчало бы, и живое реле попало бы в офлайн на RELAY_DOWN. Аренда от пропуска
-	-- не страдает: следующая попытка через 15 секунд, а живёт аренда REG_TTL.
-	if e.verified and now - e.verified < PONG_GAP then return end
-	e.asked = now
+	-- Реле промолчало бы, и живое реле попало бы в офлайн на RELAY_DOWN, поэтому ответа не ждём.
+	-- Регистрация (renews) уходит всё равно: RR продлевает аренду и без ответа, а verified
+	-- обновляют ещё и сертификаты реле, так что пропуски могли идти подряд дольше REG_TTL.
+	local silent = e.verified and now - e.verified < PONG_GAP
+	if silent and not renews then return end
 	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
 	ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key })
+	if silent then return end
+	e.asked = now
 	local asked = now
 	ns.After(C.RELAY_TIMEOUT + 1, "relay timeout", function()
 		if e.asked == asked then MarkDown(e, "нет ответа") end
@@ -265,7 +275,7 @@ function Relay.Register()
 		end
 	end
 	for _, e in ipairs(Top()) do
-		if Usable(e, now) then Ask(e, "RR~" .. Codec.Clean(g) .. "~" .. credential.fp) end
+		if Usable(e, now) then Ask(e, "RR~" .. Codec.Clean(g) .. "~" .. credential.fp, true) end
 	end
 end
 
@@ -397,9 +407,17 @@ local function SeniorUnasked(pick)
 	return false
 end
 
+-- Сразу после входа и /reload аренды пусты, а репортёры других гильдий возвращаются не разом:
+-- тому, кто перезашёл сам, нужно больше минуты, чтобы снова стать репортёром.
+local function Settled()
+	return ns.loginAt ~= nil and Now() - ns.loginAt >= C.RELAY_SETTLE
+end
+
 -- mode: "L" (отчёт: новый заменяет старый) или "P" (каждое: чат). inner: подписанный S1.
--- Реле главной гильдии рассылает само, только если у него есть чужие репортёры; иначе, как
--- и все, шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту.
+-- Реле главной гильдии рассылает само, если у него есть чужие репортёры; иначе, как и все,
+-- шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту. Реле вне тройки и
+-- только что вошедшее реле делают и то и другое: у них зарегистрированы не все гильдии,
+-- остальные ждут сообщение от общей тройки. Дубли отбрасывает получатель (Codec.DedupeKey).
 function Out(mode, inner)
 	if not ns.IsMember() or Codec.InnerType(inner) ~= "S1" then return false end
 	if Relay.IAmRelay() and Relay.Serving() then
@@ -410,7 +428,7 @@ function Out(mode, inner)
 		else
 			Relay.HandleRL(ns.me, mode, inner)
 		end
-		return true
+		if Relay.InTop() and Settled() then return true end
 	end
 	local e = Relay.Pick()
 	if not e or SeniorUnasked(e) then
@@ -505,7 +523,8 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	Relay.stats.delivered = Relay.stats.delivered + 1
 	ctx.authenticated, ctx.certificate, ctx.wire = true, certificate, inner
 	ns.Comm.Inject(clear, certificate.name, ctx)
-	if toGuild and ns.MyGuild() then
+	-- У всех отчётов автора один ключ очереди: устаревший заменил бы ещё не ушедший новый.
+	if toGuild and ns.MyGuild() and not ctx.outdated then
 		local key = mode == "L" and ("rg:" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
@@ -523,6 +542,19 @@ local function GossipList(exceptKey)
 	return out
 end
 
+-- Меня спрашивают, хотя в общей тройке меня нет: спрашивающий не знает сертификатов тех, кто
+-- выше меня, и потому не считает их офицерами. Сам он их не узнает: опрос ограничен его
+-- тройкой. Сертификаты моей тройки ставят его на общий порядок, и моя аренда истекает.
+-- Introduce не повторяет один и тот же сертификат чаще AUTH_INTRODUCE.
+local function ShareTop(target)
+	local top, mine = Top()
+	if mine then return end
+	for _, e in ipairs(top) do
+		local c = ns.Security.Member(C.MAIN_GUILD, e.name)
+		if c then ns.Security.Introduce(target, c.raw) end
+	end
+end
+
 local function Pong(sender)
 	local k = U.Key(sender)
 	local now = Now()
@@ -530,6 +562,7 @@ local function Pong(sender)
 	lastPong[k] = now
 	ns.Security.SendPolicies(sender)
 	ns.Security.Introduce(sender)
+	ShareTop(sender)
 	ns.Comm.Send("WHISPER", Codec.EncodeRelayList(GossipList(k)), { target = sender, prio = true, key = "ry:" .. k })
 end
 
