@@ -40,3 +40,4 @@ Debug.lua
 UnionPane.lua
 UI.lua
 Map.lua
+MapControls.lua
