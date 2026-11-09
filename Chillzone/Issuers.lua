@@ -153,8 +153,10 @@ local function Issue(name, public, active, manual, archive)
     return queued
 end
 function I.Revoke(name)
-    local d = I.For(ns.MyGuild(), U.Key(name))
-    return d and Issue(d.name, d.public, false, true) or false
+    local root = S.MyRoot()
+    local d = (Store()[U.GuildKey(ns.MyGuild())] or {})[U.Key(name)]
+    return d and d.active and root and d.root == root.public and d.expires > ns.ServerTime()
+        and Issue(d.name, d.public, false, true) or false
 end
 function I.Grant(name, public) return Issue(name, public, true, true) end
 function I.EndorseArchive(archive)

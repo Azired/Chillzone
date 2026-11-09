@@ -190,6 +190,31 @@ T.test("issuer-review: новый глава-корень подтверждае
     Errors(w)
 end)
 
+T.test("issuer-review: корень вручную отзывает допуск исключённого офицера", function()
+    local w, k, p, _, o, _, q = Build()
+    local raw = o.ns.Issuers.For(o.guild, o.ns.myKey).raw
+    o:Logout()
+    for i, row in ipairs(w.guilds[p.guild].members) do if row.full then table.remove(w.guilds[p.guild].members, i); break end end
+    p = w:Client({ first = p.first, surname = p.surname, guild = p.guild, rank = p.rank, db = p.ns.db })
+    p.ns.Roster.Scan(); w:Run(20)
+    T.eq(p.ns.Roster.RankOf(o:Name()), nil, "офицера нет в свежем ростере")
+    T.ok(p.ns.Issuers.Revoke(o:Name()), "явный отзыв использует сохранённый допуск")
+    w:Run(90)
+    for _, c in ipairs({ k, q }) do T.eq(c.ns.Issuers.Current(raw), nil, "отзыв дошёл до чужой гильдии") end
+    Errors(w)
+end)
+
+T.test("issuer-review: глава вручную отзывает исключённого офицера без корня", function()
+    local w, k, _, v, o, b, q = Build()
+    local raw = o.ns.Issuers.For(o.guild, o.ns.myKey).raw
+    o:Logout(); v.ns.Roster.Scan(); b.ns.Roster.Scan()
+    b:Slash("/chillzone", "trust issuer-revoke " .. o:Name()); w:Run(5)
+    T.ok(k.ns.Issuers.Current(raw), "рядовой не получает права ручного отзыва")
+    v:Slash("/chillzone", "trust issuer-revoke " .. o:Name()); w:Run(90)
+    for _, c in ipairs({ k, q }) do T.eq(c.ns.Issuers.Current(raw), nil, "отзыв главы принят вне своей гильдии") end
+    Errors(w)
+end)
+
 T.test("issuer-review: корневой отзыв шёпотом передаётся пассивному члену гильдии", function()
     local w, k, p, _, o = Build()
     local n = w:Client({ first = "Тихий", surname = "Читатель", guild = k.guild, rank = 3 })

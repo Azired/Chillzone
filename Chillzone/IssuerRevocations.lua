@@ -137,7 +137,7 @@ local function LeaderCertificate()
     local c = S.MyCertificate()
     return c and c.role == "leader" and c.rank == 0 and S.Level(c) == 3 and c or nil
 end
-function R.Revoke(name, archive)
+function R.Revoke(name, archive, manual)
     local cert, key, root = LeaderCertificate(), U.Key(name), S.MyRoot()
     local list = ns.store.security.issuers[U.GuildKey(ns.MyGuild())] or {}
     local previous = archive and Read(archive.raw)
@@ -147,7 +147,7 @@ function R.Revoke(name, archive)
         or (archive and archive.expires or d.expires) <= ns.ServerTime() or d.root ~= root.public or pending[key]
         or not leader or leader.scope ~= "leader" or leader.public ~= cert.public
         or (archive and Latest(d.guild, key) ~= archive)
-        or (not archive and (R.Blocks(d) or not ns.Roster.OfficerDemoted(name))) then return false end
+        or (not archive and (R.Blocks(d) or not manual and not ns.Roster.OfficerDemoted(name))) then return false end
     local body = Pack("ISSUERREVOKE", { ns.group, ns.faction, d.guild, d.name, d.public,
         d.revision, d.issued, math.max(ns.ServerTime(), archive and archive.issued + 1 or 0), "0" })
     local function Guard()
@@ -155,7 +155,7 @@ function R.Revoke(name, archive)
         return current and current.raw == cert.raw and S.MyRoot() == root and ns.MyGuild() == d.guild
             and I.For(ns.MyGuild(), ns.myKey) and I.For(ns.MyGuild(), ns.myKey).raw == leader.raw
             and (archive and Latest(d.guild, key) == archive
-                or not archive and ns.Roster.OfficerDemoted(name) and not R.Blocks(d))
+                or not archive and (manual or ns.Roster.OfficerDemoted(name)) and not R.Blocks(d))
     end
     pending[key] = true
     local queued = S.SignControl(body, Guard, function(sig)
@@ -167,6 +167,7 @@ function R.Revoke(name, archive)
     if not queued then pending[key] = nil end
     return queued
 end
+function R.ManualRevoke(name) return R.Revoke(name, nil, true) end
 function R.Tick()
     local cert = LeaderCertificate()
     if not cert then return end

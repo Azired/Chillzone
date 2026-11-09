@@ -1511,7 +1511,8 @@ ns.Command("trust", function(arg)
     if cmd == "init" then
         S.Init(U.Fold(rest) == "force", function(text) ns.Print("%s", text) end)
     elseif cmd == "issuer-revoke" and rest ~= "" then
-        ns.Print(ns.Issuers.Revoke(rest) and ns.L.AUTH_ISSUER_REVOKE or ns.L.AUTH_ISSUER_FAILED, rest)
+        local queued = ns.Issuers.Revoke(rest) or ns.IssuerRevocations.ManualRevoke(rest)
+        ns.Print(queued and ns.L.AUTH_ISSUER_REVOKE or ns.L.AUTH_REVOKE_FAILED, rest)
     elseif cmd == "issuer-grant" and rest ~= "" then
         local peer = keys[U.Key(rest)]
         ns.Print(peer and ns.Issuers.Grant(peer.name, peer.public) and ns.L.AUTH_ISSUER_GRANT or ns.L.AUTH_ISSUER_FAILED, rest)
