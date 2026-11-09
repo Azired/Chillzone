@@ -23,6 +23,9 @@ Zones.lua
 Roster.lua
 libs\Ed25519.lua
 Security.lua
+Issuers.lua
+IssuerRevocations.lua
+UnionAuthority.lua
 Data.lua
 Update.lua
 Census.lua

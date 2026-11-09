@@ -383,12 +383,15 @@ T.test("union: представителю не в игре решение не �
     T.ok(v.ns.IsMember())
     v:Logout()
     local whispers = CountContact(k)
-    -- Следующая подпись — через AUTH_RENEW после прежней; шаг мелкий, чтобы застать ответ сервера.
-    for _ = 1, 15 * 60 do
+    local gk = k.ns.Util.GuildKey(v.guild)
+    local revision = k.ns.store.security.policies[gk].revision
+    -- Повтор доставки того же решения — через полчаса; новой подписи не требуется.
+    for _ = 1, 35 * 60 do
         if whispers.n > 0 then break end
         w:Run(1)
     end
-    T.eq(whispers.n, 1, "переподписанное решение ушло представителю")
+    T.eq(whispers.n, 1, "то же решение повторно ушло представителю")
+    T.eq(k.ns.store.security.policies[gk].revision, revision, "повтор не меняет подписанную ревизию")
     w:Run(2)
     local hidden = false
     for _, fn in ipairs(k.filters["CHAT_MSG_SYSTEM"] or {}) do

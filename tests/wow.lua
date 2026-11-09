@@ -455,7 +455,7 @@ function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
-		level = opts.level or 60, zone = opts.zone or "Штормград", online = true,
+		level = opts.level or 60, zone = opts.zone or "Штормград", online = true, clockSkew = opts.clockSkew,
 		chatFilterAPI = opts.chatFilterAPI,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
@@ -464,7 +464,8 @@ function World:Client(opts)
 	c.env.ChillzoneDB = opts.db
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
-		if not f:find("^libs/") or f == "libs/Ed25519.lua" then
+		if (not f:find("^libs/") or f == "libs/Ed25519.lua")
+			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua")) then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)

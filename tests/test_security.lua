@@ -244,6 +244,8 @@ end)
 
 T.test("security: a root replacement during real catalog verification cancels new trust", function()
     local w, c = Build()
+    -- Миграционный клиент ещё не закрепил отдельный ключ управления и проверяет старый KA.
+    c.G.ns.store.security.owner = nil
     local Ed, cred = c.A.ns.Ed25519, c.A.ns.Security.MyCertificate()
     local now, guild = c.A.ns.ServerTime(), "Чиллзон Восток"
     local body = Fields("GUILDROOT", { c.A.ns.group, c.A.ns.faction, guild,
@@ -684,11 +686,14 @@ T.test("security: other officers keep the guild certified for days while the roo
     local U, cert = O.ns.Util, N.ns.Security.MyCertificate()
     T.ok(cert and U.Key(cert.issuerName) == U.Key(O:Name()), "newcomer certified by the officer, not the absent root")
     T.ok(B.ns.Security.Member("Чиллзон Север", N:Name()), "and the guild accepts that credential")
-    -- More than AUTH_TTL after the root was last online nobody can issue any more.
+    -- Недельное отсутствие корня больше не прекращает выдачу.
     Skip(5)
     w:Run(30)
+    T.ok(B.ns.Security.MyCertificate(), "издатель работает дольше недельного сертификата")
+    Skip(360)
+    w:Run(30)
     T.eq(B.ns.Security.MyCertificate(), nil, "the member's credential expired")
-    T.eq(N.ns.Security.MyCertificate(), nil, "the newcomer's too: it never outlives the delegation")
+    T.eq(N.ns.Security.MyCertificate(), nil, "членство не переживает годовой допуск издателя")
     for _, cl in ipairs({ V, O, B, N }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": no errors") end
 end)
 

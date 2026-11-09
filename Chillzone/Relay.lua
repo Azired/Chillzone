@@ -25,13 +25,23 @@ local known = {} -- [Key] = { key, name, verified, asked, down }: реле, о �
 local reporters = {}
 local regOf = {} -- (я реле) [Key репортёра] = guildKey
 local claims = {} -- (я реле) [guildKey] = { name, key, t }: кому отказано при живой аренде
+ns.On("ISSUER_REVOCATION", function(wire)
+	if not U.IsMainGuild(ns.MyGuild()) then return end
+	for gk, held in pairs(reporters) do
+		ns.Comm.Send("WHISPER", wire, { target = held.name, prio = ns.Comm.PRIO_CONTROL,
+			key = "issuer-revocation:" .. gk .. ":" .. wire:sub(1, 2) })
+	end
+end)
 -- Решение главы доходит до действующего репортёра даже после исключения гильдии:
 -- обычный RP от неё уже не пройдёт проверку членства.
 ns.On("UNION_POLICY", function(guild, wire)
 	if not U.IsMainGuild(ns.MyGuild()) then return end
 	local held = reporters[U.GuildKey(guild)]
-	if held then ns.Comm.Send("WHISPER", wire, { target = held.name, prio = true,
-		key = "union-reporter:" .. U.GuildKey(guild) }) end
+	if held then
+		ns.UnionAuthority.Share(held.name, true)
+		ns.Comm.Send("WHISPER", wire, { target = held.name, prio = true,
+			key = "union-reporter:" .. U.GuildKey(guild) })
+	end
 end)
 local seen = {} -- [ключ дедупа] = время
 local rate = {} -- [Key автора] = { n, t0 }
@@ -126,6 +136,13 @@ local function Pool()
 	end
 	local root = ns.Security.Roots()[U.GuildKey(C.MAIN_GUILD)]
 	if root then add(root.name, true) end
+	-- Допуск хранит адрес запасного офицера и переживает недельное членство.
+	-- Это лишь адрес опроса: реле станет доверенным только после свежего сертификата.
+	if ns.Issuers then
+		for _, d in ipairs(ns.Issuers.Candidates(C.MAIN_GUILD)) do
+			if not ns.Security.Member(C.MAIN_GUILD, d.name) then add(d.name, true) end
+		end
+	end
 	for _, c in ipairs(ns.Security.Certificates(C.MAIN_GUILD)) do add(c.name) end
 	if ns.store then
 		for _, l in pairs(ns.store.relays) do add(l.name, true) end
@@ -225,6 +242,7 @@ local function Ask(e, payload, renews)
 	-- обновляют ещё и сертификаты реле, так что пропуски могли идти подряд дольше REG_TTL.
 	local silent = e.verified and now - e.verified < PONG_GAP
 	if silent and not renews then return end
+	if ns.Issuers then ns.Issuers.ShareRevocations(e.name, true) end
 	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
 	ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key })
 	if silent then return end
