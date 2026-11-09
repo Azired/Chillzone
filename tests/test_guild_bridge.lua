@@ -14,6 +14,14 @@ local function PlainClient(w, guild, surname)
 	return c
 end
 
+local function Wait(w, ready, seconds)
+	for _ = 1, seconds / 10 do
+		if ready() then return true end
+		w:Run(10)
+	end
+	return ready()
+end
+
 local function Build()
 	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 11)
 	local w = Wow.World()
@@ -33,19 +41,18 @@ local function Build()
 	w:Init(headA, headB)
 	w:Pair(headB, headA)
 	w:Run(180)
+	-- Для успешной смены репортёров штатный транспорт должен знать живое
+	-- реле главной гильдии. Передаём настоящий сертификат до выхода глав.
+	T.ok(Wait(w, function() return a.ns.Security.MyCertificate() end, 60),
+		"запасное реле получило сертификат")
+	a.ns.Security.Introduce(b:Name(), nil, true)
+	T.ok(Wait(w, function() return b.ns.Security.Member(a.guild, a:Name()) end, 60),
+		"соседняя гильдия знает сертификат запасного реле")
 	return w, a, b, observer, plainA, plainB, headA, headB
 end
 
 local function SetPolicy(w, own, peer)
 	w.guilds[own.guild].info = "Правила гильдии\n[CZBRIDGE1] " .. peer.guild
-end
-
-local function Wait(w, ready, seconds)
-	for _ = 1, seconds / 10 do
-		if ready() then return true end
-		w:Run(10)
-	end
-	return ready()
 end
 
 local function Pair(w, a, b, headA, headB)
@@ -169,4 +176,50 @@ T.test("guild bridge: новый связной выбирается после 
 	T.no(b.ns.GuildBridge.Ready(), "при удалении отметки назначение сразу прекращается")
 	w:Run(50)
 	T.no(observer.ns.GuildBridge.Ready())
+end)
+
+T.test("guild bridge: без свежей переписи реплики остаются в исходной гильдии", function()
+	local w, a, b, _, plainA, plainB, headA, headB = Build()
+	Pair(w, a, b, headA, headB)
+	local getRow = a.ns.Data.Row
+	local fresh = getRow(b.guild)
+	local stale = { origin = fresh.origin, signed = fresh.signed,
+		st = a.ns.ServerTime() - a.ns.Config.FRESH - 1 }
+	local unavailable = false
+	a.ns.Data.Row = function(guild)
+		if guild == b.guild then
+			if unavailable then return nil end
+			return stale
+		end
+		return getRow(guild)
+	end
+
+	local first, second = "устаревшая перепись", "нет переписи"
+	w:GuildSay(plainA, first, "GUILD")
+	w:Run(15)
+	T.no(a.ns.GuildBridge.Ready())
+	unavailable = true
+	w:GuildSay(plainA, second, "GUILD")
+	w:Run(15)
+	T.no(a.ns.GuildBridge.Ready())
+	T.same(plainA.lines, { first, second })
+	T.eq(#plainB.lines, 0)
+	for _, packet in ipairs(w.log) do
+		T.no(packet.dist == "WHISPER" and packet.msg:sub(1, 3) == "BM~",
+			"без свежей подписанной переписи даже текст пакета не уходит")
+	end
+end)
+
+T.test("guild bridge: сертификат другого игрока не даёт записать строку в историю", function()
+	local w, a, b, observer, _, plainB, headA, headB = Build()
+	Pair(w, a, b, headA, headB)
+	T.eq(observer.ns.Census.Reporter(), a.ns.myKey)
+	local cert = observer.ns.Security.MyCertificate()
+	T.ok(cert, "сертификат другого участника действителен")
+	local text = "строка с чужим сертификатом"
+	local wire = table.concat({ "BT", cert.fp, b.guild, b.guild, "1-2-3", "99",
+		observer.ns.ServerTime(), plainB:Name(), text }, "~")
+	w:Deliver(a, "GUILD", a.ns.PREFIX, wire, nil, true)
+	w:Run(2)
+	T.eq(History(observer, b.guild, plainB, text), 0)
 end)

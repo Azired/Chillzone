@@ -171,8 +171,11 @@ local function Remember(guild, origin, id, author, text)
 end
 
 local function PublishHistory(s, guild, origin, id, at, author, text)
+	local cert = Security.MyCertificate()
+	if not cert then return end
 	Remember(guild, origin, id, author, text)
-	local wire = table.concat({ "BT", s.config.peerGuild, guild, origin, id, at, author, text }, "~")
+	Security.Introduce("GUILD")
+	local wire = table.concat({ "BT", cert.fp, s.config.peerGuild, guild, origin, id, at, author, text }, "~")
 	local remote = s.remote
 	Comm.Send("GUILD", wire, {
 		prio = true, logged = true,
@@ -228,16 +231,27 @@ function Bridge.Tick()
 	Pump(s)
 end
 
+local function LocalReporter(sender)
+	local c = Policy()
+	if c and U.Key(sender) == ns.Census.Reporter() and ns.Roster.RankOf(sender) ~= nil then return c end
+end
+
 ns.Comm.On("BT", function(msg, sender, dist)
 	if dist ~= "GUILD" then return end
-	local c = Policy()
-	if not c or U.Key(sender) ~= ns.Census.Reporter() or ns.Roster.RankOf(sender) == nil then return end
-	local peer, guild, origin, id, at, author, raw = msg:match("^BT~([^~]+)~([^~]+)~([^~]+)~(%d+)~(%d+)~([^~]+)~(.+)$")
+	local c = LocalReporter(sender)
+	if not c then return end
+	local fp, peer, guild, origin, id, at, author, raw =
+		msg:match("^BT~([%w_-]+)~([^~]+)~([^~]+)~([^~]+)~(%d+)~(%d+)~([^~]+)~(.+)$")
 	if not Stamp(at, CHAT_TTL) or not Valid(peer, 96) or not SameGuild(peer, c.peerGuild)
 		or not Valid(guild, 96) or not (SameGuild(guild, c.guild) or SameGuild(guild, c.peerGuild))
 		or not Nonce(origin) or not LineId(id) or not Valid(author, 64) then return end
 	local text = Body(raw)
-	if text then Remember(guild, origin, id, author, text) end
+	if not text then return end
+	Security.Resolve(fp, sender, sender, function(cert)
+		if LocalReporter(sender) == c and SameGuild(cert.guild, c.guild) and Stamp(at, CHAT_TTL) then
+			Remember(guild, origin, id, author, text)
+		end
+	end)
 end)
 
 ns.Comm.On("BM", function(msg, sender, dist)
