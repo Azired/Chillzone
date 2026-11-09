@@ -44,6 +44,7 @@ read_globals = {
 
 	-- функции
 	"ChatFrame_AddMessageEventFilter",
+	"ChatFrame_OpenChat",
 	"CreateFrame",
 	"FCFDock_GetSelectedWindow",
 	"FCFDock_SelectWindow",

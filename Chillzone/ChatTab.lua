@@ -246,11 +246,31 @@ local function HideInput()
 	RestoreNative()
 end
 
+-- Слэш можно набрать уже после Enter: собственное поле не разбирает команды WoW.
+-- Передаём текст штатному OpenChat, не меняя скрипты, атрибуты и методы игрового поля.
+local function OpenNativeCommand()
+	if not input:IsShown() or not input:HasFocus() or SelectedWindow() ~= anchor then return false end
+	local text = input:GetText() or ""
+	if text:sub(1, 1) ~= "/" then return false end
+	local api = rawget(_G, "ChatFrameUtil")
+	local open = type(api) == "table" and api.OpenChat
+	if type(open) ~= "function" then open = rawget(_G, "ChatFrame_OpenChat") end
+	if type(open) ~= "function" then return false end
+	local cursor = type(input.GetCursorPosition) == "function" and input:GetCursorPosition() or nil
+	-- Контейнер Chattynator не является штатным ChatFrame.
+	local frame = hostedAnchor and DEFAULT_CHAT_FRAME or anchor
+	HideInput()
+	open(text, frame, cursor)
+	input:SetText("")
+	return true
+end
+
 local function Submit()
 	if not input:IsShown() or SelectedWindow() ~= anchor then
 		HideInput()
 		return
 	end
+	if OpenNativeCommand() then return end
 	local text = input:GetText() or ""
 	if U.Trim(text) == "" then input:ClearFocus(); return end
 	if Chat.Submit("A", text) then
@@ -276,6 +296,9 @@ local function CreateInput()
 	prompt:SetTextColor(Chat.Color("A"))
 	inputInset = prompt:GetStringWidth() + 14
 	box:SetTextInsets(inputInset, 6, 0, 0)
+	box:SetScript("OnTextChanged", function(_, user)
+		if user then ns.SafeCall("chat tab command", OpenNativeCommand) end
+	end)
 	box:SetScript("OnEnterPressed", function() ns.SafeCall("chat tab input", Submit) end)
 	box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
 	-- Убираем своё поле сразу при смене вкладки или открытии штатного ввода.
