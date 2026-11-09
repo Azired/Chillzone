@@ -17,6 +17,7 @@ local ICON_KING = "|TInterface\\GroupFrame\\UI-Group-LeaderIcon:14|t"
 local ICON_OFFICER = "|TInterface\\GroupFrame\\UI-Group-AssistantIcon:12|t"
 local GOLD, GREY, RED, WHITE = "|cffffd100", "|cff999999", "|cffff4040", "|cffffffff"
 local GREEN = "|cff40ff40"
+local ORANGE = "|cffff9933"
 
 function Views.Ago(seconds)
 	seconds = math.max(0, math.floor(seconds or 0))
@@ -130,6 +131,13 @@ function Views.GuildCard(s)
 		card.staleNote = L.CARD_STALE
 	end
 	return card
+end
+
+-- Заголовок окна: «Chillzone», а если вышла версия новее (Update.Available) — с просьбой обновиться.
+function Views.Title()
+	local v = ns.Update.Available()
+	if not v then return "Chillzone" end
+	return "Chillzone " .. ORANGE .. "(" .. L.UPDATE_TITLE:format(v) .. ")|r"
 end
 
 ---------------------------------------------------------------------------
@@ -269,7 +277,7 @@ local ROLE_ORDER = { leader = 0, officer = 1, member = 2, active = 3 }
 function Views.ChatLine(e, channel, showTime)
 	local link = "|Hplayer:" .. (U.TellName(e.s) or "?") .. "|h[" .. Views.Name(e.s, e.c) .. "]|h"
 	local guild = ""
-	if not ns.Chat.GUILD_CHANNELS[channel] and e.g then guild = " " .. GREY .. "<" .. Codec.Plain(e.g) .. ">|r" end
+	if not ns.Chat.GUILD_CHANNELS[channel] and e.g then guild = " " .. GREY .. "<" .. ns.Chat.GuildTag(e.g) .. ">|r" end
 	local stamp = (showTime and date) and (GREY .. date("%H:%M", e.t or 0) .. "|r ") or ""
 	return stamp .. link .. guild .. ": " .. Codec.SanitizeChat(e.x)
 end
@@ -282,6 +290,31 @@ local function ByRole(a, b)
 	return a.name < b.name
 end
 
+-- Аддон у согильдийца по приветам H1 (Census.Addon). «Нет» — только про того, кто в игре:
+-- от вышедшего привета и не должно быть.
+local function GuildAddon(key, online)
+	local has, version = ns.Census.Addon(key)
+	if has == false and not online then has = nil end
+	return has, version
+end
+
+-- Кто из других гильдий точно с аддоном: писал в общие каналы или прислал отчёт переписи.
+-- Остальных не знаем: приветы H1 ходят только внутри гильдии.
+local function AddonKnown(summary)
+	local known = {}
+	for tier in pairs(ns.Chat.TIER_LEVEL) do
+		for _, e in ipairs(ns.Chat.History(tier)) do
+			local k = U.Key(e.s)
+			if k then known[k] = true end
+		end
+	end
+	for _, s in ipairs(summary) do
+		local k = U.Key(s.origin)
+		if k then known[k] = true end
+	end
+	return known
+end
+
 -- Своя гильдия по ростеру: в G — кто в игре, в O — офицеры (в игре первыми).
 local function GuildPeople(channel)
 	local list = {}
@@ -289,10 +322,12 @@ local function GuildPeople(channel)
 		local rank = m.rank or 9
 		local officer = ns.Roster.IsOfficerRank(rank)
 		if (channel == "G" and m.online) or (channel == "O" and officer) then
+			local addon, version = GuildAddon(m.key, m.online)
 			list[#list + 1] = {
 				name = U.Display(m.name), class = m.class, level = m.level, online = m.online, days = m.days,
 				rank = rank, rankName = m.rankName, zone = m.zone, guild = ns.Roster.guild,
 				role = rank == 0 and "leader" or (officer and "officer" or "member"),
+				addon = addon, version = version,
 			}
 		end
 	end
@@ -305,7 +340,8 @@ local function GuildPeople(channel)
 end
 
 -- Люди канала для правой панели: { header = true, guild, main, count } и строки людей
--- { name, class, level, online, days, role, guild, wrote }. Второе значение — сколько в сети.
+-- { name, class, level, online, days, role, guild, wrote, addon, version }. Второе значение —
+-- сколько в сети. addon: true — аддон есть, false — нет, nil — неизвестно.
 -- Уровни «Чиллзон»: главы и офицеры гильдий из переписи (в «Главах» — только главы и офицеры
 -- главной гильдии) плюс те, кто писал в канал за последний час.
 function Views.People(channel, now)
@@ -334,7 +370,16 @@ function Views.People(channel, now)
 		end
 		return groups[gk]
 	end
-	for _, s in ipairs(ns.Data.Summary(now)) do
+	local summary = ns.Data.Summary(now)
+	local known, mine = AddonKnown(summary), U.GuildKey(ns.MyGuild())
+	local function addon(k, guild, inGame)
+		if mine and U.GuildKey(guild) == mine then
+			local has, version = GuildAddon(k, inGame)
+			if has ~= nil then return has, version end
+		end
+		return known[k] or nil
+	end
+	for _, s in ipairs(summary) do
 		if s.recent then
 			local g = group(s.guild, s.main)
 			local r = s.r
@@ -342,9 +387,12 @@ function Views.People(channel, now)
 				local k = U.Key(p.name)
 				if not k or seen[k] then return end
 				seen[k] = true
+				local on = (s.fresh and p.online) and true or false
+				local has, version = addon(k, s.guild, on)
 				g.people[#g.people + 1] = {
-					name = p.name, class = p.class, level = p.level, online = (s.fresh and p.online) and true or false,
+					name = p.name, class = p.class, level = p.level, online = on,
 					days = p.days, role = role, rank = p.rank, guild = s.guild, main = s.main, wrote = active[k] and active[k].t,
+					addon = has, version = version,
 				}
 			end
 			if r.leader then person({ name = r.leader, class = r.leaderClass, level = r.leaderLevel, online = r.leaderOnline, days = r.leaderDays, rank = 0 }, "leader") end
@@ -357,7 +405,9 @@ function Views.People(channel, now)
 		if not seen[k] then
 			seen[k] = true
 			local g = group(e.g or "?", U.IsMainGuild(e.g or ""))
-			g.people[#g.people + 1] = { name = e.s, class = e.c, online = now - (e.t or 0) <= C.FRESH, role = "active", guild = e.g, wrote = e.t }
+			local on = now - (e.t or 0) <= C.FRESH
+			local has, version = addon(k, e.g, on)
+			g.people[#g.people + 1] = { name = e.s, class = e.c, online = on, role = "active", guild = e.g, wrote = e.t, addon = has, version = version }
 		end
 	end
 	for _, gk in ipairs(order) do
@@ -390,7 +440,28 @@ function Views.PersonTip(tt, p)
 	if p.zone and p.online then tt:AddLine(Codec.Plain(p.zone), 0.8, 0.8, 0.8) end
 	if p.role ~= "active" then tt:AddLine(Views.State(p.online, p.days), 0.6, 0.6, 0.6) end
 	if p.wrote then tt:AddLine(L.TIP_WROTE:format(Views.Ago(ns.ServerTime() - p.wrote)), 0.6, 0.6, 0.6) end
-	tt:AddLine(L.TIP_CLICK_WHISPER, 0.5, 0.83, 0.76)
+	if p.addon then
+		tt:AddLine(Views.AddonText(p), 0.25, 1, 0.25)
+	else
+		tt:AddLine(Views.AddonText(p), 0.6, 0.6, 0.6)
+	end
+	tt:AddLine(Views.CanInvite(p) and L.TIP_MENU_INVITE or L.TIP_MENU_WHISPER, 0.5, 0.83, 0.76)
+end
+
+-- Приглашать в группу можно того, кто сейчас в игре, и не себя.
+function Views.CanInvite(p)
+	return p.online == true and not ns.IsMe(p.name)
+end
+
+-- Строка подсказки про аддон у человека из списка: есть (с версией, если знаем), нет, неизвестно.
+function Views.AddonText(p)
+	if p.addon then
+		local version = Codec.Plain(p.version)
+		if version ~= "" then return L.TIP_ADDON_VERSION:format(version) end
+		return L.TIP_ADDON_YES
+	end
+	if p.addon == false then return L.TIP_ADDON_NO end
+	return L.TIP_ADDON_UNKNOWN
 end
 
 ---------------------------------------------------------------------------

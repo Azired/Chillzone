@@ -48,11 +48,29 @@ end)
 T.test("codec: отчёт прежней версии без связных читается", function()
 	local _, Codec = fresh()
 	local r = sample()
-	local s = Codec.EncodeReport(r):gsub("~[^~]*$", "")
+	local s = Codec.EncodeReport(r):gsub("~[^~]*~[^~]*$", "")
 	local d = Codec.DecodeReport(s)
 	T.ok(d, "декодировался")
 	T.eq(#d.veterans, 0, "связных нет")
 	T.eq(#d.officers, 2, "офицеры на месте")
+end)
+
+T.test("codec: версия репортёра в отчёте", function()
+	local _, Codec = fresh()
+	local r = sample()
+	r.version = "0.9.0"
+	local s = Codec.EncodeReport(r)
+	T.eq(#Codec.Split(s, "~"), 22, "версия — последнее, 22-е поле")
+	T.same(Codec.DecodeReport(s), r, "round-trip с версией")
+	-- Отчёт 0.8.0: 21 поле, версии нет.
+	local old = Codec.DecodeReport((s:gsub("~[^~]*$", "")))
+	T.ok(old, "отчёт 0.8.0 читается")
+	T.eq(old.version, nil, "у отчёта 0.8.0 версии нет")
+	T.eq(#old.veterans, 1, "связные на месте")
+	-- Поля, которые добавят после версии, не мешают.
+	T.eq(Codec.DecodeReport(s .. "~x~y").version, "0.9.0", "лишние поля в конце не мешают")
+	r.version = "1.0~5"
+	T.eq(Codec.DecodeReport(Codec.EncodeReport(r)).version, "1.05", "разделитель из версии вычищен")
 end)
 
 T.test("codec: невозможный отчёт отклоняется", function()
@@ -157,7 +175,9 @@ end)
 T.test("codec: привет и конверты реле", function()
 	local _, Codec = fresh()
 	local h = Codec.DecodeHello(Codec.EncodeHello("0.1.0", true, false))
-	T.ok(h.zones and not h.relay, "флаги")
+	T.ok(h.zones and not h.relay and not h.unready, "прежний привет")
+	h = Codec.DecodeHello(Codec.EncodeHello("0.9.0", true, false, true))
+	T.ok(h.zones and not h.relay and h.unready, "привет участника без сертификата")
 	local inner = Codec.EncodeChat("A", "Чиллзон", 1, "", "ссылка " .. LINK)
 	local kind, _, _, got = Codec.DecodeRelay(Codec.EncodeRL("P", inner))
 	T.eq(kind, "RL", "RL")
@@ -214,4 +234,38 @@ T.test("codec: выбор реле стабилен в окне", function()
 	local a = Codec.PickRelay("чиллзон север", keys, 1200)
 	T.eq(Codec.PickRelay("чиллзон север", { "б", "в", "а" }, 1799), a, "порядок не важен")
 	T.eq(Codec.PickRelay("x", {}, 0), nil, "пусто")
+end)
+
+T.test("codec: ключ дедупликации вмещает весь 32-битный хеш в клиенте игры", function()
+	local ns, Codec = fresh()
+	local format = string.format
+	-- LuaJIT и 64-битная Lua 5.1 принимают большие %d, а клиент игры выдаёт overflow.
+	-- Подмена действует только внутри этого теста и снимается даже при его падении.
+	string.format = function(fmt, ...) -- luacheck: ignore 122
+		local i = 0
+		for spec in fmt:gmatch("%%([%d%.]*[%a%%])") do
+			local kind = spec:sub(-1)
+			if kind ~= "%" then
+				i = i + 1
+				local value = select(i, ...)
+				if (kind == "d" or kind == "i") and (value < -2147483648 or value > 2147483647) then
+					error("integer overflow attempting to store " .. tostring(value))
+				end
+			end
+		end
+		return format(fmt, ...)
+	end
+	local ok, err = pcall(function()
+		T.no(pcall(string.format, "%d", 2478423003), "ограничение игры воспроизводится")
+		for _, text in ipairs({ "0", "2147483647", "2147483648", "2478423003", "4294967295" }) do
+			local hash = tonumber(text)
+			ns.Util.Hash = function() return hash end
+			local expected = "автор|7|" .. text
+			T.eq(Codec.DedupeKey("автор", "S1~test"), expected, "полное значение хеша")
+			T.eq(Codec.DedupeKey("автор", "S1~test"), expected, "повтор даёт тот же ключ")
+			T.eq(Codec.DedupeKey(nil, ""), "?|0|" .. text, "пустое сообщение")
+		end
+	end)
+	string.format = format -- luacheck: ignore 122
+	T.ok(ok, err)
 end)

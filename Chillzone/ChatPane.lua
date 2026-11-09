@@ -16,6 +16,7 @@ local U = ns.Util
 local L = ns.L
 local Codec = ns.Codec
 local Chat = ns.Chat
+local ChatLinks = ns.ChatLinks
 local Views = ns.Views
 
 local ChatPane = {}
@@ -39,9 +40,13 @@ local ROLE_ICON = {
 	officer = "Interface\\GroupFrame\\UI-Group-AssistantIcon",
 	active = "Interface\\GossipFrame\\GossipGossipIcon",
 }
-local TIP_LINKS = { item = true, spell = true, enchant = true, quest = true, talent = true }
+-- Отметка «есть аддон» в списке людей — значок Chillzone, как у кнопки у миникарты. Он уже круглый.
+local ADDON_ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
+local ADDON_SIZE = 12
+local TEXT_RIGHT, TEXT_RIGHT_ADDON = -24, -24 - ADDON_SIZE - 2
 
 local pane, list, chatArea, messages, jump, box, prompt, title, scope, count, people, peopleChild, empty
+local openTab
 local entries, rows = {}, {}
 local current = "A"
 local shown = false
@@ -222,27 +227,6 @@ function ChatPane.Reload()
 	UpdateJump()
 end
 
-local function LinkType(link)
-	return type(link) == "string" and link:match("^([^:]+)") or nil
-end
-
-local function OnLinkEnter(self, link)
-	if not TIP_LINKS[LinkType(link) or ""] then return end
-	GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
-	if pcall(GameTooltip.SetHyperlink, GameTooltip, link) then GameTooltip:Show() else GameTooltip:Hide() end
-end
-
-local function OnLinkClick(_, link, text)
-	local kind = LinkType(link)
-	if kind == "player" then
-		local name = link:match("^player:([^:]+)")
-		if name then ChatPane.WhisperTo(name) end
-	elseif TIP_LINKS[kind or ""] and IsShiftKeyDown and IsShiftKeyDown() and box then
-		box:Insert(text)
-		box:SetFocus()
-	end
-end
-
 ---------------------------------------------------------------------------
 -- Люди справа (CommunitiesMemberListEntryTemplate)
 ---------------------------------------------------------------------------
@@ -264,17 +248,26 @@ local function PeopleRow(i)
 	r.text:SetJustifyH("LEFT")
 	r.text:SetWordWrap(false)
 	r.text:SetPoint("LEFT", 20, 0)
-	r.text:SetPoint("RIGHT", -24, 0)
+	r.text:SetPoint("RIGHT", TEXT_RIGHT, 0)
 	r.right = r:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	r.right:SetPoint("RIGHT", -4, 0)
+	-- Своя колонка между именем и уровнем: имя у тех, у кого аддон есть, короче на значок.
+	r.addon = r:CreateTexture(nil, "ARTWORK")
+	r.addon:SetSize(ADDON_SIZE, ADDON_SIZE)
+	r.addon:SetPoint("RIGHT", TEXT_RIGHT + 2, 0)
+	r.addon:SetTexture(ADDON_ICON)
+	r.addon:Hide()
 	r:SetScript("OnEnter", function(self)
 		if not self.person then return end
 		ns.SafeCall("person tip", Views.PersonTip, Tooltip(self), self.person)
 		GameTooltip:Show()
 	end)
 	r:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	r:SetScript("OnClick", function(self)
-		if self.person then ns.SafeCall("person click", ChatPane.WhisperTo, self.person.name) end
+	r:RegisterForClicks("RightButtonUp")
+	r:SetScript("OnClick", function(self, button)
+		if button == "RightButton" and self.person then
+			ns.SafeCall("person menu", ChatPane.OpenPersonMenu, self, self.person)
+		end
 	end)
 	rows[i] = r
 	return r
@@ -289,6 +282,8 @@ function ChatPane.RenderPeople()
 		if p.header then
 			r.person = nil
 			r.icon:Hide()
+			r.addon:Hide()
+			r.text:SetPoint("RIGHT", TEXT_RIGHT, 0)
 			r.text:SetFontObject("GameFontNormalSmall")
 			r.text:SetText(Codec.Plain(p.guild or "?"))
 			r.right:SetText(tostring(p.count or ""))
@@ -303,6 +298,8 @@ function ChatPane.RenderPeople()
 				name = "|cff808080" .. name .. "|r"
 			end
 			r.text:SetText(name)
+			r.addon:SetShown(p.addon == true)
+			r.text:SetPoint("RIGHT", p.addon and TEXT_RIGHT_ADDON or TEXT_RIGHT, 0)
 			r.right:SetText(p.level and p.level > 0 and tostring(p.level) or "")
 			local icon = ROLE_ICON[p.role]
 			if icon then
@@ -317,12 +314,15 @@ function ChatPane.RenderPeople()
 	end
 	for i = #items + 1, #rows do rows[i]:Hide() end
 	peopleChild:SetHeight(math.max(#items * PEOPLE_ROW, 10))
-	if count then count:SetText(L.WIN_ONLINE:format(ChatPane.Counts(current, items, online))) end
+	if count then
+		local ownGuild = Chat.GUILD_CHANNELS[current] == true
+		count:SetShown(ownGuild)
+		if ownGuild then count:SetText(L.WIN_ONLINE:format(ChatPane.Counts(current, items, online))) end
+	end
 end
 
--- «В сети: X из Y» под списком людей — про людей этого канала. В чате гильдии — согильдийцы по
--- ростеру (в списке только те, кто в игре); в остальных — люди списка: офицеры гильдии, главы
--- и офицеры гильдий «Чиллзон», писавшие за час. Общий счёт всех гильдий — в шапке окна (UI.lua).
+-- Счётчик виден только в чатах своей гильдии: в G — по ростеру, в O — по списку офицеров.
+-- В общих каналах список людей неполный; общий онлайн объединения показан в шапке окна.
 function ChatPane.Counts(channel, items, online)
 	if channel == "G" then
 		local r = ns.Roster.report
@@ -342,6 +342,7 @@ local function RenderHeader()
 	title:SetText(Codec.Plain(Chat.Label(current)))
 	scope:SetText(Chat.Scope(current, true))
 	scope:SetTextColor(Chat.Color(current))
+	openTab:SetShown(current == "A")
 end
 
 ---------------------------------------------------------------------------
@@ -393,14 +394,119 @@ end
 
 -- Шёпот из окна: «/w Имя Фамилия » в нашем поле, курсор в конце.
 function ChatPane.WhisperTo(name)
-	if not box or type(name) ~= "string" then return end
-	name = U.TellName(name) or name
-	box:SetText("/w " .. Codec.Plain(name) .. " ")
-	box:SetFocus()
+	ChatLinks.Whisper(box, name)
+end
+
+function ChatPane.FocusedInput()
+	if shown and box and box:HasFocus() then return box end
+end
+
+function ChatPane.InviteToGroup(person)
+	if type(person) ~= "table" or not Views.CanInvite(person) then return false end
+	local invite = C_PartyInfo and C_PartyInfo.InviteUnit or InviteUnit
+	if type(invite) ~= "function" then
+		ns.Print(L.PARTY_INVITE_UNAVAILABLE)
+		return false
+	end
+	invite(U.TellName(person.name) or person.name)
+	return true
+end
+
+---------------------------------------------------------------------------
+-- Меню человека: шёпот или приглашение в группу. Не UIDropDownMenu: его общие глобалы на
+-- Forever дают taint, из-за этого игра может заблокировать следующий /cast (см. шапку файла).
+---------------------------------------------------------------------------
+local MENU_W, MENU_ITEM = 170, 20
+local personMenu
+
+local function MenuButton(parent, row, onClick)
+	local b = CreateFrame("Button", nil, parent)
+	b:SetHeight(MENU_ITEM)
+	b:SetPoint("TOPLEFT", parent, "TOPLEFT", 6, -6 - row * MENU_ITEM)
+	b:SetPoint("RIGHT", parent, "RIGHT", -6, 0)
+	b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	b.text:SetPoint("LEFT", 4, 0)
+	b.text:SetPoint("RIGHT", -4, 0)
+	b.text:SetJustifyH("LEFT")
+	b.text:SetWordWrap(false)
+	b.hl = b:CreateTexture(nil, "HIGHLIGHT")
+	b.hl:SetAllPoints()
+	b.hl:SetColorTexture(1, 1, 1, 0.1)
+	b:SetScript("OnClick", onClick)
+	return b
+end
+
+-- Закрывается щелчком мимо и вместе с окном: своё окошко игра сама не закрывает.
+local function WatchPersonMenu(m)
+	local outside = (IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton")) and not m:IsMouseOver()
+	if outside or not (m.owner and m.owner:IsVisible()) then m:Hide() end
+end
+
+function ChatPane.PersonMenu()
+	if personMenu then return personMenu end
+	local m = CreateFrame("Frame", nil, UIParent)
+	m:SetSize(MENU_W, 12 + 3 * MENU_ITEM)
+	m:SetFrameStrata("DIALOG")
+	m:SetClampedToScreen(true)
+	m:EnableMouse(true)
+	local edge = m:CreateTexture(nil, "BACKGROUND", nil, -1)
+	edge:SetPoint("TOPLEFT", -1, 1)
+	edge:SetPoint("BOTTOMRIGHT", 1, -1)
+	edge:SetColorTexture(0.5, 0.5, 0.5, 0.9)
+	local bg = m:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0.06, 0.06, 0.06, 0.96)
+	m.title = m:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	m.title:SetHeight(MENU_ITEM)
+	m.title:SetPoint("TOPLEFT", 10, -6)
+	m.title:SetPoint("RIGHT", -10, 0)
+	m.title:SetJustifyH("LEFT")
+	m.title:SetWordWrap(false)
+	m.whisper = MenuButton(m, 1, function()
+		m:Hide()
+		ns.SafeCall("menu whisper", m.onWhisper, m.person.name)
+	end)
+	m.whisper.text:SetText(L.MENU_WHISPER)
+	m.invite = MenuButton(m, 2, function()
+		m:Hide()
+		ns.SafeCall("menu invite", ChatPane.InviteToGroup, m.person)
+	end)
+	m.invite.text:SetText(L.MENU_INVITE)
+	m:SetScript("OnUpdate", WatchPersonMenu)
+	m:Hide()
+	personMenu = m
+	return m
+end
+
+-- owner — строка списка, whisper — чем открыть шёпот (карточка переписи сначала открывает чат).
+function ChatPane.OpenPersonMenu(owner, person, whisper)
+	local m = ChatPane.PersonMenu()
+	if m:IsShown() and m.owner == owner then
+		m:Hide()
+		return
+	end
+	GameTooltip:Hide()
+	m.owner, m.person, m.onWhisper = owner, person, whisper or ChatPane.WhisperTo
+	m.title:SetText(Views.Name(person.name, person.class))
+	local can = Views.CanInvite(person)
+	m.invite:SetEnabled(can)
+	m.invite.hl:SetShown(can)
+	m.invite.text:SetFontObject(can and "GameFontHighlightSmall" or "GameFontDisableSmall")
+	m:ClearAllPoints()
+	m:SetPoint("TOPRIGHT", owner, "BOTTOMRIGHT", 0, -2)
+	m:Show()
 end
 
 function ChatPane.Focus()
 	if box and shown then box:SetFocus() end
+end
+
+-- Дописать в наш черновик текст, вставленный вместе с короткой командой в чат игры.
+function ChatPane.Insert(text)
+	if box and shown then
+		box:Insert(text)
+		Drafts()[current] = box:GetText()
+	end
 end
 
 ---------------------------------------------------------------------------
@@ -490,6 +596,27 @@ function ChatPane.Build(host)
 	listInset:SetPoint("BOTTOMRIGHT", 0, -3)
 	if real and listInset.Bg then listInset.Bg:Hide() end
 	listInset:EnableMouse(false)
+	openTab = CreateFrame("Button", nil, list, "UIPanelButtonTemplate")
+	openTab:SetPoint("BOTTOMLEFT", list, "BOTTOMLEFT", 8, 5)
+	openTab:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", -8, 5)
+	openTab:SetHeight(20)
+	openTab:SetText(L.CHAT_TAB_OPEN_SHORT)
+	openTab:SetScript("OnClick", function()
+		ns.SafeCall("open chat tab", function()
+			if ns.ChatTab.Open() then
+				GameTooltip:Hide()
+				ns.UI.Toggle()
+			end
+		end)
+	end)
+	openTab:SetScript("OnEnter", function(self)
+		local tt = Tooltip(self)
+		tt:AddLine(L.CHAT_TAB_OPEN, 1, 0.82, 0)
+		tt:AddLine(L.CHAT_TAB_OPEN_TIP, 1, 1, 1, true)
+		tt:Show()
+	end)
+	openTab:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	openTab:Hide()
 
 	-- Люди справа: TOPLEFT (-165,-63) → BOTTOMRIGHT (-26,28).
 	people = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
@@ -543,9 +670,7 @@ function ChatPane.Build(host)
 		end
 		UpdateJump()
 	end)
-	messages:SetScript("OnHyperlinkEnter", OnLinkEnter)
-	messages:SetScript("OnHyperlinkLeave", function() GameTooltip:Hide() end)
-	messages:SetScript("OnHyperlinkClick", function(...) ns.SafeCall("chat link", OnLinkClick, ...) end)
+	ChatLinks.Attach(messages, function() return box end)
 	local bar, barReal = Template("EventFrame", chatArea, "MinimalScrollBar")
 	local SU = rawget(_G, "ScrollUtil")
 	if barReal and type(SU) == "table" and type(SU.InitScrollingMessageFrameWithScrollBar) == "function" then
@@ -608,14 +733,6 @@ function ChatPane.Build(host)
 		if user then Drafts()[current] = self:GetText() end
 	end)
 
-	-- Shift-клик предмета из сумки, пока наше поле в фокусе (пост-хук — функция игры остаётся её).
-	local hook = rawget(_G, "hooksecurefunc")
-	if type(hook) == "function" then
-		pcall(hook, "ChatEdit_InsertLink", function(text)
-			if box and shown and type(text) == "string" and box:HasFocus() then box:Insert(text) end
-		end)
-	end
-
 	keyButton = CreateFrame("Button", "ChillzoneChatKey", UIParent)
 	keyButton:RegisterForClicks("AnyDown")
 	keyButton:SetScript("OnClick", function() ns.SafeCall("chat key", KeyPressed) end)
@@ -629,7 +746,7 @@ function ChatPane.Build(host)
 		end
 	end)
 	pane:Hide()
-	ChatPane.frames = { pane = pane, messages = messages, box = box, keyButton = keyButton, entries = entries, title = title, scope = scope, prompt = prompt, count = count }
+	ChatPane.frames = { pane = pane, messages = messages, box = box, keyButton = keyButton, entries = entries, rows = rows, title = title, scope = scope, prompt = prompt, count = count, openTab = openTab }
 	return pane
 end
 
@@ -701,6 +818,7 @@ local function Dirty()
 end
 ns.On("DATA", Dirty)
 ns.On("ROSTER", Dirty)
+ns.On("PEERS", function() peopleDirty = true end)
 ns.On("GUILD_CHANGED", function()
 	if shown then ChatPane.Select(current) end
 end)

@@ -1,4 +1,4 @@
--- Chillzone: ядро — события, таймеры, сохранённые данные, кто я, команды /cz.
+-- Chillzone: ядро — события, таймеры, сохранённые данные, кто я, команды /chillzone.
 -- Шина событий и таймеры устроены как в Olympus Core.lua.
 local ADDON, ns = ...
 
@@ -32,8 +32,8 @@ function ns.Log(fmt, ...)
 	if not db then return end
 	local log = db.log
 	log[#log + 1] = (date and date("%m-%d %H:%M:%S ") or "") .. msg
-	while #log > 300 do table.remove(log, 1) end
-	if db.settings.debug then ns.Print("|cff999999" .. msg .. "|r") end
+	while #log > 1000 do table.remove(log, 1) end
+	ns.logRevision = (ns.logRevision or 0) + 1
 end
 
 ---------------------------------------------------------------------------
@@ -46,8 +46,11 @@ function ns.SafeCall(where, fn, ...)
 		local db = ns.db
 		if db then
 			db.errors = db.errors or {}
-			table.insert(db.errors, 1, ("%s: %s"):format(where, tostring(err)))
+			local stamp = date and date("%m-%d %H:%M:%S") or "?"
+			local record = ("[%s, v%s] %s: %s"):format(stamp, ns.VERSION, where, tostring(err))
+			table.insert(db.errors, 1, record)
 			while #db.errors > 20 do table.remove(db.errors) end
+			ns.Log("ошибка Lua: %s", record)
 		end
 		if not warnedError then
 			warnedError = true
@@ -143,10 +146,12 @@ local DB_DEFAULTS = {
 	realms = {},
 	log = {},
 	errors = {},
+	versions = {}, -- версии новее моей, которые называли другие игроки (Update.lua)
 }
 
 local CHAR_DEFAULTS = {
-	shareZones = false, chatOn = true, chatWindow = false, warned = false,
+	shareZones = true, chatOn = true, chatWindow = false, warned = false,
+	chatGuildTagsUpper = false,
 	chatMirror = true, chatTime = false, chatChannel = false, history = { G = {}, O = {} }, historyGuild = false, drafts = {},
 }
 local STORE_DEFAULTS = { guilds = {}, relays = {}, manual = {}, ignore = {}, chat = { A = {}, C = {}, L = {} } }
@@ -190,6 +195,10 @@ ns.RegisterEvent("PLAYER_LOGIN", function()
 	local db = ns.db
 	db.chars[ns.myKey] = Defaults(db.chars[ns.myKey] or {}, CHAR_DEFAULTS)
 	ns.char = db.chars[ns.myKey]
+	-- Зоны стали включены по умолчанию. Тем, кто заходил раньше, включаем один раз, дальше решает игрок.
+	if not ns.char.zonesDefaulted then
+		ns.char.zonesDefaulted, ns.char.shareZones = true, true
+	end
 	db.realms[ns.group] = db.realms[ns.group] or {}
 	db.realms[ns.group][ns.faction] = Defaults(db.realms[ns.group][ns.faction] or {}, STORE_DEFAULTS)
 	ns.store = db.realms[ns.group][ns.faction]
@@ -224,8 +233,7 @@ function ns.IsMember()
 end
 
 ---------------------------------------------------------------------------
--- Команды: /cz <команда> [аргументы]. /чз — то же на кириллице (как в ChillZoneUnion).
--- Текст, который не начинается с команды, уходит в общий чат, как /cz1.
+-- Управление: /chillzone <команда> [аргументы]; короткие алиасы также принимают текст чата.
 ---------------------------------------------------------------------------
 local commands, order = {}, {}
 function ns.Command(name, fn, help)
@@ -234,7 +242,7 @@ function ns.Command(name, fn, help)
 end
 
 local statusLines = {}
--- Модули добавляют свои строки в /cz status.
+-- Модули добавляют свои строки в /chillzone status.
 function ns.Status(fn)
 	statusLines[#statusLines + 1] = fn
 end
@@ -243,7 +251,7 @@ ns.Command("help", function()
 	ns.Print(L.HELP_HEADER)
 	for _, name in ipairs(order) do
 		local c = commands[name]
-		if c.help then DEFAULT_CHAT_FRAME:AddMessage("  " .. ns.COLOR .. "/cz " .. name .. "|r — " .. c.help) end
+		if c.help then DEFAULT_CHAT_FRAME:AddMessage("  " .. ns.COLOR .. "/chillzone " .. name .. "|r — " .. c.help) end
 	end
 	DEFAULT_CHAT_FRAME:AddMessage("  " .. ns.COLOR .. "/cz1 /cz2 /cz3|r — " .. L.HELP_CHAT)
 	DEFAULT_CHAT_FRAME:AddMessage("  " .. ns.COLOR .. "/cz текст|r — " .. L.HELP_CHAT_TEXT)
@@ -267,33 +275,35 @@ ns.Command("status", function()
 end, L.HELP_STATUS)
 
 ns.Command("debug", function()
-	ns.db.settings.debug = not ns.db.settings.debug
-	ns.Print(ns.db.settings.debug and L.DEBUG_ON or L.DEBUG_OFF)
+	ns.Diagnostics.SetEnabled(not ns.Diagnostics.Enabled())
+	ns.UI.Toggle("journal")
 end, L.HELP_DEBUG)
 
 ns.Command("log", function(arg)
 	local n = tonumber(arg) or 20
-	local log = ns.db.log
-	for i = math.max(1, #log - n + 1), #log do DEFAULT_CHAT_FRAME:AddMessage("|cff999999" .. log[i] .. "|r") end
-	for i = 1, math.min(3, #(ns.db.errors or {})) do DEFAULT_CHAT_FRAME:AddMessage("|cffff6060" .. ns.db.errors[i] .. "|r") end
+	ns.UI.Toggle("journal")
+	ns.JournalPane.SetLimit(math.max(1, math.floor(n)))
 end, L.HELP_LOG)
 
-SLASH_CHILLZONE1 = "/cz"
-SLASH_CHILLZONE2 = "/chillzone"
-SLASH_CHILLZONE3 = "/чз"
-SLASH_CHILLZONE4 = "/чиллзон"
-SlashCmdList.CHILLZONE = function(msg)
-	if not ns.me then return end
+ns.Command("journal", function() ns.UI.Toggle("journal") end, L.HELP_JOURNAL)
+
+-- true — команда найдена, даже если её обработчик завершился ошибкой.
+-- Короткие алиасы отправляют в чат только текст, не совпавший с командой.
+function ns.RunCommand(msg)
+	if not ns.me then return false end
 	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
 	name = U.Fold(name or "")
-	if name == "" then
-		if ns.UI and ns.UI.Toggle then return ns.UI.Toggle() end
-		name = "help"
-	end
 	local c = commands[name]
-	if not c then
-		ns.SafeCall("/cz текст", ns.Chat.Send, "A", U.Trim(msg))
-		return
+	if not c then return false end
+	ns.SafeCall("/chillzone " .. name, c.fn, rest)
+	return true
+end
+
+SLASH_CHILLZONE1 = "/chillzone"
+SlashCmdList.CHILLZONE = function(msg)
+	if not ns.me then return end
+	if U.Trim(msg) == "" then
+		if ns.UI and ns.UI.Toggle then return ns.UI.Toggle() end
 	end
-	ns.SafeCall("/cz " .. name, c.fn, rest)
+	if not ns.RunCommand(msg) then ns.RunCommand("help") end
 end

@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Тег релиза, например v0.4.1"
+        description: "Тег опубликованного релиза, например v0.11.1"
         required: true
 
 permissions:
@@ -46,6 +46,11 @@ jobs:
             echo "::error::Нет секрета CURSEFORGE_API_TOKEN"
             exit 1
           fi
+          gh release view "$TAG" --json isDraft > release-state.json
+          if ! jq -e '.isDraft == false' release-state.json >/dev/null; then
+            echo "::error::Релиз $TAG ещё не опубликован"
+            exit 1
+          fi
           version="${TAG#v}"
           zip="Chillzone-$version.zip"
           for _ in $(seq 1 20); do
@@ -71,7 +76,8 @@ jobs:
             echo "::error file=Chillzone/Chillzone.toc::В toc нет «## Interface», задайте CURSEFORGE_GAME_VERSIONS"
             exit 1
           fi
-          curl -sS --fail-with-body -H "X-Api-Token: $CF_TOKEN" -o versions.json "$CF_API/game/versions" || { cat versions.json; exit 1; }
+          curl -sS --fail-with-body --connect-timeout 15 --max-time 120 \
+            -H "X-Api-Token: $CF_TOKEN" -o versions.json "$CF_API/game/versions" || { cat versions.json; exit 1; }
           want=$(printf '%s' "$names" | jq -Rc 'split(",") | map(select(. != ""))')
           ids=$(jq -c --argjson want "$want" '[.[] | select(.name | IN($want[])) | .id] | unique' versions.json)
           missing=$(jq -r --argjson want "$want" '$want - [.[].name] | join(", ")' versions.json)
@@ -96,7 +102,12 @@ jobs:
             gameVersions: $versions,
             releaseType: (if .isPrerelease then "beta" else "release" end)
           }' release.json > metadata.json
-          curl -sS --fail-with-body -H "X-Api-Token: $CF_TOKEN" \
+          curl -sS --fail-with-body --connect-timeout 15 --max-time 300 -H "X-Api-Token: $CF_TOKEN" \
             -F "metadata=<metadata.json" -F "file=@$ZIP" \
             -o response.json "$CF_API/projects/$CF_PROJECT/upload-file" || { cat response.json; exit 1; }
-          echo "Загружено на CurseForge: $ZIP, файл $(jq -r .id response.json)"
+          file_id=$(jq -er '.id | numbers | select(. > 0)' response.json) || {
+            echo "::error::CurseForge не вернул ID загруженного файла"
+            cat response.json
+            exit 1
+          }
+          echo "Загружено на CurseForge: $ZIP, файл $file_id"

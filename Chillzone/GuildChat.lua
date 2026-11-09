@@ -1,6 +1,7 @@
 -- Chillzone: чат своей гильдии и офицерский чат гильдии в окне Chillzone. Строки берутся из
 -- обычных событий игры (CHAT_MSG_GUILD / CHAT_MSG_OFFICER), хранятся по 100 на персонажа и
--- уходят событием CHAT в окно. В чат игры аддон их не пишет — это делает сама игра.
+-- уходят событием CHAT в окно. Копии общего канала с меткой [Чиллзон] скрываются:
+-- они нужны только согильдийцам без аддона, у остальных есть исходная строка канала.
 local ADDON, ns = ...
 
 local U = ns.Util
@@ -22,10 +23,16 @@ function GuildChat.CanOfficer()
 	return rank ~= nil and ns.Roster.IsOfficerRank(rank)
 end
 
--- Класс автора: по GUID из события, иначе по ростеру.
+-- Forever может закрыть текст, автора и GUID даже у обычного чата гильдии.
+-- Проверяем до строковых операций; старые клиенты могут не иметь этого API.
+local function IsSecret(value)
+	return type(issecretvalue) == "function" and issecretvalue(value)
+end
+
+-- Класс автора: по доступному GUID из события, иначе по ростеру.
 local function ClassOf(sender, guid)
 	local byGuid = rawget(_G, "GetPlayerInfoByGUID")
-	if guid and guid ~= "" and type(byGuid) == "function" then
+	if not IsSecret(guid) and guid and guid ~= "" and type(byGuid) == "function" then
 		local ok, _, class = pcall(byGuid, guid)
 		if ok and class then return class end
 	end
@@ -37,8 +44,28 @@ local function ClassOf(sender, guid)
 end
 
 function GuildChat.Receive(channel, text, sender, guid)
+	if IsSecret(text) or IsSecret(sender) then return end
 	if not ns.char or type(text) ~= "string" or type(sender) ~= "string" then return end
+	if channel == "G" and GuildChat.IsMirror(text) then return end
 	ns.Chat.Remember(channel, ns.MyGuild(), sender, ClassOf(sender, guid), text)
+end
+
+-- Читаемая копия общего канала для согильдийцев без аддона. Метка позволяет убрать
+-- её сразу, даже если обычный /g пришёл раньше подписанного сообщения M1.
+function GuildChat.IsMirror(text)
+	if IsSecret(text) then return false end
+	return ns.IsMember() and type(text) == "string" and text:sub(1, #L.GUILD_MIRROR_PREFIX) == L.GUILD_MIRROR_PREFIX
+end
+
+ns.AddChatFilter("CHAT_MSG_GUILD", function(_, _, text)
+	return GuildChat.IsMirror(text)
+end)
+
+-- Только автор и только общий канал. Принятые чужие строки и закрытые уровни
+-- никогда не публикуются в обычный /g. Chat.Send передаёт уже нарезанную часть.
+function GuildChat.Mirror(tier, text)
+	if tier ~= "A" then return false end
+	return GuildChat.Send("G", L.GUILD_MIRROR_PREFIX .. text)
 end
 
 -- Строка в чат гильдии (G) или офицеров гильдии (O). true — ушла.

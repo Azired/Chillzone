@@ -10,7 +10,7 @@ local Data = {}
 ns.Data = Data
 
 local claims = {} -- [originKey] = { g = guildKey, t = время }: одна гильдия на отправителя
-Data.rejected = {} -- [причина] = сколько (для /cz status)
+Data.rejected = {} -- [причина] = сколько (для /chillzone status)
 
 local function Guilds()
 	return ns.store and ns.store.guilds or {}
@@ -137,13 +137,14 @@ function Data.Summary(now)
 	now = now or ns.ServerTime()
 	local out = {}
 	for _, row in pairs(Guilds()) do
-		if row.r and now - (row.st or 0) <= C.KEEP then
+		if row.r and U.IsMemberGuild(row.guild) and now - (row.st or 0) <= C.KEEP then
 			local fresh = now - (row.st or 0) <= C.FRESH or row.mine
 			local recent = now - (row.st or 0) <= C.TOTAL_KEEP or row.mine
 			out[#out + 1] = {
 				guild = row.guild, r = row.r, mine = row.mine, main = U.IsMainGuild(row.guild),
 				fresh = fresh, recent = recent, age = now - (row.st or now), conflict = row.conflict,
 				online = fresh and row.r.online or nil, total = recent and row.r.total or nil,
+				origin = row.origin,
 			}
 		end
 	end
@@ -215,7 +216,7 @@ function Data.Cached(now)
 	now = now or ns.ServerTime()
 	local out = {}
 	for gk, row in pairs(Guilds()) do
-		if not row.mine and row.signed and row.origin and now - (row.st or 0) <= C.TOTAL_KEEP then
+		if not row.mine and row.signed and row.origin and U.IsMemberGuild(row.guild) and now - (row.st or 0) <= C.TOTAL_KEEP then
 			out[#out + 1] = { key = gk, raw = row.signed, origin = row.origin }
 		end
 	end

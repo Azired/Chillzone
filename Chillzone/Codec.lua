@@ -3,14 +3,18 @@
 --
 -- Отчёт:  R1~guild~total~online~leader~leaderOn~leaderDays~leaderClass~leaderLevel~users
 --            ~zones~classes~levels~ranks~officers~inact7~inact30~avg10~faction~st
+--            ~veterans~version
 --   zones    "m1453=20,tМёртвые копи=3" (m = uiMapID, t = текст зоны) — только по согласию
 --   classes  "WA=4,MA=2" (двухбуквенные коды классов)
 --   levels   7 чисел: 1-9, 10-19, ..., 50-59, 60+
 --   ranks    "Глава=1,Офицер=3,..." по порядку рангов
 --   officers "имя:онлайн:дней:класс:уровень:ранг,..."
 --   st       серверное время отчёта, base36
+--   veterans связные, как officers (с 0.2)
+--   version  версия аддона репортёра (с 0.9.0). Новые поля идут только в конец:
+--            старые клиенты читают первые 21 поле и остальные не замечают.
 -- Кусок:  C<id>:<i>:<n>:<piece>                (аддон-сообщение не длиннее 255 байт)
--- Привет: H1~<версия>~<флаги>                  (z — делится зонами, r — ретранслятор)
+-- Привет: H1~<версия>~<флаги>                  (z — делится зонами, r — ретранслятор, n — нет сертификата)
 -- Запрос: Q1~
 -- Чат:    M1~tier~guild~id~class~text          (tier A|C|L, id 0-9999, class — 2 буквы)
 -- Реле:   RP~fp · RY~Имя1,Имя2 · RR~guild~fp · RU~guild~преемник · RL~mode~inner
@@ -204,6 +208,7 @@ function Codec.EncodeReport(r)
 		r.faction == "Horde" and "H" or "A",
 		Codec.Base36(r.st) or "",
 		concat(veterans, ","), -- с 0.2: связные (звание Config.RELAY_RANK)
+		clean(r.version):sub(1, 16), -- с 0.9.0: версия аддона репортёра (Update.lua)
 	}, "~")
 end
 
@@ -263,6 +268,7 @@ function Codec.DecodeReport(s)
 		avgLevel = (num(f[18]) or 0) / 10,
 		faction = f[19] == "H" and "Horde" or "Alliance",
 		st = unBase36(f[20]),
+		version = f[22] and f[22] ~= "" and f[22]:sub(1, 16) or nil,
 	}
 end
 
@@ -277,15 +283,21 @@ end
 ---------------------------------------------------------------------------
 -- Привет и запрос
 ---------------------------------------------------------------------------
-function Codec.EncodeHello(version, sharesZones, isRelay)
-	return ("H1~%s~%s%s"):format(clean(version), sharesZones and "z" or "", isRelay and "r" or "")
+function Codec.EncodeHello(version, sharesZones, isRelay, unready)
+	return ("H1~%s~%s%s%s"):format(clean(version), sharesZones and "z" or "", isRelay and "r" or "",
+		unready and "n" or "")
 end
 
 function Codec.DecodeHello(s)
 	if type(s) ~= "string" then return nil end
 	local version, flags = s:match("^H1~([^~]*)~?([%a]*)")
 	if not version then return nil end
-	return { version = version:sub(1, 16), zones = flags:find("z", 1, true) ~= nil, relay = flags:find("r", 1, true) ~= nil }
+	return {
+		version = version:sub(1, 16),
+		zones = flags:find("z", 1, true) ~= nil,
+		relay = flags:find("r", 1, true) ~= nil,
+		unready = flags:find("n", 1, true) ~= nil,
+	}
 end
 
 ---------------------------------------------------------------------------
@@ -319,7 +331,7 @@ function Codec.DecodeRelayList(s, max)
 	return out
 end
 
--- RL~mode~inner (автор → реле).
+-- RL~mode~inner (автор либо доверенное реле главной гильдии → реле).
 function Codec.EncodeRL(mode, inner)
 	return "RL~" .. mode .. "~" .. inner
 end
@@ -602,5 +614,6 @@ end
 
 -- Ключ дедупликации реле.
 function Codec.DedupeKey(originKey, inner)
-	return ("%s|%d|%d"):format(originKey or "?", #inner, ns.Util.Hash(inner))
+	-- Хеш до 2^32 - 1 не помещается в знаковый %d клиента игры.
+	return ("%s|%d|%.0f"):format(originKey or "?", #inner, ns.Util.Hash(inner))
 end

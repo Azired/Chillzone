@@ -1,8 +1,9 @@
 ## Interface: 11509, 11510, 16001, 16002, 16003, 16004, 16005, 16010, 16100, 20506, 20507
 ## Title: |cff7fd4c1Chillzone|r
 ## Notes: Связь гильдий «Чиллзон»: перепись, королевство, карта и общий чат.
+## IconTexture: Interface\AddOns\Chillzone\media\logo
 ## Author: Chillzone addon contributors
-## Version: 0.4.1
+## Version: 0.11.1
 ## SavedVariables: ChillzoneDB
 ## X-License: MIT
 
@@ -18,18 +19,33 @@ Util.lua
 Core.lua
 Codec.lua
 Comm.lua
+Diagnostics.lua
 Zones.lua
 Roster.lua
 libs\Ed25519.lua
 Security.lua
+Issuers.lua
+IssuerRevocations.lua
+UnionAuthority.lua
 Data.lua
+Update.lua
 Census.lua
 Relay.lua
 Chat.lua
+ChatLinks.lua
+ChatTab.lua
+ChattynatorTab.lua
 GuildChat.lua
+Who.lua
+Recruit.lua
+RecruitSync.lua
 Views.lua
 ChatPane.lua
+RecruitPane.lua
 CensusPane.lua
 Debug.lua
+JournalPane.lua
+UnionPane.lua
 UI.lua
 Map.lua
+MapControls.lua

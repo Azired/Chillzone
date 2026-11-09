@@ -37,10 +37,10 @@ function World:Run(seconds)
 	self.now = stop
 end
 
--- Офицеры задают корни доверия своих гильдий (/cz trust init): раз на гильдию.
+-- Офицеры задают корни доверия своих гильдий (/chillzone trust init): раз на гильдию.
 function World:Init(...)
 	local list = { ... }
-	for _, c in ipairs(list) do assert(c.ns.Security.Init(), c:Name() .. ": /cz trust init отклонён") end
+	for _, c in ipairs(list) do assert(c.ns.Security.Init(), c:Name() .. ": /chillzone trust init отклонён") end
 	self:Run(12)
 	for _, c in ipairs(list) do
 		local root = c.ns.Security.Roots()[c.ns.Util.GuildKey(c.guild)]
@@ -71,6 +71,12 @@ end
 function World:AddOffline(guild, full, rank, level, class, days)
 	local g = self.guilds[guild]
 	g.members[#g.members + 1] = { full = full, rank = rank, level = level or 60, class = class or "WARRIOR", days = days or 3 }
+end
+
+-- Согильдиец в игре без аддона: есть в ростере, но клиента у него нет.
+function World:AddOnline(guild, full, rank, level, class)
+	local g = self.guilds[guild]
+	g.members[#g.members + 1] = { full = full, rank = rank, level = level or 60, class = class or "WARRIOR", online = true }
 end
 
 local CLASS_LOCAL = { WARRIOR = "Воин", MAGE = "Маг", PRIEST = "Жрец", PALADIN = "Паладин", DRUID = "Друид", ROGUE = "Разбойник", HUNTER = "Охотник", WARLOCK = "Чернокнижник", SHAMAN = "Шаман" }
@@ -166,8 +172,15 @@ local function NewFrame(c, name)
 	end
 	function methods.SetScript(self, k, fn) self.scripts[k] = fn end
 	function methods.GetScript(self, k) return self.scripts[k] end
-	function methods.HookScript(self, k, fn) self.scripts[k] = fn end
+	function methods.HookScript(self, k, fn)
+		local original = self.scripts[k]
+		self.scripts[k] = function(...)
+			if original then original(...) end
+			fn(...)
+		end
+	end
 	function methods.IsShown(self) return self.shown end
+	function methods.IsVisible(self) return self.shown end
 	function methods.Show(self)
 		if self.shown then return end
 		self.shown = true
@@ -183,13 +196,19 @@ local function NewFrame(c, name)
 	function methods.CreateTexture() return NewFrame(c) end
 	function methods.SetText(self, t) self.text = t or "" end
 	function methods.GetText(self) return self.text end
+	function methods.GetStringHeight(self) return 14 * (1 + select(2, self.text:gsub("\n", ""))) end
+	function methods.Click(self) if self.scripts.OnClick then self.scripts.OnClick(self) end end
 	function methods.Insert(self, t) self.text = self.text .. (t or "") end
 	function methods.SetFocus(self) c.focus = self end
 	function methods.ClearFocus(self) if c.focus == self then c.focus = nil end end
 	function methods.HasFocus(self) return c.focus == self end
 	function methods.SetChecked(self, on) self.checked = on and true or false end
 	function methods.GetChecked(self) return self.checked end
-	function methods.AddMessage(self, t) self.lines[#self.lines + 1] = t end
+	function methods.SetEnabled(self, on) self.enabled = on and true or false end
+	function methods.AddMessage(self, t, r, g, b)
+		self.lines[#self.lines + 1] = t
+		self.color = { r, g, b }
+	end
 	function methods.Clear(self) self.lines = {} end
 	function methods.AtBottom() return true end
 	return setmetatable(f, { __index = function(_, k) return methods[k] or NOOP end })
@@ -200,6 +219,8 @@ local function Env(c)
 	local w = c.world
 	local env = {}
 	env._G = env
+	env.UIParent = NewFrame(c, "UIParent")
+	env.UIParent.GetEffectiveScale = function() return 1 end
 	env.bit = require("bit")
 	env.debugprofilestop = function() return os.clock() * 1000 end
 	env.GetTime = function() return w.now end
@@ -223,11 +244,64 @@ local function Env(c)
 		end,
 	}
 	env.CreateFrame = function(_, name) return NewFrame(c, name) end
+	env.GameTooltip = NewFrame(c, "GameTooltip")
 	env.UnitFullName = function(unit) if unit == "player" then return c.first, c.surname end end
 	env.GetNormalizedRealmName = function() return c.realm end
 	env.GetRealmName = function() return c.realm end
 	env.UnitFactionGroup = function() return c.faction end
 	env.UnitClass = function() return CLASS_LOCAL[c.class], c.class end
+	env.UnitLevel = function() return c.level end
+	env.issecretvalue = function() return false end
+	env.GetMaxPlayerLevel = function() return 60 end
+	c.invites, c.partyInvites, c.whoQueries = {}, {}, {}
+	env.InviteUnit = function(name) c.partyInvites[#c.partyInvites + 1] = name end
+	env.IsMouseButtonDown = function(button) return c.mouseDown == button end
+	env.GetCursorPosition = function() return 400, 300 end
+	env.CanGuildInvite = function()
+		if c.canInvite ~= nil then return c.canInvite end
+		return c.guild ~= nil and c.rank <= 1
+	end
+	env.GuildInvite = function(name)
+		assert(env.CanGuildInvite(), "нет права приглашать")
+		c.invites[#c.invites + 1] = name
+	end
+	env.C_FriendList = {
+		SetWhoToUi = function(on) c.whoToUi = on end,
+		SendWho = function(query)
+			c.whoQueries[#c.whoQueries + 1] = query
+			if c.whoTimeout then return end
+			local rows = {}
+			local Fold = c.ns.Util.Fold
+			local token = query:match('g%-"([^"]+)"')
+			-- Имя — строка в кавычках без префикса, как /who "Имя Фамилия" на Forever.
+			local named = query:match('^"([^"]+)"$')
+			local low, high = query:match(" (%d+)%-(%d+)$")
+			for _, other in ipairs(w.clients) do
+				if other.online and other.faction == c.faction and other.guild
+					and c.ns.Util.GroupOf(other.realm) == c.ns.group
+					and ((token and Fold(other.guild):find(Fold(token), 1, true))
+						or (named and Fold(other.first .. " " .. other.surname):find(Fold(named), 1, true)))
+					and (not low or (other.level >= tonumber(low) and other.level <= tonumber(high))) then
+					rows[#rows + 1] = { fullName = Stamp(other), fullGuildName = other.guild, level = other.level, filename = other.class }
+				end
+			end
+			-- whoRows: готовая выдача или функция (запрос, честная выдача) -> выдача.
+			local results = rows
+			if type(c.whoRows) == "function" then results = c.whoRows(query, rows) elseif c.whoRows then results = c.whoRows end
+			w:Schedule(w.now + 0.1, function()
+				c.whoResults = results
+				c:Fire("WHO_LIST_UPDATE")
+			end, c)
+		end,
+		GetNumWhoResults = function() return math.min(50, #(c.whoResults or {})), #(c.whoResults or {}) end,
+		GetWhoInfo = function(i) return c.whoResults[i] end,
+	}
+	env.SendWho = function(query) return env.C_FriendList.SendWho(query) end
+	env.GetNumWhoResults = function() return env.C_FriendList.GetNumWhoResults() end
+	env.GetWhoInfo = function(i)
+		local row = env.C_FriendList.GetWhoInfo(i)
+		return row.fullName, row.fullGuildName, row.level, "Человек", CLASS_LOCAL[row.filename], c.zone, row.filename
+	end
 	env.IsInGuild = function() return c.guild ~= nil end
 	env.GetGuildInfo = function()
 		if not c.guild then return nil end
@@ -243,7 +317,9 @@ local function Env(c)
 				rows[#rows + 1] = { full = Stamp(o), rank = o.rank, level = o.level, class = o.class, online = o.online, zone = o.zone, days = 0 }
 			end
 		end
-		for _, m in ipairs(g.members) do rows[#rows + 1] = { full = m.full, rank = m.rank, level = m.level, class = m.class, online = false, days = m.days } end
+		for _, m in ipairs(g.members) do
+			rows[#rows + 1] = { full = m.full, rank = m.rank, level = m.level, class = m.class, online = m.online or false, days = m.days }
+		end
 		return rows
 	end
 	env.GetNumGuildMembers = function()
@@ -263,6 +339,7 @@ local function Env(c)
 		return 0, 0, math.floor(r.days or 0), 0
 	end
 	env.C_GuildInfo = {
+		Invite = env.GuildInvite,
 		GuildRoster = function() w:Schedule(w.now + 0.2, function() c:Fire("GUILD_ROSTER_UPDATE") end, c) end,
 		-- Права звания rankOrder (с 1): таблица из 24 флагов, [22] — «офицер».
 		GuildControlGetRankFlags = function(order)
@@ -314,10 +391,30 @@ local function Env(c)
 			if o:Guid() == guid then return CLASS_LOCAL[o.class], o.class end
 		end
 	end
-	env.hooksecurefunc = function(name, fn)
+	env.hooksecurefunc = function(name, fn, callback)
+		if type(name) == "table" then
+			local original = name[fn]
+			c.hooks[fn] = c.hooks[fn] or {}
+			table.insert(c.hooks[fn], callback)
+			name[fn] = function(...)
+				local result = original(...)
+				callback(...)
+				return result
+			end
+			return
+		end
+		if name == "SendWho" or name == "SendChatMessage" then
+			local original = env[name]
+			env[name] = function(...)
+				local result = original(...)
+				fn(...)
+				return result
+			end
+		end
 		c.hooks[name] = c.hooks[name] or {}
 		table.insert(c.hooks[name], fn)
 	end
+	env.debugstack = function() return "Interface\\AddOns\\OtherAddon\\Sender.lua:42: вызов" end
 	env.GetBindingKey = function(action) if action == "OPENCHAT" then return "ENTER" end end
 	env.ClearOverrideBindings = function(owner)
 		for k, b in pairs(c.bindings) do if b.owner == owner then c.bindings[k] = nil end end
@@ -329,12 +426,48 @@ local function Env(c)
 	env.InCombatLockdown = function() return c.combat == true end
 	env.IsShiftKeyDown = function() return c.shift == true end
 	env.ChatFrame_RemoveChannel = function() end
-	env.ChatFrame_AddMessageEventFilter = function(event, fn)
+	local function AddChatFilter(event, fn)
 		c.filters[event] = c.filters[event] or {}
 		table.insert(c.filters[event], fn)
 	end
-	env.DEFAULT_CHAT_FRAME = { AddMessage = function(_, text) c.printed[#c.printed + 1] = text end }
-	env.NUM_CHAT_WINDOWS = 0
+	env.ChatFrameUtil = { InsertLink = function() return false end }
+	if c.chatFilterAPI == "modern" then
+		env.ChatFrameUtil.AddMessageEventFilter = AddChatFilter
+	else
+		env.ChatFrame_AddMessageEventFilter = AddChatFilter
+	end
+	env.ChatFrame1EditBox = NewFrame(c, "ChatFrame1EditBox")
+	env.ChatFrame2EditBox = NewFrame(c, "ChatFrame2EditBox")
+	env.DEFAULT_CHAT_FRAME = { editBox = env.ChatFrame1EditBox, AddMessage = function(_, text) c.printed[#c.printed + 1] = text end }
+	-- Вкладки чата: 1 — основное окно, 2 — журнал боя; ещё вкладки заводит Client:ChatWindow.
+	env.ChatFrame1 = env.DEFAULT_CHAT_FRAME
+	env.ChatFrame2 = NewFrame(c, "ChatFrame2")
+	env.COMBATLOG = env.ChatFrame2
+	c.windows = { { name = "Общий", shown = true, docked = 1 }, { name = "Журнал боя", docked = 2 } }
+	env.GetChatWindowInfo = function(i)
+		local win = c.windows[i] or { name = "" }
+		return win.name, 14, 1, 1, 1, 0, win.shown == true, false, win.docked
+	end
+	env.NUM_CHAT_WINDOWS = 10
+	c.createdWindows = {}
+	env.FCF_GetNumActiveChatFrames = function()
+		local count = 0
+		for _, win in pairs(c.windows) do
+			if win.shown or win.docked then count = count + 1 end
+		end
+		return count
+	end
+	env.FCF_CanOpenNewWindow = function()
+		return env.FCF_GetNumActiveChatFrames() < env.NUM_CHAT_WINDOWS
+	end
+	env.FCF_OpenNewWindow = function(name, noDefaultChannels)
+		assert(not c.combat, "создание вкладки в бою")
+		c.createdWindows[#c.createdWindows + 1] = { name = name, noDefaultChannels = noDefaultChannels }
+		for i = 3, env.NUM_CHAT_WINDOWS do
+			local win = c.windows[i]
+			if not win or not (win.shown or win.docked) then return c:ChatWindow(i, name), i end
+		end
+	end
 	env.SlashCmdList = {}
 	env.UISpecialFrames = {}
 	env.RAID_CLASS_COLORS = {}
@@ -345,12 +478,13 @@ local function Env(c)
 end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
--- поверх Config.lua)
+-- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API)
 function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
-		level = opts.level or 60, zone = opts.zone or "Штормград", online = true,
+		level = opts.level or 60, zone = opts.zone or "Штормград", online = true, clockSkew = opts.clockSkew,
+		chatFilterAPI = opts.chatFilterAPI,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
 	}, Client)
@@ -358,8 +492,14 @@ function World:Client(opts)
 	c.env.ChillzoneDB = opts.db
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
-		if not f:find("^libs/") or f == "libs/Ed25519.lua" then
-			T.load({ f }, c.env, c.ns)
+		if (not f:find("^libs/") or f == "libs/Ed25519.lua")
+			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua")) then
+			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
+				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
+				setfenv(chunk, c.env)("Chillzone", c.ns)
+			else
+				T.load({ f }, c.env, c.ns)
+			end
 			if f == "Config.lua" then
 				for k, v in pairs(opts.config or {}) do c.ns.Config[k] = v end
 			end
@@ -411,6 +551,20 @@ function Client:Logout()
 			break
 		end
 	end
+end
+
+-- Вкладка чата игры номер i (3 и дальше) с названием name, пристыкованная к основному окну;
+-- closed — вкладку закрыли, название у окна осталось. Строки вкладки — в lines возвращённого окна.
+function Client:ChatWindow(i, name, closed)
+	local key, env = "ChatFrame" .. i, self.env
+	local f = rawget(env, key)
+	if not f then
+		f = NewFrame(self, key)
+		env[key], self.stubs[key] = f, true
+	end
+	if i > env.NUM_CHAT_WINDOWS then env.NUM_CHAT_WINDOWS = i end
+	self.windows[i] = { name = name, shown = not closed, docked = not closed and i or nil }
+	return f
 end
 
 -- Строки, которые клиент вывел в чат и которые содержат text.

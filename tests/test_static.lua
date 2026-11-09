@@ -97,6 +97,39 @@ T.test("static: в строках нет символов, которых нет
 	T.eq(#found, 0, "\n  " .. table.concat(found, "\n  "))
 end)
 
+-- Свои текстуры (media/*.tga): путь из toc или кода ведёт на файл, а файл — несжатый 32-битный TGA
+-- со сторонами-степенями двойки. Иначе игра вместо значка рисует зелёный квадрат.
+local function PowerOfTwo(n)
+	while n > 1 and n % 2 == 0 do n = n / 2 end
+	return n == 1
+end
+
+T.test("static: свои текстуры есть и читаются игрой", function()
+	local refs = {}
+	local toc = T.read(T.ROOT .. "/Chillzone/Chillzone.toc")
+	for p in toc:gmatch("##%s*%w+:%s*Interface\\AddOns\\Chillzone\\([^\r\n]-)%s*[\r\n]") do refs[#refs + 1] = p end
+	for _, f in ipairs(files) do
+		if not f:find("^libs/") then
+			for p in T.read(T.ROOT .. "/Chillzone/" .. f):gmatch('"\\\\(media\\\\[%w_]+)"') do refs[#refs + 1] = p end
+		end
+	end
+	T.ok(#refs >= 2, "нашлись пути к значку в toc и в UI.lua")
+	for _, ref in ipairs(refs) do
+		local path = "Chillzone/" .. ref:gsub("\\+", "/") .. ".tga"
+		local h = io.open(T.ROOT .. "/" .. path, "rb")
+		T.ok(h, "нет файла " .. path)
+		if h then
+			local s = h:read("*a")
+			h:close()
+			local w, hh = s:byte(13) + s:byte(14) * 256, s:byte(15) + s:byte(16) * 256
+			T.eq(s:byte(3), 2, path .. ": не несжатый true color")
+			T.eq(s:byte(17), 32, path .. ": не 32 бита")
+			T.ok(PowerOfTwo(w) and PowerOfTwo(hh), path .. ": стороны не степени двойки")
+			T.ok(#s >= 18 + s:byte(1) + w * hh * 4, path .. ": файл обрезан")
+		end
+	end
+end)
+
 -- SetCheckedTexture, SetNormalTexture и SetPushedTexture режим наложения не принимают (это умеет
 -- только SetHighlightTexture): второй аргумент молча теряется. Так значок вкладки закрывала рамка.
 T.test("static: режим наложения — только через SetBlendMode", function()

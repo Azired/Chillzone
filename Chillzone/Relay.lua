@@ -25,6 +25,24 @@ local known = {} -- [Key] = { key, name, verified, asked, down }: реле, о �
 local reporters = {}
 local regOf = {} -- (я реле) [Key репортёра] = guildKey
 local claims = {} -- (я реле) [guildKey] = { name, key, t }: кому отказано при живой аренде
+ns.On("ISSUER_REVOCATION", function(wire, subject)
+	if not U.IsMainGuild(ns.MyGuild()) then return end
+	for gk, held in pairs(reporters) do
+		ns.Comm.Send("WHISPER", wire, { target = held.name, prio = ns.Comm.PRIO_CONTROL,
+			key = "issuer-revocation:" .. gk .. ":" .. subject })
+	end
+end)
+-- Решение главы доходит до действующего репортёра даже после исключения гильдии:
+-- обычный RP от неё уже не пройдёт проверку членства.
+ns.On("UNION_POLICY", function(guild, wire)
+	if not U.IsMainGuild(ns.MyGuild()) then return end
+	local held = reporters[U.GuildKey(guild)]
+	if held then
+		ns.UnionAuthority.Share(held.name, true)
+		ns.Comm.Send("WHISPER", wire, { target = held.name, prio = true,
+			key = "union-reporter:" .. U.GuildKey(guild) })
+	end
+end)
 local seen = {} -- [ключ дедупа] = время
 local rate = {} -- [Key автора] = { n, t0 }
 local hold = {} -- сообщения, пока ни одно реле не ответило
@@ -34,7 +52,7 @@ Relay.stats = { forwarded = 0, delivered = 0, dropped = 0, untrusted = 0 }
 
 local REG_TTL = 60 -- репортёр продлевает аренду раз в 15 секунд; без продления она истекает
 Relay.REG_TTL = REG_TTL
-local WHISPER_FRESH = 10 -- системное «нет такого игрока» относится к шёпоту не старше
+local PONG_GAP = 5 -- реле отвечает одному адресату не чаще; вопрос раньше остаётся без ответа
 
 local function Now() return ns.Now() end
 
@@ -118,6 +136,13 @@ local function Pool()
 	end
 	local root = ns.Security.Roots()[U.GuildKey(C.MAIN_GUILD)]
 	if root then add(root.name, true) end
+	-- Допуск хранит адрес запасного офицера и переживает недельное членство.
+	-- Это лишь адрес опроса: реле станет доверенным только после свежего сертификата.
+	if ns.Issuers then
+		for _, d in ipairs(ns.Issuers.Candidates(C.MAIN_GUILD)) do
+			if not ns.Security.Member(C.MAIN_GUILD, d.name) then add(d.name, true) end
+		end
+	end
 	for _, c in ipairs(ns.Security.Certificates(C.MAIN_GUILD)) do add(c.name) end
 	if ns.store then
 		for _, l in pairs(ns.store.relays) do add(l.name, true) end
@@ -159,6 +184,7 @@ end
 -- Три доступных реле сверху списка: у них регистрируются репортёры, через них идут
 -- сообщения. Я сам стою в общем списке, если я реле, но в ответ не попадаю: так клиенты
 -- главной гильдии и репортёры видят одну и ту же тройку. Опрос ограничен ею, а не всеми.
+-- Второе значение — попал ли в тройку я сам.
 local function Top()
 	local now, list = Now(), {}
 	for _, e in ipairs(Pool().list) do
@@ -166,14 +192,20 @@ local function Top()
 	end
 	if Relay.IAmRelay() then list[#list + 1] = { key = ns.myKey, name = ns.me, self = true } end
 	Rank(list)
-	local out = {}
+	local out, mine = {}, false
 	for i = 1, math.min(3, #list) do
-		if not list[i].self then out[#out + 1] = list[i] end
+		if list[i].self then mine = true else out[#out + 1] = list[i] end
 	end
-	return out
+	return out, mine
 end
 
--- Я реле и у меня зарегистрирован репортёр чужой гильдии: моё сообщение я разошлю сам.
+-- Я реле из общей тройки: у меня зарегистрированы все, кто видит ту же тройку.
+function Relay.InTop()
+	local _, mine = Top()
+	return mine
+end
+
+-- Я реле и у меня зарегистрирован репортёр чужой гильдии: ему моё сообщение я разошлю сам.
 function Relay.Serving()
 	local now, mine = Now(), MyGuildKey()
 	for gk, r in pairs(reporters) do
@@ -185,7 +217,7 @@ end
 ---------------------------------------------------------------------------
 -- Пинги и офлайн
 ---------------------------------------------------------------------------
-local Out -- вперёд
+local Out, FlushHold -- вперёд
 
 local function MarkDown(e, why)
 	local now = Now()
@@ -197,15 +229,24 @@ local function MarkDown(e, why)
 	for _, m in ipairs(list or {}) do
 		if now - m.t <= 15 then Out(m.mode, m.inner) end
 	end
+	-- Очередь могла ждать ответа именно от него.
+	FlushHold()
 	ns.Fire("RELAYS")
 end
 
-local function Ask(e, payload)
+local function Ask(e, payload, renews)
 	local now = Now()
 	if e.asked and now - e.asked < C.RELAY_TIMEOUT then return end
-	e.asked = now
+	-- Реле промолчало бы, и живое реле попало бы в офлайн на RELAY_DOWN, поэтому ответа не ждём.
+	-- Регистрация (renews) уходит всё равно: RR продлевает аренду и без ответа, а verified
+	-- обновляют ещё и сертификаты реле, так что пропуски могли идти подряд дольше REG_TTL.
+	local silent = e.verified and now - e.verified < PONG_GAP
+	if silent and not renews then return end
+	if ns.Issuers then ns.Issuers.ShareRevocations(e.name, true) end
 	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
 	ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key })
+	if silent then return end
+	e.asked = now
 	local asked = now
 	ns.After(C.RELAY_TIMEOUT + 1, "relay timeout", function()
 		if e.asked == asked then MarkDown(e, "нет ответа") end
@@ -252,7 +293,7 @@ function Relay.Register()
 		end
 	end
 	for _, e in ipairs(Top()) do
-		if Usable(e, now) then Ask(e, "RR~" .. Codec.Clean(g) .. "~" .. credential.fp) end
+		if Usable(e, now) then Ask(e, "RR~" .. Codec.Clean(g) .. "~" .. credential.fp, true) end
 	end
 end
 
@@ -333,16 +374,16 @@ end
 
 local function Hold(mode, inner)
 	if mode == "L" then
-		local t = Codec.InnerType(inner)
+		local guild = Relay.InnerGuild(inner)
 		for i = #hold, 1, -1 do
-			if hold[i].mode == "L" and Codec.InnerType(hold[i].inner) == t then table.remove(hold, i) end
+			if hold[i].mode == "L" and Relay.InnerGuild(hold[i].inner) == guild then table.remove(hold, i) end
 		end
 	end
 	hold[#hold + 1] = { mode = mode, inner = inner, t = Now() }
 	while #hold > C.RELAY_HOLD do table.remove(hold, 1) end
 end
 
-local function FlushHold()
+function FlushHold()
 	if #hold == 0 then return end
 	local list = hold
 	hold = {}
@@ -371,9 +412,31 @@ function Relay.Pick()
 	return pick and known[pick] or nil
 end
 
+-- Рядовой годится, когда офицеры молчат, а не когда их ещё не спросили: аренд у него обычно
+-- нет, и строка дошла бы только до своей гильдии. Опрос в главной гильдии идёт лишь при
+-- отправке, а рядовых новичок слышит в GUILD раньше, чем успевает спросить офицеров. Имя без
+-- сертификата (корень, подсказка из ответа реле) может оказаться офицером, поэтому тоже в счёт.
+local function SeniorUnasked(pick)
+	local now, p = Now(), Pool()
+	if p.officer[pick.key] then return false end
+	for _, e in ipairs(Top()) do
+		if not Verified(e, now) and (p.officer[e.key] or not p.trust[e.key]) then return true end
+	end
+	return false
+end
+
+-- Сразу после входа и /reload аренды пусты, а репортёры других гильдий возвращаются не разом:
+-- тому, кто перезашёл сам, нужно больше минуты, чтобы снова стать репортёром, а заметивший мой
+-- выход не регистрируется у меня до конца RELAY_DOWN.
+local function Settled()
+	return ns.loginAt ~= nil and Now() - ns.loginAt >= C.RELAY_SETTLE
+end
+
 -- mode: "L" (отчёт: новый заменяет старый) или "P" (каждое: чат). inner: подписанный S1.
--- Реле главной гильдии рассылает само, только если у него есть чужие репортёры; иначе, как
--- и все, шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту.
+-- Реле главной гильдии рассылает само, если у него есть чужие репортёры; иначе, как и все,
+-- шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту. Реле вне тройки и
+-- только что вошедшее реле делают и то и другое: у них зарегистрированы не все гильдии,
+-- остальные ждут сообщение от общей тройки. Дубли отбрасывает получатель (Codec.DedupeKey).
 function Out(mode, inner)
 	if not ns.IsMember() or Codec.InnerType(inner) ~= "S1" then return false end
 	if Relay.IAmRelay() and Relay.Serving() then
@@ -384,16 +447,17 @@ function Out(mode, inner)
 		else
 			Relay.HandleRL(ns.me, mode, inner)
 		end
-		return true
+		if Relay.InTop() and Settled() then return true end
 	end
 	local e = Relay.Pick()
-	if not e then
+	if not e or SeniorUnasked(e) then
 		Hold(mode, inner)
 		Relay.PingAll()
 		return false
 	end
-	local key = mode == "L" and ("rl:" .. Codec.InnerType(inner)) or nil
+	local key = mode == "L" and ("rl:" .. Codec.InnerType(inner) .. ":" .. (Relay.InnerGuild(inner) or "")) or nil
 	ns.Security.Introduce(e.name)
+	ns.Security.IntroduceWire(e.name, inner)
 	ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name, key = key, prio = mode == "P", logged = Logged(inner) })
 	Remember(e.key, mode, inner)
 	return true
@@ -403,9 +467,9 @@ Relay.Out = Out
 ---------------------------------------------------------------------------
 -- Работа реле
 ---------------------------------------------------------------------------
-local function Seen(dk, now)
+local function Seen(dk, now, remember)
 	if seen[dk] and now - seen[dk] <= C.RELAY_DEDUPE then return true end
-	seen[dk] = now
+	if remember ~= false then seen[dk] = now end
 	return false
 end
 
@@ -428,11 +492,15 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 	local okey = U.Key(origin)
 	local ig = Relay.InnerGuild(inner)
 	if not okey or not ig or not U.IsMemberGuild(ig) then return end
+	local dk = Codec.DedupeKey(okey, inner)
+	-- Дубли не расходуют лимит автора. Отказ по лимиту ещё не означает доставку:
+	-- такой пакет можно повторить после восстановления лимита.
+	if Seen(dk, now, false) then return end
 	if not RateOk(okey, now) then
 		Relay.stats.dropped = Relay.stats.dropped + 1
 		return
 	end
-	if Seen(Codec.DedupeKey(okey, inner), now) then return end
+	Seen(dk, now)
 	local igk = U.GuildKey(ig)
 	local mine = MyGuildKey()
 	if igk ~= mine then ns.Comm.Inject(clear, certificate.name,
@@ -455,13 +523,36 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 			end
 		end
 	end
+	-- Автор может знать только запасное реле. Его аренды не обязаны совпадать
+	-- с общей тройкой: после переезда репортёра пакет должен попасть и туда.
+	-- Свой пакет Out уже отправляет тройке; повторно переносим только чужой.
+	if okey ~= ns.myKey and not Relay.InTop() then
+		local e = Relay.Pick()
+		if not e or SeniorUnasked(e) then
+			Hold(mode, inner)
+			Relay.PingAll()
+		else
+			ns.Security.Introduce(e.name)
+			ns.Security.Introduce(e.name, certificate.raw)
+			ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name,
+				key = mode == "L" and ("rl-forward:" .. okey) or nil,
+				prio = mode == "P", logged = Logged(inner) })
+			Remember(e.key, mode, inner)
+		end
+	end
 end
 
 -- Я реле: сообщение автора (RL) — проверить подпись и разослать.
 function Relay.HandleRL(origin, mode, inner)
 	if Codec.InnerType(inner) ~= "S1" then Relay.stats.untrusted = Relay.stats.untrusted + 1; return end
 	return ns.Security.Open(inner, origin, function(clear, certificate)
-		Relay.Forward(origin, mode, inner, clear, certificate)
+		-- Прямой автор либо проверенное реле главной гильдии. Имя автора берётся
+		-- только из проверенного сертификата, подпись S1 при пересылке не меняется.
+		if certificate.key ~= U.Key(origin) and not Relay.TrustOf(origin) then
+			Relay.stats.untrusted = Relay.stats.untrusted + 1
+			return
+		end
+		Relay.Forward(certificate.name, mode, inner, clear, certificate)
 	end)
 end
 
@@ -479,7 +570,8 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	Relay.stats.delivered = Relay.stats.delivered + 1
 	ctx.authenticated, ctx.certificate, ctx.wire = true, certificate, inner
 	ns.Comm.Inject(clear, certificate.name, ctx)
-	if toGuild and ns.MyGuild() then
+	-- У всех отчётов автора один ключ очереди: устаревший заменил бы ещё не ушедший новый.
+	if toGuild and ns.MyGuild() and not ctx.outdated then
 		local key = mode == "L" and ("rg:" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
@@ -497,13 +589,27 @@ local function GossipList(exceptKey)
 	return out
 end
 
+-- Меня спрашивают, хотя в общей тройке меня нет: спрашивающий не знает сертификатов тех, кто
+-- выше меня, и потому не считает их офицерами. Сам он их не узнает: опрос ограничен его
+-- тройкой. Сертификаты моей тройки ставят его на общий порядок, и моя аренда истекает.
+-- Introduce не повторяет один и тот же сертификат чаще AUTH_INTRODUCE.
+local function ShareTop(target)
+	local top, mine = Top()
+	if mine then return end
+	for _, e in ipairs(top) do
+		local c = ns.Security.Member(C.MAIN_GUILD, e.name)
+		if c then ns.Security.Introduce(target, c.raw) end
+	end
+end
+
 local function Pong(sender)
 	local k = U.Key(sender)
 	local now = Now()
-	if lastPong[k] and now - lastPong[k] < 5 then return end
+	if lastPong[k] and now - lastPong[k] < PONG_GAP then return end
 	lastPong[k] = now
 	ns.Security.SendPolicies(sender)
 	ns.Security.Introduce(sender)
+	ShareTop(sender)
 	ns.Comm.Send("WHISPER", Codec.EncodeRelayList(GossipList(k)), { target = sender, prio = true, key = "ry:" .. k })
 end
 
@@ -571,10 +677,24 @@ ns.Comm.On("RY", function(msg, sender, dist)
 	ns.Fire("RELAYS")
 end)
 
+-- Роль в сертификате действует AUTH_ROLE_TTL, а реле опрашивает только тот, кто пишет. Без этой
+-- рассылки у молчавшего автора офицеры тройки становятся рядовыми, его тройка расходится с тройкой
+-- репортёров, и первая строка уходит реле без аренд. Introduce шлёт каждый сертификат один раз.
+local function ShareRelayCertificate(e, c)
+	if not ns.Census.IsReporter() or U.IsMainGuild(ns.MyGuild()) then return end
+	for _, top in ipairs(Top()) do
+		if top.key == e.key then
+			ns.Security.Introduce("GUILD", c.raw)
+			return
+		end
+	end
+end
+
 ns.On("AUTH_PEER", function(c, sender)
 	if not U.IsMainGuild(c.guild) or not Relay.TrustOf(sender) or ns.IsMe(sender) then return end
 	local e = Entry(U.Key(sender), sender)
 	e.verified, e.asked, e.down = Now(), nil, nil
+	ShareRelayCertificate(e, c)
 	FlushHold()
 end)
 
@@ -635,49 +755,20 @@ function Relay.PruneLearned()
 end
 
 ---------------------------------------------------------------------------
--- «Нет такого игрока» после моего шёпота: реле или репортёр, у которого аренда, не в игре.
--- Строка скрывается; реле помечается недоступным, аренда репортёра снимается сразу, а не
--- через REG_TTL: шептать ему дальше бесполезно.
+-- Транспорт подтвердил недоступность адресата: меняем реле или снимаем аренду репортёра
+-- сразу, не дожидаясь REG_TTL. Очередь этому адресату уже отменена в Comm.
 ---------------------------------------------------------------------------
-local notFound
-local function NotFound(text)
-	if type(text) ~= "string" then return nil end
-	if type(issecretvalue) == "function" and issecretvalue(text) then return nil end
-	if not notFound then
-		local f = type(ERR_CHAT_PLAYER_NOT_FOUND_S) == "string" and ERR_CHAT_PLAYER_NOT_FOUND_S or nil
-		if not f then return nil end
-		notFound = "^" .. (f:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"):gsub("%%%%s", "(.+)")) .. "$"
-	end
-	return text:match(notFound)
-end
-
--- Чей шёпот не дошёл: запись known (реле) и/или ключ репортёра с арендой у меня.
-local function OursNotFound(text)
-	local who = NotFound(text)
-	if not who then return nil end
-	local k = U.Key(who)
-	local t = k and ns.Comm.lastWhisper[k]
-	if not t or Now() - t > WHISPER_FRESH then return nil end
-	local gk = regOf[k]
-	return known[k], gk and reporters[gk] and reporters[gk].key == k and k or nil
-end
-
-ns.RegisterEvent("CHAT_MSG_SYSTEM", function(text)
-	local e, reporter = OursNotFound(text)
+ns.On("WHISPER_UNAVAILABLE", function(k)
+	local e = known[k]
 	if e then MarkDown(e, "не в игре") end
-	if reporter then
-		local gk = regOf[reporter]
+	ns.Security.ContactAway(k)
+	local gk = regOf[k]
+	local reporter = gk and reporters[gk]
+	if reporter and reporter.key == k then
 		ns.Log("репортёр %s не в игре: аренда гильдии %s снята", U.Display(reporters[gk].name), gk)
-		reporters[gk], regOf[reporter] = nil, nil
+		reporters[gk], regOf[k] = nil, nil
 	end
 end)
-
-if ChatFrame_AddMessageEventFilter then
-	ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, text)
-		local e, reporter = OursNotFound(text)
-		return e ~= nil or reporter ~= nil
-	end)
-end
 
 ---------------------------------------------------------------------------
 -- Расписание, команды, статус
@@ -747,7 +838,8 @@ ns.Command("relay", function(arg)
 	name = U.Trim(name)
 	local store = ns.store
 	if cmd == "add" and name ~= "" then
-		if not ns.Security.Link(name) then ns.Print(L.AUTH_NEED_OFFICER) end
+		local ok, why = ns.Security.Link(name)
+		if not ok and why then ns.Print(why) end
 		return
 	elseif (cmd == "del" or cmd == "remove") and name ~= "" then
 		local k = U.Key(name)
