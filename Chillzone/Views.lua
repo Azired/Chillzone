@@ -445,7 +445,12 @@ function Views.PersonTip(tt, p)
 	else
 		tt:AddLine(Views.AddonText(p), 0.6, 0.6, 0.6)
 	end
-	tt:AddLine(L.TIP_CLICK_WHISPER, 0.5, 0.83, 0.76)
+	tt:AddLine(Views.CanInvite(p) and L.TIP_MENU_INVITE or L.TIP_MENU_WHISPER, 0.5, 0.83, 0.76)
+end
+
+-- Приглашать в группу можно того, кто сейчас в игре, и не себя.
+function Views.CanInvite(p)
+	return p.online == true and not ns.IsMe(p.name)
 end
 
 -- Строка подсказки про аддон у человека из списка: есть (с версией, если знаем), нет, неизвестно.

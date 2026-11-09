@@ -180,6 +180,7 @@ local function NewFrame(c, name)
 		end
 	end
 	function methods.IsShown(self) return self.shown end
+	function methods.IsVisible(self) return self.shown end
 	function methods.Show(self)
 		if self.shown then return end
 		self.shown = true
@@ -202,7 +203,10 @@ local function NewFrame(c, name)
 	function methods.SetChecked(self, on) self.checked = on and true or false end
 	function methods.GetChecked(self) return self.checked end
 	function methods.SetEnabled(self, on) self.enabled = on and true or false end
-	function methods.AddMessage(self, t) self.lines[#self.lines + 1] = t end
+	function methods.AddMessage(self, t, r, g, b)
+		self.lines[#self.lines + 1] = t
+		self.color = { r, g, b }
+	end
 	function methods.Clear(self) self.lines = {} end
 	function methods.AtBottom() return true end
 	return setmetatable(f, { __index = function(_, k) return methods[k] or NOOP end })
@@ -236,6 +240,7 @@ local function Env(c)
 		end,
 	}
 	env.CreateFrame = function(_, name) return NewFrame(c, name) end
+	env.GameTooltip = NewFrame(c, "GameTooltip")
 	env.UnitFullName = function(unit) if unit == "player" then return c.first, c.surname end end
 	env.GetNormalizedRealmName = function() return c.realm end
 	env.GetRealmName = function() return c.realm end
@@ -244,7 +249,9 @@ local function Env(c)
 	env.UnitLevel = function() return c.level end
 	env.issecretvalue = function() return false end
 	env.GetMaxPlayerLevel = function() return 60 end
-	c.invites, c.whoQueries = {}, {}
+	c.invites, c.partyInvites, c.whoQueries = {}, {}, {}
+	env.InviteUnit = function(name) c.partyInvites[#c.partyInvites + 1] = name end
+	env.IsMouseButtonDown = function(button) return c.mouseDown == button end
 	env.CanGuildInvite = function()
 		if c.canInvite ~= nil then return c.canInvite end
 		return c.guild ~= nil and c.rank <= 1
