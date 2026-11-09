@@ -325,6 +325,64 @@ T.test("окно: без дубля в чат игры строка только
 	T.eq(c.V:Saw("только окно"), 1, "у других дубль включён")
 end)
 
+T.test("окно: теги гильдий используют выбранный регистр", function()
+	local _, c = SlashClient()
+	local guilds = {
+		{ "ЧИЛЛЗОН", "Чз", "ЧЗ" },
+		{ "Чиллзон Навсегда", "ЧзН", "ЧЗН" },
+		{ "Запомни Навсегда", "Зн", "ЗН" },
+		{ "Другая Гильдия", "Другая Гильдия", "Другая Гильдия" },
+	}
+	T.eq(c.ns.char.chatGuildTagsUpper, false, "по умолчанию смешанный регистр")
+	for _, on in ipairs({ false, true, false }) do
+		c.ns.char.chatGuildTagsUpper = on
+		for _, row in ipairs(guilds) do
+			local tag = "|cff999999<" .. row[on and 3 or 2] .. ">|r"
+			T.ok(c.ns.Chat.Format("A", row[1], c:Name(), c.class, "текст"):find(tag, 1, true), "чат игры")
+			T.ok(c.ns.Views.ChatLine({ g = row[1], s = c:Name(), x = "текст" }, "A", false):find(tag, 1, true), "окно Chillzone")
+		end
+	end
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("окно: теги гильдий переключаются в настройках и сохраняются", function()
+	local w, c = SlashClient()
+	local other = w:Client({ first = "Другой", surname = "Игрок", guild = "Чиллзон", db = c.ns.db })
+	c.ns.UI.OpenChat("A")
+	c.ns.Chat.Show("A", "Чиллзон", c:Name(), c.class, "старая строка")
+	local messages = c.ns.ChatPane.frames.messages
+	c.ns.UI.Toggle("settings")
+	local check = c.ns.UI.guildTagsUpper
+	T.ok(check, "есть переключатель регистра")
+	T.no(check:GetChecked(), "смешанный регистр по умолчанию")
+	for _, on in ipairs({ true, false }) do
+		local previousLine = c.printed[#c.printed]
+		check:SetChecked(on)
+		check.scripts.OnClick(check)
+		T.eq(c.ns.char.chatGuildTagsUpper, on)
+		T.eq(other.ns.char.chatGuildTagsUpper, false, "настройка другого персонажа независима")
+		local tag = on and "<ЧЗ>" or "<Чз>"
+		T.ok(messages.lines[1]:find(tag, 1, true), "история окна перерисована сразу")
+		T.eq(c.ns.Chat.History("A")[1].g, "Чиллзон", "в истории хранится полное имя гильдии")
+		T.eq(c.printed[#c.printed], previousLine, "уже выведенная строка игры прежняя")
+		c:Slash("/chillzone", "history 1")
+		T.ok(c.printed[#c.printed]:find(tag, 1, true), "повторный вывод истории учитывает выбор")
+		c.ns.Chat.Show("A", "Чиллзон", c:Name(), c.class, "новая строка")
+		T.ok(c.printed[#c.printed]:find(tag, 1, true), "новая строка игры")
+		local db = c.ns.db
+		c:Logout()
+		c = w:Client({ first = "Автор", surname = "Чата", guild = "Чиллзон", rank = 0, db = db })
+		c.ns.UI.Toggle("settings")
+		check = c.ns.UI.guildTagsUpper
+		T.eq(check:GetChecked(), on, "выбор сохранён после входа")
+		c.ns.UI.OpenChat("A")
+		messages = c.ns.ChatPane.frames.messages
+		T.ok(messages.lines[1]:find(tag, 1, true), "сохранённая история учитывает выбор")
+		c.ns.UI.Toggle("settings")
+	end
+	T.eq(#c.ns.db.errors, 0)
+end)
+
 T.test("окно: время у строк учитывается и в чате игры", function()
 	local _, c = SlashClient()
 	local tab = c:ChatWindow(3, "Чиллзон")
