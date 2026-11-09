@@ -96,7 +96,9 @@ local function EnableFocusAPI(h, ns, env)
 	api.SetChatFocusOverride = function(box) current = box end
 	api.GetChatFocusOverride = function() return current end
 	api.ClearChatFocusOverride = function() current = nil end
-	api.OpenChat = function(text, frame)
+	api.OpenChat = function(text, frame, cursor)
+		h.nativeOpens = (h.nativeOpens or 0) + 1
+		h.openedFrame, h.openedCursor = frame, cursor
 		if not frame and current and (current.supportsSlashCommands or not text or text:sub(1, 1) ~= "/") then
 			current:SetFocus()
 			if text then current:SetText(text) end
@@ -122,6 +124,108 @@ local function EnableFocusAPI(h, ns, env)
 	ns.Fire("SETTINGS")
 	return api
 end
+
+local function TypeInUnion(box, text)
+	box:SetText(text)
+	local changed = box.scripts.OnTextChanged
+	if changed then changed(box, true) end
+end
+
+T.test("chat input: слэш после Enter передаёт ввод WoW во вкладке союза и основной", function()
+	local h, ns, env = Build()
+	T.ok(ns.ChatTab.Open())
+	ns.Chat.ToggleWindow("")
+	local api = EnableFocusAPI(h, ns, env)
+	local sent = 0
+	ns.Chat.Send = function() sent = sent + 1; return true end
+	local native = env.ChatFrame1EditBox
+	for _, frame in ipairs({ h.tab, env.ChatFrame1 }) do
+		for _, text in ipairs({ "/", "/г ", "/с ", "/g привет", "/s привет", "/cast Ледяная стрела", "/cz1 привет" }) do
+			h:Select(frame)
+			api.OpenChat("")
+			local box = h.box
+			T.ok(box:HasFocus())
+			function box.GetCursorPosition() return #text end
+			local before = h.nativeOpens
+			TypeInUnion(box, text)
+			T.ok(native:HasFocus(), text .. " передан штатному полю без Escape и Enter")
+			T.eq(native:GetText(), text, "команда целиком передана игре")
+			T.eq(h.openedFrame, frame, "передаём штатную вкладку")
+			T.eq(h.openedCursor, #text, "положение курсора передано игре")
+			T.eq(api.GetChatFocusOverride(), nil)
+			T.no(box:IsShown())
+			T.eq(box:GetText(), "", "команда не остаётся в черновике союза")
+			h:Tick()
+			T.ok(native:HasFocus(), "таймер не отбирает ввод")
+			T.eq(h.nativeOpens, before + 1, "команда передана один раз")
+			h:CloseNative()
+			h:Tick()
+			T.eq(api.GetChatFocusOverride(), box, "после закрытия штатного ввода Enter снова пишет в союз")
+		end
+	end
+	T.eq(sent, 0, "команды не отправляются в союз")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat input: слэш в середине сообщения и программный черновик не переводят фокус", function()
+	local h, ns, env = Build()
+	T.ok(ns.ChatTab.Open())
+	local api = EnableFocusAPI(h, ns, env)
+	api.OpenChat("")
+	local box, before = h.box, h.nativeOpens
+	for _, text in ipairs({ "Ищу хила / танка", "https://example.org" }) do
+		TypeInUnion(box, text)
+		T.ok(box:HasFocus())
+		T.eq(box:GetText(), text)
+	end
+	box:SetText("/w Глеб Гордый ")
+	if box.scripts.OnTextChanged then box.scripts.OnTextChanged(box, false) end
+	T.ok(box:HasFocus(), "программный черновик не открывает штатное поле")
+	T.eq(h.nativeOpens, before)
+	-- Между сменой вкладки и таймером старое поле уже не должно открывать команду.
+	h.selected = env.ChatFrame2
+	TypeInUnion(box, "/г ")
+	T.eq(h.nativeOpens, before)
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat input: слэш передаётся игре из специальной вкладки Chattynator", function()
+	local h, ns, env = BuildChattynator()
+	local api = EnableFocusAPI(h, ns, env)
+	h:Mount(1)
+	h:Tick()
+	api.OpenChat("")
+	TypeInUnion(h.box, "/с привет")
+	T.ok(env.ChatFrame1EditBox:HasFocus())
+	T.eq(env.ChatFrame1EditBox:GetText(), "/с привет")
+	T.eq(h.openedFrame, env.DEFAULT_CHAT_FRAME, "контейнер Chattynator не передаётся штатному OpenChat")
+	T.no(h.box:IsShown())
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat input: старый OpenChat принимает команду без API перенаправления фокуса", function()
+	local h, ns, env = Build()
+	T.ok(ns.ChatTab.Open())
+	local api = EnableFocusAPI(h, ns, env)
+	env.ChatFrame_OpenChat = api.OpenChat
+	api.OpenChat, api.SetChatFocusOverride, api.GetChatFocusOverride, api.ClearChatFocusOverride = nil, nil, nil, nil
+	h:Tick()
+	local box = h.box
+	box:SetFocus()
+	TypeInUnion(box, "/г привет")
+	T.ok(env.ChatFrame1EditBox:HasFocus())
+	T.eq(env.ChatFrame1EditBox:GetText(), "/г привет")
+	T.no(box:IsShown())
+	h:CloseNative()
+	h:Tick()
+	-- Без обоих API текст остаётся доступен для исправления или копирования.
+	env.ChatFrame_OpenChat = nil
+	box:SetFocus()
+	TypeInUnion(box, "/с привет")
+	T.ok(box:HasFocus())
+	T.eq(box:GetText(), "/с привет")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
 
 T.test("chat input: Enter отправляет во всех выбранных вкладках, включая основную", function()
 	local h, ns, env = Build()
