@@ -318,12 +318,12 @@ T.test("migration: решение главы принимается только
     c.b, c.k = Upgrade(w, c.b), Upgrade(w, c.k)
     w:Run(90)
     local ns, guild = c.k.ns, "Чиллзон Запад"
-    local Ed, mine = ns.Ed25519, ns.Security.MyCertificate()
+    local Ed, owner = ns.Ed25519, ns.UnionAuthority.Current()
     local saved = ns.db.securityKeys[ns.group .. ":" .. ns.faction .. ":" .. ns.myKey]
     local root, now = ns.Security.Roots()[ns.Util.GuildKey(c.v.guild)], ns.ServerTime()
-    local body = Pack("GUILDROOT", { ns.group, ns.faction, guild,
-        root.name, root.public, now, now + 600, "1", 1 })
-    local wire = "KA~" .. Ed.ToB64(mine.raw) .. "~" .. Ed.ToB64(body)
+    local body = Pack("UNIONDECISION", { ns.group, ns.faction, guild,
+        root.name, root.public, now, "1", 1, owner.generation })
+    local wire = "KA~" .. owner.public .. "~" .. Ed.ToB64(body)
         .. "~" .. Ed.ToB64(Ed.Sign(Ed.FromB64(saved.seed), body))
     ns.Comm.Send("WHISPER", wire, { target = c.b:Name(), prefix = ns.Config.PREFIX })
     w:Run(20)

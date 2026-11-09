@@ -59,6 +59,64 @@ T.test("security: real signed packets reject relay mutations and forged credenti
     T.no(accepted, "public-key substitution requires a real authority signature")
 end)
 
+T.test("security: чужой подписанный RL переносит только доверенное реле с исходной подписью", function()
+    local w, c = Build()
+    local text = "проверенная передача между реле"
+    local payload = c.V.ns.Codec.EncodeChat("A", c.V.guild, 9042, "DRUID", text)
+    local wire
+    T.ok(c.V.ns.Security.Seal(payload, function(value) wire = value end))
+    w:Run(3); T.ok(wire)
+    Whisper(w, c.B, c.A, c.V.ns.Codec.EncodeRL("P", wire)); w:Run(5)
+    T.eq(c.A:Saw(text), 0, "согильдиец автора не может выступить реле")
+    local changed = wire:gsub(text, "изменённый текст реле", 1)
+    T.no(changed == wire)
+    Whisper(w, c.M, c.A, c.V.ns.Codec.EncodeRL("P", changed)); w:Run(5)
+    T.eq(c.A:Saw("изменённый текст реле"), 0, "доверенное реле не может менять подпись автора")
+    Whisper(w, c.M, c.A, c.V.ns.Codec.EncodeRL("P", wire)); w:Run(10)
+    T.eq(c.A:Saw(text), 1, "реле переносит настоящий пакет с именем из сертификата автора")
+end)
+
+T.test("security: повторы чужого RL не расходуют лимит настоящего автора", function()
+    local w, c = Build()
+    local wire, out = nil, c.V.ns.Relay.Out
+    c.V.ns.Relay.Out = function(mode, inner)
+        if mode == "P" then wire = inner end
+        return out(mode, inner)
+    end
+    c.V.ns.Relay.Pick = function() return { key = c.A.ns.myKey, name = c.A:Name() } end
+    c.V:Slash("/cz1", "пакет для проверки повторов"); w:Run(10)
+    T.ok(wire, "перехвачен настоящий подписанный пакет")
+    T.eq(c.A:Saw("пакет для проверки повторов"), 1, "пакет уже принят и сохранён в кэше")
+    T.ok(c.A.ns.Relay.TrustOf(c.M:Name()), "рядовой главной гильдии является доверенным реле")
+    local dropped = c.A.ns.Relay.stats.dropped
+    for _ = 1, c.A.ns.Config.RELAY_PER_MIN + 2 do
+        c.M.ns.Comm.Send("WHISPER", c.M.ns.Codec.EncodeRL("P", wire), { target = c.A:Name(), prio = true })
+    end
+    w:Run(15)
+    T.eq(c.A.ns.Relay.stats.dropped, dropped, "дубли не выбирают лимит автора")
+    c.V:Slash("/cz1", "строка после повторов чужого реле"); w:Run(20)
+    T.eq(c.G:Saw("строка после повторов чужого реле"), 1, "следующая строка настоящего автора дошла")
+    T.eq(c.G:Saw("пакет для проверки повторов"), 1, "повторная доставка подавлена")
+end)
+
+T.test("security: лимит разных RL сохраняется и разрешает повтор после восстановления", function()
+    local w, c = Build()
+    local last, limit = nil, c.A.ns.Config.RELAY_PER_MIN
+    local dropped = c.A.ns.Relay.stats.dropped
+    for i = 1, limit + 2 do
+        local payload = c.V.ns.Codec.EncodeChat("A", c.V.guild, 9500 + i, "DRUID", "проверка лимита " .. i)
+        T.ok(c.V.ns.Security.Seal(payload, function(wire) last = wire end)); w:Run(1)
+        T.ok(last)
+        c.A.ns.Relay.HandleRL(c.V:Name(), "P", last); w:Run(1)
+    end
+    T.eq(c.A.ns.Relay.stats.dropped - dropped, 2, "разные подписанные пакеты ограничены прежним лимитом")
+    local text = "проверка лимита " .. (limit + 2)
+    T.eq(c.A:Saw(text), 0, "пакет сверх лимита не доставлен")
+    w:Run(61)
+    c.A.ns.Relay.HandleRL(c.V:Name(), "P", last); w:Run(5)
+    T.eq(c.A:Saw(text), 1, "первый отказ по лимиту не записал пакет как уже доставленный")
+end)
+
 T.test("security: expired and retired authority credentials fail closed", function()
     local w, c = Build()
     local credential = c.V.ns.Security.MyCertificate()
@@ -244,6 +302,8 @@ end)
 
 T.test("security: a root replacement during real catalog verification cancels new trust", function()
     local w, c = Build()
+    -- Миграционный клиент ещё не закрепил отдельный ключ управления и проверяет старый KA.
+    c.G.ns.store.security.owner = nil
     local Ed, cred = c.A.ns.Ed25519, c.A.ns.Security.MyCertificate()
     local now, guild = c.A.ns.ServerTime(), "Чиллзон Восток"
     local body = Fields("GUILDROOT", { c.A.ns.group, c.A.ns.faction, guild,
@@ -684,11 +744,14 @@ T.test("security: other officers keep the guild certified for days while the roo
     local U, cert = O.ns.Util, N.ns.Security.MyCertificate()
     T.ok(cert and U.Key(cert.issuerName) == U.Key(O:Name()), "newcomer certified by the officer, not the absent root")
     T.ok(B.ns.Security.Member("Чиллзон Север", N:Name()), "and the guild accepts that credential")
-    -- More than AUTH_TTL after the root was last online nobody can issue any more.
+    -- Недельное отсутствие корня больше не прекращает выдачу.
     Skip(5)
     w:Run(30)
+    T.ok(B.ns.Security.MyCertificate(), "издатель работает дольше недельного сертификата")
+    Skip(360)
+    w:Run(30)
     T.eq(B.ns.Security.MyCertificate(), nil, "the member's credential expired")
-    T.eq(N.ns.Security.MyCertificate(), nil, "the newcomer's too: it never outlives the delegation")
+    T.eq(N.ns.Security.MyCertificate(), nil, "членство не переживает годовой допуск издателя")
     for _, cl in ipairs({ V, O, B, N }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": no errors") end
 end)
 

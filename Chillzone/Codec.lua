@@ -331,7 +331,7 @@ function Codec.DecodeRelayList(s, max)
 	return out
 end
 
--- RL~mode~inner (автор → реле).
+-- RL~mode~inner (автор либо доверенное реле главной гильдии → реле).
 function Codec.EncodeRL(mode, inner)
 	return "RL~" .. mode .. "~" .. inner
 end

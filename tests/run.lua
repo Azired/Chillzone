@@ -20,6 +20,8 @@ local SUITES = {
 	"test_security",
 	"test_link",
 	"test_union",
+	"test_autonomy",
+	"test_issuer_revocations",
 	"test_migration",
 	"test_signatures",
 	"test_recruit",

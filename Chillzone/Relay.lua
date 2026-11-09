@@ -25,13 +25,23 @@ local known = {} -- [Key] = { key, name, verified, asked, down }: реле, о �
 local reporters = {}
 local regOf = {} -- (я реле) [Key репортёра] = guildKey
 local claims = {} -- (я реле) [guildKey] = { name, key, t }: кому отказано при живой аренде
+ns.On("ISSUER_REVOCATION", function(wire, subject)
+	if not U.IsMainGuild(ns.MyGuild()) then return end
+	for gk, held in pairs(reporters) do
+		ns.Comm.Send("WHISPER", wire, { target = held.name, prio = ns.Comm.PRIO_CONTROL,
+			key = "issuer-revocation:" .. gk .. ":" .. subject })
+	end
+end)
 -- Решение главы доходит до действующего репортёра даже после исключения гильдии:
 -- обычный RP от неё уже не пройдёт проверку членства.
 ns.On("UNION_POLICY", function(guild, wire)
 	if not U.IsMainGuild(ns.MyGuild()) then return end
 	local held = reporters[U.GuildKey(guild)]
-	if held then ns.Comm.Send("WHISPER", wire, { target = held.name, prio = true,
-		key = "union-reporter:" .. U.GuildKey(guild) }) end
+	if held then
+		ns.UnionAuthority.Share(held.name, true)
+		ns.Comm.Send("WHISPER", wire, { target = held.name, prio = true,
+			key = "union-reporter:" .. U.GuildKey(guild) })
+	end
 end)
 local seen = {} -- [ключ дедупа] = время
 local rate = {} -- [Key автора] = { n, t0 }
@@ -126,6 +136,13 @@ local function Pool()
 	end
 	local root = ns.Security.Roots()[U.GuildKey(C.MAIN_GUILD)]
 	if root then add(root.name, true) end
+	-- Допуск хранит адрес запасного офицера и переживает недельное членство.
+	-- Это лишь адрес опроса: реле станет доверенным только после свежего сертификата.
+	if ns.Issuers then
+		for _, d in ipairs(ns.Issuers.Candidates(C.MAIN_GUILD)) do
+			if not ns.Security.Member(C.MAIN_GUILD, d.name) then add(d.name, true) end
+		end
+	end
 	for _, c in ipairs(ns.Security.Certificates(C.MAIN_GUILD)) do add(c.name) end
 	if ns.store then
 		for _, l in pairs(ns.store.relays) do add(l.name, true) end
@@ -225,6 +242,7 @@ local function Ask(e, payload, renews)
 	-- обновляют ещё и сертификаты реле, так что пропуски могли идти подряд дольше REG_TTL.
 	local silent = e.verified and now - e.verified < PONG_GAP
 	if silent and not renews then return end
+	if ns.Issuers then ns.Issuers.ShareRevocations(e.name, true) end
 	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
 	ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key })
 	if silent then return end
@@ -356,9 +374,9 @@ end
 
 local function Hold(mode, inner)
 	if mode == "L" then
-		local t = Codec.InnerType(inner)
+		local guild = Relay.InnerGuild(inner)
 		for i = #hold, 1, -1 do
-			if hold[i].mode == "L" and Codec.InnerType(hold[i].inner) == t then table.remove(hold, i) end
+			if hold[i].mode == "L" and Relay.InnerGuild(hold[i].inner) == guild then table.remove(hold, i) end
 		end
 	end
 	hold[#hold + 1] = { mode = mode, inner = inner, t = Now() }
@@ -437,8 +455,9 @@ function Out(mode, inner)
 		Relay.PingAll()
 		return false
 	end
-	local key = mode == "L" and ("rl:" .. Codec.InnerType(inner)) or nil
+	local key = mode == "L" and ("rl:" .. Codec.InnerType(inner) .. ":" .. (Relay.InnerGuild(inner) or "")) or nil
 	ns.Security.Introduce(e.name)
+	ns.Security.IntroduceWire(e.name, inner)
 	ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name, key = key, prio = mode == "P", logged = Logged(inner) })
 	Remember(e.key, mode, inner)
 	return true
@@ -448,9 +467,9 @@ Relay.Out = Out
 ---------------------------------------------------------------------------
 -- Работа реле
 ---------------------------------------------------------------------------
-local function Seen(dk, now)
+local function Seen(dk, now, remember)
 	if seen[dk] and now - seen[dk] <= C.RELAY_DEDUPE then return true end
-	seen[dk] = now
+	if remember ~= false then seen[dk] = now end
 	return false
 end
 
@@ -473,11 +492,15 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 	local okey = U.Key(origin)
 	local ig = Relay.InnerGuild(inner)
 	if not okey or not ig or not U.IsMemberGuild(ig) then return end
+	local dk = Codec.DedupeKey(okey, inner)
+	-- Дубли не расходуют лимит автора. Отказ по лимиту ещё не означает доставку:
+	-- такой пакет можно повторить после восстановления лимита.
+	if Seen(dk, now, false) then return end
 	if not RateOk(okey, now) then
 		Relay.stats.dropped = Relay.stats.dropped + 1
 		return
 	end
-	if Seen(Codec.DedupeKey(okey, inner), now) then return end
+	Seen(dk, now)
 	local igk = U.GuildKey(ig)
 	local mine = MyGuildKey()
 	if igk ~= mine then ns.Comm.Inject(clear, certificate.name,
@@ -500,13 +523,36 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 			end
 		end
 	end
+	-- Автор может знать только запасное реле. Его аренды не обязаны совпадать
+	-- с общей тройкой: после переезда репортёра пакет должен попасть и туда.
+	-- Свой пакет Out уже отправляет тройке; повторно переносим только чужой.
+	if okey ~= ns.myKey and not Relay.InTop() then
+		local e = Relay.Pick()
+		if not e or SeniorUnasked(e) then
+			Hold(mode, inner)
+			Relay.PingAll()
+		else
+			ns.Security.Introduce(e.name)
+			ns.Security.Introduce(e.name, certificate.raw)
+			ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name,
+				key = mode == "L" and ("rl-forward:" .. okey) or nil,
+				prio = mode == "P", logged = Logged(inner) })
+			Remember(e.key, mode, inner)
+		end
+	end
 end
 
 -- Я реле: сообщение автора (RL) — проверить подпись и разослать.
 function Relay.HandleRL(origin, mode, inner)
 	if Codec.InnerType(inner) ~= "S1" then Relay.stats.untrusted = Relay.stats.untrusted + 1; return end
 	return ns.Security.Open(inner, origin, function(clear, certificate)
-		Relay.Forward(origin, mode, inner, clear, certificate)
+		-- Прямой автор либо проверенное реле главной гильдии. Имя автора берётся
+		-- только из проверенного сертификата, подпись S1 при пересылке не меняется.
+		if certificate.key ~= U.Key(origin) and not Relay.TrustOf(origin) then
+			Relay.stats.untrusted = Relay.stats.untrusted + 1
+			return
+		end
+		Relay.Forward(certificate.name, mode, inner, clear, certificate)
 	end)
 end
 

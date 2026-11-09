@@ -197,7 +197,7 @@ function Comm.Send(dist, payload, opts)
 	if dist == "WHISPER" and Unavailable(opts.target) then return false end
 	local kind = payload:sub(1, 2)
 	local source = dist == "WHISPER" and ns.Diagnostics.Callsite() or nil
-	local prefix = opts.prefix or ((kind == "KA" or kind == "UQ") and ns.Config.UNION_PREFIX) or ns.PREFIX
+	local prefix = opts.prefix or ((kind == "KA" or kind == "UQ" or kind == "UO") and ns.Config.UNION_PREFIX) or ns.PREFIX
 	local now = ns.Now()
 	if opts.key then
 		for i, job in ipairs(queue) do
@@ -354,9 +354,9 @@ local function OnAddon(prefix, msg, dist, sender)
 		if not msg then return end
 	end
 	local kind = msg:sub(1, 2)
-	if control and kind ~= "KA" and kind ~= "UQ" then return end
-	if kind == "UQ" and not control then return end
-	local ctx = (kind == "KA" or kind == "UQ") and { unionControl = control and true or false } or nil
+	if control and kind ~= "KA" and kind ~= "UQ" and kind ~= "UO" then return end
+	if (kind == "UQ" or kind == "UO") and not control then return end
+	local ctx = (kind == "KA" or kind == "UQ" or kind == "UO") and { unionControl = control and true or false } or nil
 	Comm.Dispatch(msg, sender, dist, ctx)
 end
 
