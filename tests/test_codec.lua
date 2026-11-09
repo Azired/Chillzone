@@ -36,6 +36,47 @@ local function sample()
 	}
 end
 
+T.test("codec: G1 сохраняет автора, время, класс, ссылки и тильды", function()
+	local ns, Codec = fresh()
+	ns.splitNames = true
+	local text = "текст ~ |cffa335ee|Hitem:19019::::::::60:::::|h[Громосвёрт]|h|r ~ конец"
+	local wire = Codec.EncodeGuildImport("Чиллзон Север", "event_123-ABC", 1793000000, "Автор Строки-Реалм", "MAGE", text)
+	T.ok(wire)
+	T.same(Codec.DecodeGuildImport(wire), { guild = "Чиллзон Север", id = "event_123-ABC", at = 1793000000,
+		author = "Автор Строки", class = "MAGE", text = text })
+	T.eq(Codec.InnerType(wire), "G1", "новый тип переносится внутри подписанного конверта")
+	local blank = Codec.DecodeGuildImport(Codec.EncodeGuildImport("Чиллзон", "id", 1, "Автор Строки", nil, "текст"))
+	T.eq(blank.class, nil, "неизвестный класс кодируется пустым полем")
+	local cleaned = Codec.DecodeGuildImport(Codec.EncodeGuildImport("Чиллзон", "id", 1, "Автор Строки", "", " x\n|Tbad:99|t "))
+	T.eq(cleaned.text, "x||Tbad:99||t", "управляющие байты и текстуры обезврежены")
+end)
+
+T.test("codec: G1 проверяет границы и канонические поля", function()
+	local _, Codec = fresh()
+	local guild, id, author = ("г"):rep(48), ("x"):rep(48), ("а"):rep(32)
+	local full = Codec.EncodeGuildImport(guild, id, 4102444800, author, "MAGE", ("x"):rep(510))
+	T.ok(full)
+	T.ok(Codec.DecodeGuildImport(full), "максимальные длины полей разрешены")
+	for _, value in ipairs({ "", " bad", "bad ", "bad~guild", "bad|guild", "bad\nguild", guild .. "x" }) do
+		T.no(Codec.EncodeGuildImport(value, "id", 1, "Автор", nil, "текст"), "неверная гильдия")
+	end
+	for _, value in ipairs({ "", "а", "x y", "x~y", "x.y", ("x"):rep(49) }) do
+		T.no(Codec.EncodeGuildImport("Чиллзон", value, 1, "Автор", nil, "текст"), "неверный идентификатор")
+	end
+	for _, value in ipairs({ 0, -1, 1.5, math.huge, 0 / 0 }) do
+		T.no(Codec.EncodeGuildImport("Чиллзон", "id", value, "Автор", nil, "текст"), "неверное время")
+	end
+	T.no(Codec.EncodeGuildImport("Чиллзон", "id", 1, author .. "x", nil, "текст"), "длинный автор")
+	T.no(Codec.EncodeGuildImport("Чиллзон", "id", 1, "Автор", "FAKE", "текст"), "неизвестный класс")
+	T.no(Codec.EncodeGuildImport("Чиллзон", "id", 1, "Автор", nil, ("x"):rep(511)), "длинный текст")
+	for _, wire in ipairs({
+		"G1~Чиллзон~id~0~Автор~~текст", "G1~Чиллзон~id~1.5~Автор~~текст",
+		"G1~Чиллзон~id~01~Автор~~текст", "G1~Чиллзон~id~1~Автор~XX~текст",
+		"G1~Чиллзон~id~1~ Автор~~текст", "G1~Чиллзон~id~1~Автор|Tbad~~текст",
+		"G1~Чиллзон~id~1~Автор~~" .. ("x"):rep(511), "G1~Чиллзон~id~1~Автор~~\n",
+	}) do T.no(Codec.DecodeGuildImport(wire), "неверное поле входящего импорта") end
+end)
+
 T.test("codec: отчёт туда и обратно с кириллицей", function()
 	local _, Codec = fresh()
 	local r = sample()

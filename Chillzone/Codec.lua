@@ -17,6 +17,7 @@
 -- Привет: H1~<версия>~<флаги>                  (z — делится зонами, r — ретранслятор, n — нет сертификата)
 -- Запрос: Q1~
 -- Чат:    M1~tier~guild~id~class~text          (tier A|C|L, id 0-9999, class — 2 буквы)
+-- Импорт: G1~guild~id~at~author~class~text    (подписывает репортёр; author — автор обычного /г)
 -- Реле:   RP~fp · RY~Имя1,Имя2 · RR~guild~fp · RU~guild~преемник · RL~mode~inner
 --         RM~mode~origin~inner · RG~mode~origin~inner     (fp — отпечаток сертификата)
 local ADDON, ns = ...
@@ -304,7 +305,7 @@ end
 -- Конверты реле
 ---------------------------------------------------------------------------
 Codec.RELAY_MODES = { L = true, P = true } -- L: новый заменяет старый того же автора; P: каждое
-Codec.INNER = { R1 = true, M1 = true, S1 = true }
+Codec.INNER = { R1 = true, M1 = true, G1 = true, S1 = true }
 
 function Codec.InnerType(inner)
 	local t = type(inner) == "string" and inner:sub(1, 2)
@@ -482,6 +483,43 @@ function Codec.DecodeChat(s)
 	text = Codec.SanitizeChat(text)
 	if text == "" then return nil end
 	return { tier = tier, guild = guild, id = tonumber(id), class = classFile(code), text = text }
+end
+
+-- Импорт обычной строки гильдии. Последнее поле не разбивается: ссылки и тильды
+-- остаются в тексте. Идентификатор принадлежит исходному игровому событию.
+local function ImportField(value, cap)
+	return type(value) == "string" and #value > 0 and #value <= cap
+		and value == ns.Util.Trim(value) and not value:find("[|~%c]")
+end
+
+local function ImportId(id)
+	return type(id) == "string" and #id > 0 and #id <= 48 and not id:find("[^A-Za-z0-9_-]")
+end
+
+local function ImportTime(at)
+	return type(at) == "number" and at > 0 and at <= 9007199254740991 and at == floor(at)
+end
+
+function Codec.EncodeGuildImport(guild, id, at, author, class, text)
+	if not ImportField(guild, 96) or not ImportId(id) or not ImportTime(at)
+		or type(author) ~= "string" or type(text) ~= "string"
+		or (class ~= nil and class ~= "" and not Codec.CLASS_CODE[class]) then return nil end
+	author = ns.Util.Display(author)
+	if not ImportField(author, 64) then return nil end
+	text = Codec.SanitizeChat(text)
+	if text == "" or #text > 510 then return nil end
+	return concat({ "G1", guild, id, ("%.0f"):format(at), author, classCode(class), text }, "~")
+end
+
+function Codec.DecodeGuildImport(s)
+	if type(s) ~= "string" or #s > 800 then return nil end
+	local guild, id, at, author, code, text = s:match("^G1~([^~]+)~([^~]+)~([1-9]%d*)~([^~]+)~([A-Z]*)~(.+)$")
+	if not ImportField(guild, 96) or not ImportId(id) or not ImportTime(tonumber(at))
+		or not ImportField(author, 64) or author ~= ns.Util.Display(author)
+		or (code ~= "" and not Codec.CLASS_FILE[code]) then return nil end
+	text = Codec.SanitizeChat(text)
+	if text == "" or #text > 510 then return nil end
+	return { guild = guild, id = id, at = tonumber(at), author = author, class = classFile(code), text = text }
 end
 
 ---------------------------------------------------------------------------

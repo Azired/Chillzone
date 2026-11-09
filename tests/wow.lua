@@ -424,8 +424,9 @@ local function Env(c)
 		c.filters[event] = c.filters[event] or {}
 		table.insert(c.filters[event], fn)
 	end
+	env.ChatFrameUtil = { InsertLink = function() return false end }
 	if c.chatFilterAPI == "modern" then
-		env.ChatFrameUtil = { AddMessageEventFilter = AddChatFilter }
+		env.ChatFrameUtil.AddMessageEventFilter = AddChatFilter
 	else
 		env.ChatFrame_AddMessageEventFilter = AddChatFilter
 	end
@@ -453,7 +454,7 @@ end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
 -- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API),
--- bridge ("none" — без импорта /г, "legacy" — настоящий мост v1 из PR #56).
+-- bridge ("none" — клиент без модуля импорта /г).
 function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
@@ -467,13 +468,10 @@ function World:Client(opts)
 	c.env.ChillzoneDB = opts.db
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
-		-- В 0.9 моста /г ещё не было.
-		local legacyBridge = (opts.legacy or opts.bridge == "none") and f == "GuildBridge.lua"
-		if not legacyBridge and (not f:find("^libs/") or f == "libs/Ed25519.lua") then
-			if opts.bridge == "legacy" and f == "GuildBridge.lua" then
-				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.11.1/GuildBridge.lua"))
-				setfenv(chunk, c.env)("Chillzone", c.ns)
-			elseif opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
+		-- Старые клиенты не импортируют /г, остальной аддон продолжает работать.
+		local skipImport = (opts.legacy or opts.bridge == "none") and f == "GuildImport.lua"
+		if not skipImport and (not f:find("^libs/") or f == "libs/Ed25519.lua") then
+			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)
 			else

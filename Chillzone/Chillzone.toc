@@ -28,8 +28,11 @@ Update.lua
 Census.lua
 Relay.lua
 Chat.lua
+ChatLinks.lua
+ChatTab.lua
+ChattynatorTab.lua
 GuildChat.lua
-GuildBridge.lua
+GuildImport.lua
 Who.lua
 Recruit.lua
 RecruitSync.lua

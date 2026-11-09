@@ -138,7 +138,7 @@ local function RenderPicker()
 	local b = picker.button
 	if not b then return end
 	local open, labels, missing = {}, {}, false
-	for _, w in ipairs(ns.Chat.Windows()) do open[U.Fold(w.name)] = true end
+	for _, w in ipairs(ns.Chat.MirrorWindows()) do open[U.Fold(w.name)] = true end
 	for _, name in ipairs(ns.Chat.SelectedWindows()) do
 		local label = name == "" and L.WINDOW_MAIN or name
 		if name ~= "" and not open[U.Fold(name)] then
@@ -195,7 +195,7 @@ RenderList = function()
 	local list = picker.list
 	local entries = { { text = L.WINDOW_MAIN, value = "" } }
 	local known = { [""] = true }
-	for _, w in ipairs(ns.Chat.Windows()) do
+	for _, w in ipairs(ns.Chat.MirrorWindows()) do
 		known[U.Fold(w.name)] = true
 		if w.frame ~= DEFAULT_CHAT_FRAME then entries[#entries + 1] = { text = w.name, value = w.name } end
 	end
@@ -243,6 +243,9 @@ local function BuildPicker()
 		tt:AddLine(L.WINDOW_TITLE, 1, 0.82, 0)
 		tt:AddLine(picker.selectedText, 1, 1, 1, true)
 		tt:AddLine(L.WINDOW_TIP, 1, 1, 1, true)
+		if type(rawget(_G, "Chattynator")) == "table" then
+			tt:AddLine(L.WINDOW_CHATTYNATOR_TIP, 1, 1, 1, true)
+		end
 	end)
 	local list = CreateFrame("Frame", nil, settings)
 	list:SetPoint("TOPLEFT", b, "BOTTOMLEFT", 0, -2)

@@ -800,14 +800,20 @@ T.test("окно: вкладки, каналы, ссылки и шёпот бе�
 	local msgs = A.ns.ChatPane.frames.messages
 	msgs.scripts.OnHyperlinkClick(msgs, "player:Глеб Гордый", "[Глеб Гордый]", "LeftButton")
 	T.eq(box:GetText(), "/w Глеб Гордый ", "клик по имени — шёпот в поле")
+	local menuName
+	A.env.FriendsFrame_ShowDropdown = function(name) menuName = name end
+	msgs.scripts.OnHyperlinkClick(msgs, "player:Глеб Гордый", "[Глеб Гордый]", "RightButton")
+	T.eq(menuName, "Глеб Гордый", "ПКМ открывает меню игрока")
+	T.eq(box:GetText(), "/w Глеб Гордый ")
 	A.shift = true
 	box:SetText("")
 	msgs.scripts.OnHyperlinkClick(msgs, "item:19019", LINK, "LeftButton")
 	A.shift = false
 	T.eq(box:GetText(), LINK, "Shift-клик по ссылке — в поле")
 	box:SetFocus()
-	A:CallHooks("ChatEdit_InsertLink", "[Предмет из сумки]")
-	T.ok(box:GetText():find("[Предмет из сумки]", 1, true), "предмет из сумки — в поле")
+	local bagLink = "|Hitem:25|h[Предмет из сумки]|h"
+	T.eq(A.env.ChatFrameUtil.InsertLink(bagLink), false)
+	T.eq(box:GetText(), LINK .. bagLink, "предмет из сумки — в поле")
 	A.ns.char.chatTime = true
 	A.ns.ChatPane.Reload()
 	A.ns.UI.Toggle()

@@ -19,6 +19,7 @@ Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько (б�
 Comm.PRIO_BOOTSTRAP = 2
 Comm.PRIO_CONTROL = 3
 Comm.PRIO_LINK = 4 -- ручное соединение обгоняет фоновые опросы и их повторы
+Comm.PRIO_IMPORT = -1 -- импорт /ги уступает прямому чату, сертификатам и переписи
 
 -- Ответы игры «не сейчас»: AddonMessageThrottle (3), ChannelThrottle (8), GeneralError (9),
 -- AddOnMessageLockdown (11). Сообщение остаётся на месте, очередь ждёт всё дольше.
@@ -188,11 +189,8 @@ local function BeforeIndex(key, prio)
 end
 
 local function Enqueue(job, before)
-	local pos = #queue + 1
-	if job.prio then
-		pos = 1
-		while queue[pos] and Priority(queue[pos].prio) >= Priority(job.prio) do pos = pos + 1 end
-	end
+	local pos = 1
+	while queue[pos] and Priority(queue[pos].prio) >= Priority(job.prio) do pos = pos + 1 end
 	local target = BeforeIndex(before, job.prio)
 	if target and target < pos then pos = target end
 	table.insert(queue, pos, job)
@@ -207,6 +205,11 @@ function Comm.Send(dist, payload, opts)
 	if type(payload) ~= "string" or payload == "" then return false end
 	if dist == "WHISPER" and not opts.target then return false end
 	if dist == "WHISPER" and Unavailable(opts.target) then return false end
+	if Priority(opts.prio) == Comm.PRIO_IMPORT and Comm.ImportQueued() >= ns.Config.IMPORT_QUEUE_MAX then
+		Comm.stats.dropped = Comm.stats.dropped + 1
+		if opts.done then ns.SafeCall("send done", opts.done, false, "import full") end
+		return false
+	end
 	local kind = payload:sub(1, 2)
 	local prefix = opts.prefix or ((kind == "KA" or kind == "UQ") and ns.Config.UNION_PREFIX) or ns.PREFIX
 	local now = ns.Now()
@@ -234,23 +237,38 @@ function Comm.Send(dist, payload, opts)
 	}
 	Enqueue(job, opts.before)
 	Comm.stats.queued = Comm.stats.queued + 1
-	-- Переполнение: выбрасывается самое старое обычное, ещё не начатое.
+	-- Сначала освобождаем не начатый импорт. Начатый завершаем: иначе даже старые
+	-- клиенты заполнят четыре места сборщика обрывками G1 и потеряют M1/R1.
+	-- FIFO одного приоритета допускает только один начатый импорт. Его завершение
+	-- может временно добавить одно место сверх MAX_QUEUE, не отнимая место у обычных.
 	while #queue > Comm.MAX_QUEUE do
-		local victim
+		local victim, completing
 		for _, j in ipairs(queue) do
-			if not j.prio and j.i == 1 and j ~= job then
-				victim = j
-				break
+			if Priority(j.prio) == Comm.PRIO_IMPORT then
+				if j.i == 1 then victim = j; break end
+				completing = true
 			end
+			if not victim and not j.prio and j.i == 1 and j ~= job then victim = j end
 		end
+		if completing and #queue <= Comm.MAX_QUEUE + 1
+			and (not victim or Priority(victim.prio) ~= Comm.PRIO_IMPORT) then break end
 		if not victim then Finish(job, false, "dropped"); return false end
 		Finish(victim, false, "dropped")
+		if victim == job then return false end
 	end
 	return true
 end
 
 function Comm.QueueSize()
 	return #queue
+end
+
+function Comm.ImportQueued()
+	local n = 0
+	for _, job in ipairs(queue) do
+		if Priority(job.prio) == Comm.PRIO_IMPORT then n = n + 1 end
+	end
+	return n
 end
 
 -- Сколько заданий в очереди (и начатых) с ключом, который начинается с prefix; exact — ровно с этим ключом.
@@ -265,8 +283,13 @@ end
 
 local function PumpOnce(prioOnly)
 	local job = queue[1]
-	if not job or (prioOnly and not job.prio) then return false end
-	if job.guard and not job.guard() then Finish(job, false, "authority changed"); return true end
+	if not job or (prioOnly and Priority(job.prio) <= 0) then return false end
+	-- После первой части импорт должен собраться даже при истечении TTL или смене
+	-- роли. Получатель повторно проверит срок и подпись уже целого сообщения.
+	if job.guard and (job.i == 1 or Priority(job.prio) ~= Comm.PRIO_IMPORT) and not job.guard() then
+		Finish(job, false, "authority changed")
+		return true
+	end
 	if job.dist == "GUILD" and not ns.MyGuild() then
 		Finish(job, false, "no guild")
 		return true
@@ -335,7 +358,7 @@ function Comm.Dispatch(msg, sender, dist, ctx)
 	ns.SafeCall("recv " .. kind, h, msg, sender, dist, ctx)
 end
 
--- Вложенное сообщение из конверта реле: только R1 и M1.
+-- Вложенное сообщение из конверта реле: R1, M1 или G1.
 function Comm.Inject(inner, origin, ctx)
 	if not Codec.InnerType(inner) then return end
 	Comm.Dispatch(inner, origin, "RELAY", ctx)

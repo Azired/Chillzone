@@ -23,6 +23,121 @@ local function Hidden(c, text)
 	return false
 end
 
+-- Сборщик основной ветки 0.11.1 (8f9013) ничего не знает об импорте G1.
+local function LegacyReceiver(c, sent)
+	local ns = { Util = c.ns.Util, Config = c.ns.Config }
+	local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.11.1/Codec.lua"))
+	setfenv(chunk, c.env)("Chillzone", ns)
+	local codec, cursor, complete = ns.Codec, 0, {}
+	local asm = codec.NewAssembler()
+	local function Deliver(now)
+		while cursor < #sent do
+			cursor = cursor + 1
+			local msg = sent[cursor].msg
+			if msg:sub(1, 1) == "C" then msg = codec.Feed(asm, "отправитель", msg, now) end
+			if msg then complete[#complete + 1] = msg end
+		end
+	end
+	return codec, asm, complete, Deliver
+end
+
+local function ImportPayload()
+	return "S1~" .. ("f"):rep(16) .. "~1793000100~1~" .. ("s"):rep(86)
+		.. "~G1~Чиллзон Север~event~1793000100~Автор Строки~MA~" .. ("x"):rep(510)
+end
+
+T.test("comm: начатый G1 завершается после TTL и остаётся ниже обычного чата", function()
+	local w, c, comm, sent = Fresh()
+	local _, asm, complete, deliver = LegacyReceiver(c, sent)
+	local payload, checked, finished = ImportPayload(), 0, 0
+	T.eq(#c.ns.Codec.Chunk(payload, "1"), 4)
+	comm.Send("WHISPER", payload, { target = TARGET, prio = comm.PRIO_IMPORT,
+		guard = function() checked = checked + 1; return w.now < 130 end,
+		done = function(ok) T.ok(ok); finished = finished + 1 end })
+	comm.Pump(); deliver(w.now)
+	T.eq(asm.open, 1, "старый клиент хранит первую часть")
+	w.now = 131
+	local ordinary = "M1~A~Чиллзон Север~1~MA~обычный чат"
+	comm.Send("WHISPER", ordinary, { target = TARGET, prio = true })
+	comm.Pump(); deliver(w.now)
+	T.eq(complete[1], ordinary, "обычный чат обгоняет начатый низкоприоритетный импорт")
+	for _ = 1, 3 do comm.Pump(); deliver(w.now) end
+	T.eq(complete[2], payload, "истёкший G1 полностью собран старым Codec")
+	T.eq(asm.open, 0, "обрывка в старом сборщике не осталось")
+	T.eq(checked, 1, "guard импорта проверен только до первой части")
+	T.eq(finished, 1)
+	T.eq(comm.QueueSize(), 0)
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("comm: полная обычная очередь сохраняет один начатый G1", function()
+	local w, c, comm, sent = Fresh()
+	local _, asm, complete, deliver = LegacyReceiver(c, sent)
+	local payload, finished = ImportPayload(), 0
+	comm.Send("WHISPER", payload, { target = TARGET, prio = comm.PRIO_IMPORT,
+		done = function(ok) T.ok(ok, "переполнение не отменяет начатый импорт"); finished = finished + 1 end })
+	comm.Pump(); deliver(w.now)
+	for i = 1, comm.MAX_QUEUE do
+		T.ok(comm.Send("GUILD", "M1~A~Чиллзон~" .. i .. "~MA~строка", { prio = true }))
+	end
+	T.eq(comm.QueueSize(), comm.MAX_QUEUE + 1, "200 обычных и один завершаемый импорт")
+	T.eq(comm.ImportQueued(), 1)
+	T.no(comm.Send("GUILD", "M1~A~Чиллзон~999~MA~сверх предела", { prio = true }), "обычный предел остаётся ограниченным")
+	T.eq(comm.QueueSize(), comm.MAX_QUEUE + 1)
+	for _ = 1, comm.MAX_QUEUE do comm.Pump(); deliver(w.now) end
+	T.eq(finished, 0, "импорт не обгоняет обычные задания")
+	T.eq(#complete, comm.MAX_QUEUE)
+	for _ = 1, 3 do comm.Pump(); deliver(w.now) end
+	T.eq(complete[#complete], payload)
+	T.eq(finished, 1)
+	T.eq(asm.open, 0)
+	T.eq(comm.QueueSize(), 0)
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("comm: не начатый просроченный G1 не отправляет ни одного фрагмента", function()
+	local _, _, comm, sent = Fresh()
+	local finished = 0
+	comm.Send("WHISPER", ImportPayload(), { target = TARGET, prio = comm.PRIO_IMPORT,
+		guard = function() return false end,
+		done = function(ok, why)
+			T.no(ok); T.eq(why, "authority changed"); finished = finished + 1
+		end })
+	comm.Pump()
+	T.eq(#sent, 0)
+	T.eq(finished, 1)
+	T.eq(comm.QueueSize(), 0)
+end)
+
+T.test("comm: повторные длинные паузы G1 не блокируют R1 в старом сборщике", function()
+	local w, c, comm, sent = Fresh()
+	local codec, asm, complete, deliver = LegacyReceiver(c, sent)
+	local nextGc = 120
+	local function Advance(seconds)
+		local stop = w.now + seconds
+		while nextGc <= stop do
+			w.now = nextGc
+			codec.Gc(asm, w.now)
+			nextGc = nextGc + 30
+		end
+		w.now = stop
+	end
+	for cycle = 1, 12 do
+		comm.Send("WHISPER", ImportPayload(), { target = TARGET, prio = comm.PRIO_IMPORT })
+		comm.Pump(); deliver(w.now)
+		Advance(61)
+		local report = "R1~Чиллзон Север~" .. cycle .. "~" .. ("r"):rep(450)
+		comm.Send("WHISPER", report, { target = TARGET, prio = true })
+		local before = #complete
+		for _ = 1, #c.ns.Codec.Chunk(report, "1") do comm.Pump(); deliver(w.now) end
+		T.eq(complete[before + 1], report, "обычный R1 собран после длинной паузы")
+		for _ = 1, 3 do comm.Pump(); deliver(w.now) end
+		T.ok(asm.open <= 2, "GC ограничивает число старых хвостов")
+		T.eq(asm.refused, 0, "ни один фрагмент не отвергнут из-за импорта")
+		T.eq(comm.QueueSize(), 0)
+	end
+end)
+
 for _, template in ipairs({
 	"No player named '%s' is currently playing.",
 	'Персонаж по имени "%s" в игре не найден.',

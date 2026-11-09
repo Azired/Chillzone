@@ -52,14 +52,34 @@ local function MyGuildKey()
 end
 
 -- Гильдия, от имени которой написано вложенное сообщение.
+local function Content(inner)
+	return inner:match("^S1~[^~]+~%d+~%d+~[^~]+~(.+)$") or inner
+end
+
 function Relay.InnerGuild(inner)
-	local signed = inner:match("^S1~[^~]+~%d+~%d+~[^~]+~(.+)$")
-	if signed then return Relay.InnerGuild(signed) end
-	return inner:match("^M1~%u~([^~]+)~") or inner:match("^R1~([^~]+)~")
+	local clear = Content(inner)
+	return clear:match("^M1~%u~([^~]+)~") or clear:match("^[RG]1~([^~]+)~")
 end
 
 local function Logged(inner)
-	return inner:find("~M1~", 1, true) ~= nil or Codec.InnerType(inner) == "M1"
+	local kind = Content(inner):sub(1, 2)
+	return kind == "M1" or kind == "G1"
+end
+
+local function Imported(inner)
+	return Codec.DecodeGuildImport(Content(inner))
+end
+
+local function FreshImport(d)
+	local now = ns.ServerTime()
+	return d and U.IsMemberGuild(d.guild) and d.at <= now + 3 and now - d.at <= C.IMPORT_TTL
+end
+
+local function SendOptions(mode, inner, target, key, authority)
+	local d = Imported(inner)
+	local opts = { target = target, key = key, prio = d and ns.Comm.PRIO_IMPORT or mode == "P", logged = Logged(inner) }
+	if d then opts.guard = function() return FreshImport(d) and (not authority or authority()) end end
+	return opts
 end
 
 ---------------------------------------------------------------------------
@@ -414,6 +434,15 @@ local function Settled()
 	return ns.loginAt ~= nil and Now() - ns.loginAt >= C.RELAY_SETTLE
 end
 
+-- Только обычное обнаружение Relay. Никаких отдельных приветствий импорта;
+-- без уже доступного маршрута локальная строка не ставится в очередь догоняющей отправки.
+function Relay.CanSendImport()
+	if not ns.Census.IsReporter() or not ns.Roster.Fresh() or not ns.Security.MyCertificate() then return false end
+	if Relay.IAmRelay() and Relay.Serving() then return true end
+	local e = Relay.Pick()
+	return e ~= nil and not SeniorUnasked(e)
+end
+
 -- mode: "L" (отчёт: новый заменяет старый) или "P" (каждое: чат). inner: подписанный S1.
 -- Реле главной гильдии рассылает само, если у него есть чужие репортёры; иначе, как и все,
 -- шлёт RL реле из тройки: рядовой вне тройки иначе разослал бы в пустоту. Реле вне тройки и
@@ -421,27 +450,32 @@ end
 -- остальные ждут сообщение от общей тройки. Дубли отбрасывает получатель (Codec.DedupeKey).
 function Out(mode, inner)
 	if not ns.IsMember() or Codec.InnerType(inner) ~= "S1" then return false end
+	local imported, delivered = Imported(inner), false
+	if imported and (not FreshImport(imported) or not ns.Census.IsReporter()) then return false end
 	if Relay.IAmRelay() and Relay.Serving() then
 		-- Свой пакет я только что подписал сам: проверять подпись незачем.
 		local clear, certificate = ns.Security.Own(inner)
 		if clear then
-			Relay.Forward(ns.me, mode, inner, clear, certificate)
+			delivered = Relay.Forward(ns.me, mode, inner, clear, certificate) == true
 		else
 			Relay.HandleRL(ns.me, mode, inner)
 		end
-		if Relay.InTop() and Settled() then return true end
+		if Relay.InTop() and Settled() then return not imported or delivered end
 	end
 	local e = Relay.Pick()
 	if not e or SeniorUnasked(e) then
-		Hold(mode, inner)
+		if not imported then Hold(mode, inner) end
 		Relay.PingAll()
-		return false
+		return delivered
 	end
 	local key = mode == "L" and ("rl:" .. Codec.InnerType(inner)) or nil
 	ns.Security.Introduce(e.name)
-	ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name, key = key, prio = mode == "P", logged = Logged(inner) })
-	Remember(e.key, mode, inner)
-	return true
+	local queued = ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), SendOptions(mode, inner, e.name, key,
+		function() return ns.Census.IsReporter() end))
+	-- Короткий запас повторов при отказе реле принадлежит M1/R1. Импорт
+	-- доставляется по текущему маршруту и не вытесняет их из этого запаса.
+	if queued and not imported then Remember(e.key, mode, inner) end
+	return queued or delivered
 end
 Relay.Out = Out
 
@@ -454,14 +488,40 @@ local function Seen(dk, now)
 	return false
 end
 
-local function RateOk(okey, now)
+local function RateSpent(okey, now, limit)
+	local r = rate[okey]
+	return r and now - r.t0 <= 60 and r.n >= limit
+end
+
+local function RateOk(okey, now, limit)
 	local r = rate[okey]
 	if not r or now - r.t0 > 60 then
 		rate[okey] = { n = 1, t0 = now }
 		return true
 	end
 	r.n = r.n + 1
-	return r.n <= C.RELAY_PER_MIN
+	return r.n <= (limit or C.RELAY_PER_MIN)
+end
+
+-- Свидетель /ги должен занимать уже существующую роль репортёра. Сертификат
+-- обычного участника сам по себе не даёт права приписывать другим игрокам слова.
+local function ImportReporter(certificate)
+	local gk = U.GuildKey(certificate.guild)
+	if gk == MyGuildKey() then
+		return ns.Roster.Fresh() and ns.Census.Reporter() == certificate.key
+			and ns.Roster.RankOf(certificate.name) ~= nil
+	end
+	local held = reporters[gk]
+	return held and held.key == certificate.key and Now() - held.t <= REG_TTL
+end
+
+local function ImportRate(d, now)
+	local guild = "ig:" .. U.GuildKey(d.guild)
+	local author = guild .. ":" .. U.Key(d.author)
+	if RateSpent(guild, now, C.IMPORT_GUILD_PER_MIN) or RateSpent(author, now, C.IMPORT_AUTHOR_PER_MIN) then return false end
+	RateOk(guild, now, C.IMPORT_GUILD_PER_MIN)
+	RateOk(author, now, C.IMPORT_AUTHOR_PER_MIN)
+	return true
 end
 
 -- Я реле: проверенное сообщение автора (clear — вложенное, certificate — сертификат автора)
@@ -473,11 +533,21 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 	local okey = U.Key(origin)
 	local ig = Relay.InnerGuild(inner)
 	if not okey or not ig or not U.IsMemberGuild(ig) then return end
-	if not RateOk(okey, now) then
-		Relay.stats.dropped = Relay.stats.dropped + 1
-		return
+	local imported = Imported(clear)
+	if imported and (not FreshImport(imported) or not ImportReporter(certificate)) then
+		Relay.stats.untrusted = Relay.stats.untrusted + 1
+		return false
 	end
-	if Seen(Codec.DedupeKey(okey, inner), now) then return end
+	-- Повтор уже принятого конверта не расходует лимит второй раз. Импорт,
+	-- прямой чат и перепись имеют отдельные бюджеты даже при одном подписанте.
+	if Seen(Codec.DedupeKey(okey, inner), now) then return false end
+	local allowed
+	if imported then allowed = ImportRate(imported, now)
+	else allowed = RateOk((mode == "L" and "report:" or "chat:") .. okey, now) end
+	if not allowed then
+		Relay.stats.dropped = Relay.stats.dropped + 1
+		return false
+	end
 	local igk = U.GuildKey(ig)
 	local mine = MyGuildKey()
 	if igk ~= mine then ns.Comm.Inject(clear, certificate.name,
@@ -492,14 +562,20 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 			if r.key == ns.myKey then
 				if gk == mine then
 					ns.Security.Introduce("GUILD", certificate.raw)
-					ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner), { key = key, prio = mode == "P", logged = Logged(inner) })
+					ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner), SendOptions(mode, inner, nil, key,
+						function() return ImportReporter(certificate) and ns.Census.MayForward(ns.myKey) end))
 				end
 			else
 				ns.Security.Introduce(r.name, certificate.raw)
-				ns.Comm.Send("WHISPER", Codec.EncodeRM("RM", mode, U.Display(origin), inner), { target = r.name, key = key, prio = mode == "P", logged = Logged(inner) })
+				ns.Comm.Send("WHISPER", Codec.EncodeRM("RM", mode, U.Display(origin), inner), SendOptions(mode, inner, r.name, key,
+					function()
+						local held = reporters[gk]
+						return ImportReporter(certificate) and held and held.key == r.key and Now() - held.t <= REG_TTL
+					end))
 			end
 		end
 	end
+	return true
 end
 
 -- Я реле: сообщение автора (RL) — проверить подпись и разослать.
@@ -518,6 +594,8 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	if (mode == "L") ~= (clear:sub(1, 2) == "R1") then return end
 	local now = Now()
 	local okey = U.Key(origin)
+	local imported = Imported(clear)
+	if imported and not FreshImport(imported) then return end
 	if not okey or Seen(Codec.DedupeKey(okey, inner), now) then return end
 	local ig = Relay.InnerGuild(inner)
 	if not ig or U.GuildKey(ig) == MyGuildKey() then return end -- своя гильдия приходит напрямую
@@ -528,7 +606,8 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	if toGuild and ns.MyGuild() and not ctx.outdated then
 		local key = mode == "L" and ("rg:" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 		ns.Security.Introduce("GUILD", certificate.raw)
-		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
+		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), SendOptions(mode, inner, nil, key,
+			function() return ns.Census.MayForward(ns.myKey) end))
 	end
 	end, ctx.via == "RG")
 end
@@ -755,6 +834,7 @@ ns.On("LOGIN", function()
 		for k, t in pairs(lastPong) do
 			if now - t > 60 then lastPong[k] = nil end
 		end
+		for k, r in pairs(rate) do if now - r.t0 > 60 then rate[k] = nil end end
 		for gk, claim in pairs(claims) do
 			if now - claim.t > REG_TTL then claims[gk] = nil end
 		end

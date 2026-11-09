@@ -1108,7 +1108,13 @@ ns.Comm.On("KQ", function(msg, sender, dist)
     served[key] = now
     ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(raw), { target = sender, prio = true, key = "kp:" .. key })
 end)
--- Подписать своё M1 или R1. done(wire) — подписано; done(nil, why) — не вышло уже после
+local function ImportFresh(at, stamp)
+    local now = ns.ServerTime()
+    return at <= now + 30 and stamp <= now + 30
+        and now - at <= C.IMPORT_TTL and now - stamp <= C.IMPORT_TTL
+end
+-- Подписать своё M1/R1 или импорт G1 от выбранного репортёра.
+-- done(wire) — подписано; done(nil, why) — не вышло уже после
 -- постановки в очередь. Возвращает true (подпись в очереди) или false, why.
 -- why: "nocert" — нет действующего сертификата, "busy" — очередь подписей полна,
 -- "failed" — подпись не удалась или сертификат сменился, пока она шла, "long" — пакет велик.
@@ -1116,18 +1122,25 @@ function S.Seal(inner, done)
     local c, saved = S.MyCertificate(), identity
     if not c or not saved or not ns.IsMember() then return false, "nocert" end
     local kind = inner:sub(1, 2)
-    if kind ~= "M1" and kind ~= "R1" then return false, "failed" end
+    local imported = kind == "G1" and ns.Codec.DecodeGuildImport(inner) or nil
+    if kind ~= "M1" and kind ~= "R1" and not imported then return false, "failed" end
+    local function CanImport()
+        return ns.Census and ns.Census.IsReporter() and U.GuildKey(imported.guild) == U.GuildKey(c.guild)
+            and ImportFresh(imported.at, ns.ServerTime())
+    end
+    if imported and not CanImport() then return false, "failed" end
     saved.sequence = saved.sequence + 1
     local at, sequence = tostring(ns.ServerTime()), tostring(saved.sequence)
     local body = Pack("MESSAGE", { ns.group, ns.faction, c.raw, at, sequence, inner })
     local queued = Job(function() return Ed.Sign(saved.seed, body, saved.pk) end, function(sig)
-        if not sig or identity ~= saved or not ns.IsMember() or not Current(c) or not S.MyCertificate() then
+        if not sig or identity ~= saved or not ns.IsMember() or not Current(c) or not S.MyCertificate()
+            or (imported and (not CanImport() or not ImportFresh(imported.at, tonumber(at)))) then
             done(nil, "failed")
             return
         end
         local wire = "S1~" .. c.fp .. "~" .. at .. "~" .. sequence .. "~" .. Ed.ToB64(sig) .. "~" .. inner
         if #wire > MAX_WIRE then done(nil, "long"); return end
-        sealed[wire] = { inner = inner, cert = c, at = ns.Now() }
+        sealed[wire] = { inner = inner, cert = c, at = ns.Now(), importAt = imported and imported.at, stamp = tonumber(at) }
         done(wire)
     end)
     if not queued then return false, "busy" end
@@ -1136,7 +1149,7 @@ end
 -- Пакет, который я сам подписал недавно: вложенное и мой сертификат, без проверки подписи.
 function S.Own(wire)
     local mine = sealed[wire]
-    if mine and Current(mine.cert) then return mine.inner, mine.cert end
+    if mine and Current(mine.cert) and (not mine.importAt or ImportFresh(mine.importAt, mine.stamp)) then return mine.inner, mine.cert end
 end
 -- sender — от кого пришёл пакет (автор или пересылающий): с него лимит и у него KQ.
 -- viaGuild — пакет пришёл по GUILD.
@@ -1147,12 +1160,14 @@ function S.Open(wire, sender, done, viaGuild)
     local sig = signature and Ed.FromB64(signature)
     if not fp or #fp ~= FP_LEN or not stamp or not sequence or not sig or #sig ~= 64 then return false end
     local kind = inner:sub(1, 2)
-    local guild = inner:match("^M1~[ACL]~([^~]+)~") or inner:match("^R1~([^~]+)~")
-    if (kind ~= "M1" and kind ~= "R1") or not guild or not U.IsMemberGuild(guild) then return false end
+    local imported = kind == "G1" and ns.Codec.DecodeGuildImport(inner) or nil
+    local guild = imported and imported.guild or inner:match("^M1~[ACL]~([^~]+)~") or inner:match("^R1~([^~]+)~")
+    if (kind ~= "M1" and kind ~= "R1" and not imported) or not guild or not U.IsMemberGuild(guild) then return false end
     local function Check(c)
         local now = ns.ServerTime()
         if not c or not c.approvedRoot or not Current(c) or U.GuildKey(guild) ~= U.GuildKey(c.guild) or stamp > now + 30
-            or now - stamp > (kind == "M1" and C.CHAT_DEDUPE or C.TOTAL_KEEP) then return false end
+            or now - stamp > (kind == "M1" and C.CHAT_DEDUPE or C.TOTAL_KEEP)
+            or (imported and not ImportFresh(imported.at, stamp)) then return false end
         local tier = inner:match("^M1~([ACL])~")
         if tier and S.Level(c) < ({ A = 1, C = 2, L = 3 })[tier] then return false end
         local cached = cachedOpens[wire]
@@ -1162,23 +1177,37 @@ function S.Open(wire, sender, done, viaGuild)
             if #waiters < 4 then waiters[#waiters + 1] = done end
             return true
         end
-        local count = 0; for _ in pairs(verifyPending) do count = count + 1 end
-        if count >= MAX_PENDING then S.stats.limited = S.stats.limited + 1; return false end
+        local count, imports = 0, 0
+        for _, verification in pairs(verifyPending) do
+            count = count + 1
+            if verification.imported then imports = imports + 1 end
+        end
+        if count >= MAX_PENDING or (imported and imports >= C.IMPORT_VERIFY_PENDING) then
+            S.stats.limited = S.stats.limited + 1
+            return false
+        end
         -- Сертификат уже проверен, осталась одна подпись. Лимит — на автора и отдельно,
         -- выше, на пересылающего: через реле и репортёра идут сообщения многих авторов.
         -- Пересылающий платит сразу. Автор — только за верную подпись: отпечаток публичен,
         -- и подделки с чужим отпечатком не должны выбирать лимит настоящего автора.
-        if Spent("a:" .. c.key, C.AUTH_AUTHOR_PER_MIN) or not Budget("h:" .. Peer(sender), C.AUTH_HOP_PER_MIN) then return false end
-        verifyPending[wire] = { done }
+        -- Импорт не расходует бюджет личного чата репортёра или обычного реле.
+        -- Гильдия берётся из проверенного сертификата, а не из заявленного автора /г.
+        local authorKey = imported and ("ig:" .. U.GuildKey(c.guild)) or ("a:" .. c.key)
+        local authorLimit = imported and C.IMPORT_GUILD_PER_MIN or C.AUTH_AUTHOR_PER_MIN
+        local hopKey = (imported and "ih:" or "h:") .. Peer(sender)
+        local hopLimit = imported and C.IMPORT_HOP_PER_MIN or C.AUTH_HOP_PER_MIN
+        if Spent(authorKey, authorLimit) or not Budget(hopKey, hopLimit) then return false end
+        verifyPending[wire] = { done, imported = imported ~= nil }
         local body = Pack("MESSAGE", { ns.group, ns.faction, c.raw, at, seq, inner })
         local accepted = Job(function() return Ed.Verify(c.pk, body, sig) end, function(valid)
             local callbacks = verifyPending[wire] or {}
             verifyPending[wire] = nil
-            if not valid or not Current(c) or not U.IsMemberGuild(guild) then S.stats.rejected = S.stats.rejected + 1; return end
-            if not Budget("a:" .. c.key, C.AUTH_AUTHOR_PER_MIN) then return end
+            if not valid or not Current(c) or not U.IsMemberGuild(guild)
+                or (imported and not ImportFresh(imported.at, stamp)) then S.stats.rejected = S.stats.rejected + 1; return end
+            if not Budget(authorKey, authorLimit) then return end
             local id = c.public .. ":" .. c.key .. ":" .. seq
             local later = ns.ServerTime()
-            if kind == "M1" then
+            if kind == "M1" or imported then
                 if replay[id] and (replay[id].signature ~= signature or not openedHere[id]) then return end
                 local used = 0
                 for _, entry in pairs(replay) do if later - entry.at <= C.CHAT_DEDUPE then used = used + 1 end end
