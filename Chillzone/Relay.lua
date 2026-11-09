@@ -520,7 +520,8 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	Relay.stats.delivered = Relay.stats.delivered + 1
 	ctx.authenticated, ctx.certificate, ctx.wire = true, certificate, inner
 	ns.Comm.Inject(clear, certificate.name, ctx)
-	if toGuild and ns.MyGuild() then
+	-- У всех отчётов автора один ключ очереди: устаревший заменил бы ещё не ушедший новый.
+	if toGuild and ns.MyGuild() and not ctx.outdated then
 		local key = mode == "L" and ("rg:" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })

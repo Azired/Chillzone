@@ -1001,6 +1001,51 @@ T.test("relay: отчёты доходят до гильдии, зарегист
 	NoErrors(c)
 end)
 
+T.test("relay: старый отчёт от реле не вытесняет новый из очереди гильдии", function()
+	local w, c = Build()
+	local reporter = c.V.ns.Census.IsReporter() and c.V or c.B
+	local member = reporter == c.V and c.B or c.V
+	T.ok(reporter.ns.Census.IsReporter(), "у Севера есть репортёр")
+	local guild, comm = "Орден Чиллзона", reporter.ns.Comm
+	local function Until(check)
+		for _ = 1, 30 do
+			if check() then return true end
+			w:Run(1)
+		end
+		return check()
+	end
+	local function HasReport(cl, st)
+		return function()
+			local row = cl.ns.Data.Row(guild)
+			return row and row.r.st >= st
+		end
+	end
+	local old = c.G.ns.Census.lastRaw
+	T.ok(old, "у Ордена уже есть отчёт")
+	-- Перезашедшее реле отдаёт отчёт позже, чем истекает защита от повторов.
+	w:Run(reporter.ns.Config.RELAY_DEDUPE + 30)
+
+	-- Очередь репортёра стоит, как при всплеске трафика: новый отчёт ждёт отправки гильдии.
+	local free = comm.InLockdown
+	comm.InLockdown = function() return true end
+	c.G.ns.Roster.Scan()
+	local st = c.G.ns.Roster.report.st
+	c.G.ns.Census.MaybeReport(true)
+	T.ok(Until(HasReport(reporter, st)), "репортёр получил новый отчёт")
+
+	c.A.ns.Comm.Send("WHISPER", c.A.ns.Codec.EncodeRM("RM", "L", "Глеб Гордый", old), { target = reporter:Name() })
+	T.ok(Until(function()
+		for _, line in ipairs(reporter.ns.db.log) do
+			if line:find("старее", 1, true) then return true end
+		end
+		return false
+	end), "репортёр отклонил старый отчёт")
+
+	comm.InLockdown = free
+	T.ok(Until(HasReport(member, st)), "участник получил новый отчёт")
+	NoErrors(c)
+end)
+
 T.test("relay: реле вышло из игры — сообщение уходит через другое", function()
 	local w, c = Build()
 	local pick = c.B.ns.Relay.Pick()

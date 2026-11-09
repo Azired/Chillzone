@@ -257,6 +257,8 @@ ns.Comm.On("R1", function(msg, sender, dist, ctx)
 	ns.Update.Heard(U.Key(sender), r.version)
 	local ok, why = ns.Data.Take(r, msg, sender, nil, ctx)
 	if not ok and why ~= "повтор" then ns.Log("отчёт %s от %s не принят: %s", r.guild, U.Display(sender), tostring(why)) end
+	-- Перезашедшее реле присылает последний известный ему отчёт, а гильдии нужен только новый.
+	ctx.outdated = why == "старее"
 end)
 
 ---------------------------------------------------------------------------
