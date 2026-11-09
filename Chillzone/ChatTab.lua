@@ -136,16 +136,7 @@ local function SelectedWindow()
 	local host, hosted = HostedWindow()
 	local frame = host or ChatTab.OutputFrame()
 	if not host then hosted = false end
-	if not host and FocusAPI() and not ChattynatorLoaded() and char.chatMirror ~= false then
-		local selected = SelectedInDock(rawget(_G, "GENERAL_CHAT_DOCK"))
-		for _, window in ipairs(Chat.Windows()) do
-			if window.frame == selected and (Chat.WindowSelected(window.name)
-				or (selected == DEFAULT_CHAT_FRAME and Chat.WindowSelected(""))) then
-				frame = selected
-				break
-			end
-		end
-	end
+	-- Выбор вкладок для копий не меняет их штатный ввод.
 	if not IsSelected(frame, hosted) then return end
 	-- Штатный ввод с фокусом остаётся доступным для команд игры.
 	local native = NativeInput(frame, hosted)
