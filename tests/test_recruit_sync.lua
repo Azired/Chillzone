@@ -13,6 +13,11 @@ local function Build()
 	c.N = w:Client({ first = "Нина", surname = "Северная", guild = "Чиллзон Север", rank = 3 })
 	c.K = w:Client({ first = "Король", surname = "Чиллзона", guild = "Чиллзон", rank = 0 })
 	c.R = w:Client({ first = "Новый", surname = "Игрок", level = 27 })
+	-- Общая очередь проверяется в уже подключённой гильдии, отдельно от её допуска. Гильдия
+	-- подключена с самого входа, до первого w:Run, как прежде по названию.
+	for _, client in pairs(c) do
+		client.ns.store.security.union[client.ns.Util.GuildKey("Чиллзон Север")] = { guild = "Чиллзон Север", active = true }
+	end
 	w:Run(15)
 	return w, c
 end
@@ -139,6 +144,7 @@ T.test("общие заявки: вошедший позже офицер вос
 	local w, c = Build()
 	Receive(w, c, "M", "Ранее полученная просьба")
 	c.L = w:Client({ first = "Поздний", surname = "Офицер", guild = "Чиллзон Север", rank = 1 })
+	c.L.ns.store.security.union[c.L.ns.Util.GuildKey(c.L.guild)] = { active = true }
 	-- Сервер сообщает старым участникам о новом офицере в ростере.
 	c.O.ns.Roster.Scan(); c.M.ns.Roster.Scan(); c.P.ns.Roster.Scan()
 	w:Run(35)

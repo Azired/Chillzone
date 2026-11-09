@@ -38,6 +38,7 @@ read_globals = {
 	"C_FriendList",
 	"C_InputInterfaceStyle",
 	"C_Map",
+	"C_PartyInfo",
 	"C_Timer",
 	"Enum",
 
@@ -60,6 +61,8 @@ read_globals = {
 	"SetWhoToUI",
 	"CanGuildInvite",
 	"GuildInvite",
+	"InviteUnit",
+	"IsMouseButtonDown",
 	"hooksecurefunc",
 	"GetRealmName",
 	"GetServerTime",
@@ -68,6 +71,7 @@ read_globals = {
 	"debugprofilestop",
 	"GuildRoster",
 	"IsInGuild",
+	"InCombatLockdown",
 	"IsShiftKeyDown",
 	"LeaveChannelByName",
 	"LoadAddOn",
@@ -92,6 +96,7 @@ read_globals = {
 
 	-- библиотеки и их глобалы
 	"LibStub",
+	"OpenMapAPI",
 	"HBD_PINS_WORLDMAP_SHOW_CONTINENT",
 }
 

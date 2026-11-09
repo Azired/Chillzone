@@ -16,11 +16,31 @@ T.test("util: Fold переводит все заглавные А–Я и Ё", 
 	T.eq(U.Fold("Чиллзон Север"), "чиллзон север", "смешанное")
 end)
 
+T.test("util: разбор и сравнение версий аддона", function()
+	local _, U = fresh()
+	T.same(U.ParseVersion("0.8.0"), { 0, 8, 0 }, "три числа")
+	T.same(U.ParseVersion("1.2"), { 1, 2 }, "два числа")
+	T.same(U.ParseVersion("1.2.3.4"), { 1, 2, 3, 4 }, "четыре числа")
+	for _, bad in ipairs({ "0.9.0-dev", "1", "1.2.3.4.5", "1..2", "1.2.", ".1.2", "v1.2", "12345.1", "", "1.2 ", 1.2 }) do
+		T.eq(U.ParseVersion(bad), nil, "не версия: " .. tostring(bad))
+	end
+	T.ok(U.VersionNewer("0.9.0", "0.8.0"), "0.9.0 > 0.8.0")
+	T.ok(U.VersionNewer("0.10.0", "0.9.0"), "числа, а не строки: 0.10.0 > 0.9.0")
+	T.ok(U.VersionNewer("1.0", "0.99.99"), "1.0 > 0.99.99")
+	T.ok(U.VersionNewer("0.8.0.1", "0.8.0"), "лишняя часть")
+	T.no(U.VersionNewer("0.8.0", "0.8.0"), "равные")
+	T.no(U.VersionNewer("0.9", "0.9.0"), "0.9 = 0.9.0")
+	T.no(U.VersionNewer("0.8.0", "0.9.0"), "старше")
+	T.no(U.VersionNewer("0.9.0-dev", "0.8.0"), "сборка с хвостом не новее")
+	T.no(U.VersionNewer("0.9.0", "мусор"), "с мусором не сравнивается")
+	T.no(U.VersionNewer(nil, "0.8.0"), "nil")
+end)
+
 T.test("util: правило своей гильдии", function()
 	local _, U = fresh()
 	T.ok(U.IsMemberGuild("Чиллзон"), "Чиллзон")
-	T.ok(U.IsMemberGuild("ЧИЛЛЗОН Север"), "ЧИЛЛЗОН Север")
-	T.ok(U.IsMemberGuild("Орден Чиллзона"), "Орден Чиллзона")
+	T.no(U.IsMemberGuild("ЧИЛЛЗОН Север"), "без решения главы не участник")
+	T.no(U.IsMemberGuild("Орден Чиллзона"), "название не даёт членства")
 	T.ok(U.IsMemberGuild("чиллзон"), "строчные")
 	T.no(U.IsMemberGuild("Chillzone"), "латиница")
 	T.no(U.IsMemberGuild("Чилзон"), "одна л")
@@ -31,22 +51,25 @@ T.test("util: правило своей гильдии", function()
 	T.no(U.IsMainGuild("Чиллзон Север"), "не главная")
 end)
 
-T.test("util: белый список GUILDS", function()
+T.test("util: сохранённый состав объединения", function()
 	local ns, U = fresh()
-	ns.Config.GUILDS = { "Чиллзон", "Чиллзон Север" }
+	ns.store = { security = { union = { [U.GuildKey("Чиллзон Север")] = { active = true },
+		[U.GuildKey("Другая гильдия")] = { active = true } } } }
 	T.ok(U.IsMemberGuild("чиллзон север"), "в списке")
+	T.ok(U.IsMemberGuild("Другая гильдия"), "любое название")
 	T.no(U.IsMemberGuild("Орден Чиллзона"), "не в списке")
-	T.ok(U.IsMemberGuild("Запомни Навсегда"), "EXTRA_GUILDS белый список не отсекает")
+	T.no(U.IsMemberGuild("Запомни Навсегда"), "без решения главы не участник")
 end)
 
-T.test("util: гильдии EXTRA_GUILDS без токена в названии", function()
+T.test("util: добавленная гильдия без токена в названии", function()
 	local ns, U = fresh()
+	ns.store = { security = { union = { [U.GuildKey("Запомни Навсегда")] = { active = true } } } }
 	T.ok(U.IsMemberGuild("Запомни Навсегда"), "Запомни Навсегда")
 	T.ok(U.IsMemberGuild("ЗАПОМНИ НАВСЕГДА"), "без учёта регистра")
 	T.no(U.IsMemberGuild("Запомни"), "только название целиком")
 	T.no(U.IsMemberGuild("Запомни Навсегда 2"), "не подстрока")
 	T.no(U.IsMainGuild("Запомни Навсегда"), "не главная")
-	ns.Config.EXTRA_GUILDS = {}
+	ns.store.security.union = {}
 	T.no(U.IsMemberGuild("Запомни Навсегда"), "без списка не подходит")
 end)
 

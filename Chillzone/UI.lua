@@ -1,5 +1,7 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
 -- значки на правом краю (Чат, Перепись, Королевство, Настройки, а главам и офицерам ещё Заявки и Отладка).
+-- Вкладка «Объединение» (UnionPane.lua): глава главной гильдии управляет составом,
+-- офицер гильдии вне объединения запрашивает связь.
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, остальные вкладки — список строк из Views.lua
 -- и Debug.lua во вставке окна. Кнопка у миникарты — по образцу Olympus UI.lua.
 local ADDON, ns = ...
@@ -22,10 +24,12 @@ local TABS = {
 	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" } },
 	{ key = "debug", text = "TAB_DEBUG", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" } },
+	{ key = "union", text = "TAB_UNION", icons = { "Interface\\Icons\\INV_Misc_GroupLooking" } },
 }
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
 local frame, body, scroll, child, settings = nil, nil, nil, nil, nil
 local status, heading -- шапка (крупно и мелко) и название вкладки слева вверху
+local titleText -- свой текст заголовка, если у рамки нет SetTitle
 local tabs, rows, checks = {}, {}, {}
 local current = "chat"
 local minimapButton
@@ -241,10 +245,72 @@ local function BuildPicker()
 	settingsY = settingsY + 30
 end
 
+-- Цвет текста общего чата: своя палитра. ColorPickerFrame — такой же общий глобал игры, как UIDropDownMenu.
+local SWATCH = 20
+local swatches = {}
+UI.swatches = swatches
+
+local function RenderSwatches()
+	local chosen = ns.Chat.TextColor()
+	for _, s in ipairs(swatches) do s.ring:SetShown(s.hex == chosen) end
+end
+
+local function PickColor(hex)
+	ns.db.settings.chatColor = hex
+	RenderSwatches()
+	ns.ChatPane.Reload()
+end
+
+local function Swatch(i, hex)
+	local s = CreateFrame("Button", nil, settings)
+	s:SetSize(SWATCH, SWATCH)
+	s.hex = hex
+	s.ring = s:CreateTexture(nil, "BACKGROUND", nil, -1)
+	s.ring:SetAllPoints()
+	s.ring:SetColorTexture(1, 1, 1, 1)
+	-- Чёрный зазор: иначе рамка выбранного сливается с белым и жёлтым квадратом.
+	local gap = s:CreateTexture(nil, "BACKGROUND")
+	gap:SetPoint("TOPLEFT", 2, -2)
+	gap:SetPoint("BOTTOMRIGHT", -2, 2)
+	gap:SetColorTexture(0, 0, 0, 1)
+	local fill = s:CreateTexture(nil, "ARTWORK")
+	fill:SetPoint("TOPLEFT", 3, -3)
+	fill:SetPoint("BOTTOMRIGHT", -3, 3)
+	fill:SetColorTexture(ns.Chat.HexToRGB(hex))
+	local hl = s:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	hl:SetColorTexture(1, 1, 1, 0.2)
+	s:SetScript("OnClick", function(self) ns.SafeCall("chat color", PickColor, self.hex) end)
+	SetTip(s, function(tt)
+		tt:AddLine(L.CHAT_COLOR, 1, 0.82, 0)
+		tt:AddLine(L.CHAT_COLOR_TIP, 1, 1, 1, true)
+	end)
+	swatches[i] = s
+	return s
+end
+
+-- Палитра стоит справа на строке следующей настройки: отдельный ряд в окно по высоте не помещается.
+local function BuildSwatches()
+	local label = settings:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	label:SetPoint("TOPLEFT", settings, "TOPLEFT", 260, -settingsY - 6)
+	label:SetText(L.CHAT_COLOR .. ":")
+	local prev, gap = label, 8
+	for i, hex in ipairs(ns.Chat.COLORS) do
+		local s = Swatch(i, hex)
+		s:SetPoint("LEFT", prev, "RIGHT", gap, 0)
+		prev, gap = s, 4
+	end
+end
+
 local function BuildSettings(parent)
 	settings = CreateFrame("Frame", nil, parent)
 	settings:SetAllPoints(parent)
 	Check("map", L.CHECK_MAP, L.CHECK_MAP_TIP, function() return ns.db.settings.showMap end, function(on) ns.Map.SetEnabled(on) end)
+	Check("mapOpenMapWide", L.CHECK_MAP_OPENMAP_WIDE, L.CHECK_MAP_OPENMAP_WIDE_TIP,
+		function() return ns.db.settings.mapOpenMapWide == true end, function(on)
+			ns.db.settings.mapOpenMapWide = on
+			ns.Fire("SETTINGS")
+		end)
 	Check("zones", L.CHECK_ZONES, L.CHECK_ZONES_TIP, function() return ns.char.shareZones end, function(on)
 		ns.char.shareZones = on
 		ns.Print(on and L.ZONES_ON or L.ZONES_OFF)
@@ -259,6 +325,7 @@ local function BuildSettings(parent)
 		RenderPicker()
 	end)
 	BuildPicker()
+	BuildSwatches()
 	Check("time", L.CHECK_TIME, L.CHECK_TIME_TIP, function() return ns.char.chatTime end, function(on)
 		ns.char.chatTime = on
 		ns.ChatPane.Reload()
@@ -280,6 +347,17 @@ end
 ---------------------------------------------------------------------------
 -- Окно
 ---------------------------------------------------------------------------
+-- Заголовок окна (Views.Title): с просьбой обновиться, когда вышла версия новее.
+function UI.RenderTitle()
+	if not frame then return end
+	local text = ns.Views.Title()
+	if titleText then
+		titleText:SetText(text)
+	else
+		pcall(frame.SetTitle, frame, text)
+	end
+end
+
 -- Шапка окна: текст из Views.Status (общий счёт всех гильдий «Чиллзон»).
 function UI.RenderStatus()
 	if not status or not frame:IsShown() then return end
@@ -296,6 +374,7 @@ end
 local function Allowed(key)
 	if key == "requests" then return ns.RecruitSync.IsOfficer() end
 	if key == "debug" then return ns.Debug.Allowed() end
+	if key == "union" then return ns.Security.CanManageUnion() or ns.Security.CanRequestUnion() end
 	return true
 end
 
@@ -321,7 +400,8 @@ end
 function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncTabs()
-	if not ns.IsMember() and current ~= "settings" then current = "join"
+	if current ~= "union" then ns.UnionPane.Hide() end
+	if not ns.IsMember() and current ~= "settings" and current ~= "union" then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
 	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
 	if current ~= "requests" then ns.RecruitPane.HideInbox() end
@@ -355,6 +435,7 @@ function UI.Render()
 		settings:Show()
 		for _, c in ipairs(checks) do c:SetChecked(c.get() and true or false) end
 		RenderPicker()
+		RenderSwatches()
 		return
 	end
 	settings:Hide()
@@ -362,6 +443,12 @@ function UI.Render()
 		scroll:Hide()
 		ns.CensusPane.Hide()
 		ns.RecruitPane.ShowInbox()
+		return
+	end
+	if current == "union" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.UnionPane.Show()
 		return
 	end
 	if current == "census" then
@@ -447,13 +534,11 @@ local function Create()
 		SavePosition(self)
 	end)
 	f:Hide()
-	if type(f.SetTitle) == "function" then
-		pcall(f.SetTitle, f, "Chillzone")
-	else
-		local title = f.TitleText or (f.TitleContainer and f.TitleContainer.TitleText) or f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-		if not f.TitleText then title:SetPoint("TOP", 0, -5) end
-		title:SetText("Chillzone")
+	if type(f.SetTitle) ~= "function" then
+		titleText = f.TitleText or (f.TitleContainer and f.TitleContainer.TitleText) or f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+		if not f.TitleText then titleText:SetPoint("TOP", 0, -5) end
 	end
+	UI.RenderTitle()
 	Portrait(f)
 	-- Крестик закрывает окно без HideUIPanel (та в бою не работает).
 	local close = f.CloseButton or rawget(_G, "ChillzoneFrameCloseButton")
@@ -502,6 +587,7 @@ local function Create()
 	ns.RecruitPane.Build(body)
 	ns.RecruitPane.BuildInbox(body)
 	ns.CensusPane.Build(body)
+	ns.UnionPane.Build(body)
 	body:Hide()
 
 	ns.ChatPane.Build(f)
@@ -509,7 +595,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide() end)
 	local elapsed, debugElapsed = 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -518,7 +604,9 @@ local function Create()
 			UI.Render()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
-			if current == "census" or current == "kingdom" or current == "join" or current == "requests" then UI.Render() else UI.RenderStatus() end
+			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union" then
+				UI.Render()
+			else UI.RenderStatus() end
 		end
 	end)
 end
@@ -558,7 +646,8 @@ end
 
 local function Refresh()
 	if not frame or not frame:IsShown() then return end
-	if current == "census" or current == "kingdom" or current == "debug" or current == "requests" or TabsChanged() then
+	if current == "census" or current == "kingdom" or current == "debug" or current == "union" or current == "requests"
+		or TabsChanged() then
 		UI.Render()
 	else
 		UI.RenderStatus()
@@ -568,8 +657,10 @@ ns.On("DATA", Refresh)
 ns.On("ROSTER", Refresh)
 ns.On("RELAYS", Refresh)
 ns.On("SETTINGS", Refresh)
+ns.On("UNION", Refresh)
 ns.On("GUILD_CHANGED", Refresh)
 ns.On("RECRUIT", function() if frame and frame:IsShown() then UI.Render() end end)
+ns.On("UPDATE", function() UI.RenderTitle() end)
 
 ---------------------------------------------------------------------------
 -- Кнопка у миникарты: левый щелчок — окно, правый — круги на карте, перетаскивание — место.

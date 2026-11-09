@@ -81,27 +81,55 @@ function U.Hash(s)
 end
 
 ---------------------------------------------------------------------------
+-- Версии аддона
+---------------------------------------------------------------------------
+
+-- «0.9.0» → { 0, 9, 0 }: от двух до четырёх чисел через точку, в каждом не больше четырёх
+-- цифр. Иначе nil: сборки с хвостом («0.9.0-dev») и мусор ни с чем не сравниваются.
+function U.ParseVersion(s)
+	if type(s) ~= "string" or not s:find("^%d+%.%d+[%.%d]*$") or s:find("%.%.") or s:find("%.$") then return nil end
+	local out = {}
+	for n in s:gmatch("%d+") do
+		if #n > 4 or #out == 4 then return nil end
+		out[#out + 1] = tonumber(n)
+	end
+	return out
+end
+
+-- Версия a новее b. Сравниваются числа по порядку, недостающие — нули (0.9 = 0.9.0).
+-- Нераспознанная версия не новее и не старше никакой.
+function U.VersionNewer(a, b)
+	local x, y = U.ParseVersion(a), U.ParseVersion(b)
+	if not x or not y then return false end
+	for i = 1, 4 do
+		local p, q = x[i] or 0, y[i] or 0
+		if p ~= q then return p > q end
+	end
+	return false
+end
+
+---------------------------------------------------------------------------
 -- Гильдии
 ---------------------------------------------------------------------------
 function U.IsMemberGuild(guild)
 	if type(guild) ~= "string" or guild == "" then return false end
-	local C = ns.Config
-	local f = U.Fold(guild)
-	for _, g in ipairs(C.EXTRA_GUILDS or {}) do
-		if U.Fold(g) == f then return true end
-	end
-	if not f:find(U.Fold(C.GUILD_TOKEN), 1, true) then return false end
-	if C.GUILDS and #C.GUILDS > 0 then
-		for _, g in ipairs(C.GUILDS) do
-			if U.Fold(g) == f then return true end
-		end
-		return false
-	end
-	return true
+	if U.IsMainGuild(guild) then return true end
+	local s = ns.store and ns.store.security
+	local entry = s and s.union and s.union[U.GuildKey(guild)]
+	return entry ~= nil and entry.active == true
 end
 
 function U.IsMainGuild(guild)
 	return type(guild) == "string" and guild ~= "" and U.Fold(guild) == U.Fold(ns.Config.MAIN_GUILD)
+end
+
+-- Только поиск контактов для вступления. Совпадение названия не даёт членства,
+-- сертификата или доступа к сети; адресат дополнительно сверяется с локальным /who.
+function U.IsRecruitGuild(guild)
+	local route = ns.Recruit and ns.Recruit.Route()
+	return type(guild) == "string" and (U.IsMemberGuild(guild)
+		or U.Fold(guild):find(U.Fold(ns.Config.GUILD_TOKEN), 1, true) ~= nil
+		or (route ~= nil and route.byName[U.GuildKey(guild)] ~= nil))
 end
 
 -- Звание связного (Config.RELAY_RANK): название целиком, без учёта регистра и пробелов по краям.

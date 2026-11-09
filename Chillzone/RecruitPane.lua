@@ -6,7 +6,7 @@ local L, U, R = ns.L, ns.Util, ns.Recruit
 local Pane = { frames = {}, requestRows = {}, guildRows = {} }
 ns.RecruitPane = Pane
 local guildRows, replyRows = Pane.guildRows, {}
-local pane, child, note, inbox, inboxChild, inboxHint, inboxEmpty, inboxRefresh
+local pane, child, intro, note, inbox, inboxChild, inboxHint, inboxEmpty, inboxRefresh
 
 local function Label(parent, x, y, width, font)
 	local f = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
@@ -27,17 +27,21 @@ function Pane.Build(parent)
 	pane = CreateFrame("Frame", nil, parent)
 	pane:SetAllPoints(parent)
 	Label(pane, 16, 12, 720, "GameFontNormalLarge"):SetText(L.RECRUIT_TITLE)
-	Label(pane, 16, 40, 740):SetText(L.RECRUIT_INTRO)
+	-- Вступление бывает в одну строку и в три (гильдия не в объединении): кнопка и список под ним.
+	intro = Label(pane, 16, 40, 740)
+	intro:SetText(L.RECRUIT_INTRO)
 	local search = Button(pane, L.RECRUIT_SEARCH, 190, function() R.Search() end)
-	search:SetPoint("TOPLEFT", 16, -78)
-	note = Label(pane, 222, 83, 530)
+	search:SetPoint("TOPLEFT", intro, "BOTTOMLEFT", 0, -12)
+	note = Label(pane, 0, 0, 530)
+	note:ClearAllPoints()
+	note:SetPoint("LEFT", search, "RIGHT", 16, 0)
 	local scroll = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
-	scroll:SetPoint("TOPLEFT", 16, -112)
+	scroll:SetPoint("TOPLEFT", search, "BOTTOMLEFT", 0, -12)
 	scroll:SetPoint("BOTTOMRIGHT", -30, 12)
 	child = CreateFrame("Frame", nil, scroll)
 	child:SetSize(740, 10)
 	scroll:SetScrollChild(child)
-	Pane.frames.pane, Pane.frames.search, Pane.frames.note = pane, search, note
+	Pane.frames.pane, Pane.frames.intro, Pane.frames.search, Pane.frames.note = pane, intro, search, note
 	pane:Hide()
 	return pane
 end
@@ -59,6 +63,10 @@ end
 
 function Pane.Render()
 	if not pane then return end
+	-- Экран виден только вне объединения. Игрок в гильдии должен понять, что его гильдия
+	-- не подключена, а не что аддон сломался, и знать, кто её подключает.
+	local own = ns.MyGuild()
+	intro:SetText(own and L.RECRUIT_UNCONNECTED:format(own) or L.RECRUIT_INTRO)
 	local guilds, y = R.Guilds(), 0
 	local action, _, hint = R.NextSearch()
 	local open = false

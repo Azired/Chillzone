@@ -3,7 +3,7 @@
 ## Notes: Связь гильдий «Чиллзон»: перепись, королевство, карта и общий чат.
 ## IconTexture: Interface\AddOns\Chillzone\media\logo
 ## Author: Chillzone addon contributors
-## Version: 0.8.0
+## Version: 0.11.0
 ## SavedVariables: ChillzoneDB
 ## X-License: MIT
 
@@ -24,6 +24,7 @@ Roster.lua
 libs\Ed25519.lua
 Security.lua
 Data.lua
+Update.lua
 Census.lua
 Relay.lua
 Chat.lua
@@ -36,5 +37,7 @@ ChatPane.lua
 RecruitPane.lua
 CensusPane.lua
 Debug.lua
+UnionPane.lua
 UI.lua
 Map.lua
+MapControls.lua

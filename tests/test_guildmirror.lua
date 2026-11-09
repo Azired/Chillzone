@@ -43,6 +43,58 @@ local function Build()
 	return w, a, b, other, plain, foreign
 end
 
+T.test("guildmirror: защищённый текст не фильтруется и не попадает в историю", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	local c = w:Client({ first = "Автор", surname = "Чата", guild = "Чиллзон", rank = 0 })
+	local secret = "защищённое сообщение"
+	c.env.issecretvalue = function(v) return v == secret or v == PREFIX .. secret end
+	for _, filter in ipairs(c.filters.CHAT_MSG_GUILD or {}) do
+		T.no(filter(nil, "CHAT_MSG_GUILD", PREFIX .. secret, c:Name()), "защищённая строка остаётся игровому чату")
+	end
+	for _, event in ipairs({ "CHAT_MSG_GUILD", "CHAT_MSG_OFFICER" }) do
+		c:Fire(event, secret, c:Name())
+	end
+	T.eq(#c.ns.Chat.History("G"), 0)
+	T.eq(#c.ns.Chat.History("O"), 0)
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("guildmirror: защищённый автор не попадает в историю", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	local c = w:Client({ first = "Автор", surname = "Чата", guild = "Чиллзон", rank = 0 })
+	local secret = c:Name()
+	c.env.issecretvalue = function(v) return v == secret end
+	for _, event in ipairs({ "CHAT_MSG_GUILD", "CHAT_MSG_OFFICER" }) do
+		c:Fire(event, "обычная строка", secret)
+	end
+	T.eq(#c.ns.Chat.History("G"), 0)
+	T.eq(#c.ns.Chat.History("O"), 0)
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("guildmirror: защищённый GUID не читается, класс берётся из ростера", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	local c = w:Client({ first = "Автор", surname = "Чата", guild = "Чиллзон", rank = 0, class = "MAGE" })
+	w:Run(30)
+	local secret, calls = "Player-secret", 0
+	c.env.issecretvalue = function(v) return v == secret end
+	c.env.GetPlayerInfoByGUID = function()
+		calls = calls + 1
+		return "Воин", "WARRIOR"
+	end
+	for _, entry in ipairs({ { "CHAT_MSG_GUILD", "G" }, { "CHAT_MSG_OFFICER", "O" } }) do
+		c:Fire(entry[1], "обычная строка", c:Name(), nil, nil, nil, nil, nil, nil, nil, nil, nil, secret)
+		local history = c.ns.Chat.History(entry[2])
+		T.eq(#history, 1)
+		T.eq(history[1].c, "MAGE", "класс по ростеру при защищённом GUID")
+	end
+	T.eq(calls, 0, "защищённый GUID не передаётся в API")
+	T.eq(#c.ns.db.errors, 0)
+end)
+
 T.test("guildmirror: /cz виден без аддона, с аддоном одна строка независимо от порядка доставки", function()
 	local w, a, b, other, plain, foreign = Build()
 	local original = w.GuildSay
@@ -66,6 +118,8 @@ end)
 
 T.test("guildmirror: длинный текст и ссылка целы, обычный /g не скрывается", function()
 	local w, a, b, _, plain = Build()
+	-- Старые клиенты без API защищённых значений сохраняют прежнее поведение.
+	a.env.issecretvalue, b.env.issecretvalue = nil, nil
 	local text = string.rep("Привет всем! ", 10) .. LINK
 	local parts = a.ns.Codec.SplitChat(text, a.ns.Config.CHAT_PART, a.ns.Config.CHAT_PARTS)
 	T.ok(a.ns.Chat.Send("A", text))

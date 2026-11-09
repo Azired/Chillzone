@@ -10,14 +10,20 @@ local SUITES = {
 	"test_static",
 	"test_util",
 	"test_codec",
+	"test_comm",
 	"test_data",
 	"test_relay",
 	"test_chat",
 	"test_guildmirror",
 	"test_security",
+	"test_link",
+	"test_union",
+	"test_migration",
 	"test_signatures",
 	"test_recruit",
 	"test_recruit_sync",
+	"test_update",
+	"test_map",
 }
 
 for _, name in ipairs(SUITES) do
