@@ -69,6 +69,7 @@ read_globals = {
 	"GetTime",
 	"GetTimePreciseSec",
 	"debugprofilestop",
+	"debugstack",
 	"GuildRoster",
 	"IsInGuild",
 	"InCombatLockdown",
