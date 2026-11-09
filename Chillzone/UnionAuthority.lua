@@ -32,10 +32,13 @@ local function Bootstrap(owner, sender, dist)
     end
     if dist ~= "GUILD" or not NativeOfficer(sender) then return false end
     if U.IsMainGuild(ns.MyGuild()) then
+        local known = S.Member(ns.Config.MAIN_GUILD, owner.name)
+        if known and known.public ~= owner.public
+            and not (Store().ownerReset and U.Key(sender) == U.Key(owner.name)) then return false end
         return ns.Roster.RankOf(owner.name) == 0
             and (not Store().ownerReset or U.Key(sender) == U.Key(owner.name))
     end
-    return not Store().ownerReset
+    return not Store().ownerReset or Store().ownerResetFromGuild == true
 end
 local function Verify(raw, known, depth)
     if depth > 32 then return end
@@ -67,12 +70,20 @@ function A.Share(target, priority)
           key = "union-owner:" .. target, guard = function() return A.Current() == owner end })
 end
 local function Keep(owner)
-    Store().owner, Store().ownerReset = owner, nil
+    Store().owner = { raw = owner.raw, name = owner.name, public = owner.public,
+        generation = owner.generation, issued = owner.issued }
+    Store().ownerReset, Store().ownerResetFromGuild = nil, nil
     ns.Fire("UNION_OWNER")
 end
 function A.Reset()
-    if not S.CanAdmin() then return false end
-    Store().owner, Store().ownerReset = nil, true
+    if not ns.store or not ns.store.security then return false end
+    local s = Store()
+    s.owner, s.ownerReset, s.ownerResetFromGuild = nil, true, not S.CanAdmin()
+    s.policies = {}
+    for _, entry in pairs(s.union) do
+        entry.generation, entry.revision, entry.issued = nil, 0, 0
+    end
+    ns.Fire("UNION_RESET")
     ns.Comm.Send("GUILD", "UQ~1", { prio = ns.Comm.PRIO_CONTROL, key = "union-query" })
     return true
 end
@@ -140,4 +151,11 @@ ns.Comm.On("UO", function(msg, sender, dist, ctx)
             if c.public == proposed.public and U.IsMainGuild(c.guild) and c.role == "leader" and S.Level(c) == 3 then Use(true) end
         end, sender)
     else Use() end
+end)
+ns.On("LOGIN", function()
+    local owner = A.Current()
+    if owner then
+        Store().owner = { raw = owner.raw, name = owner.name, public = owner.public,
+            generation = owner.generation, issued = owner.issued }
+    end
 end)

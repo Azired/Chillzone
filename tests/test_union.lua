@@ -15,6 +15,118 @@ local function Build()
     return w, k, o, v
 end
 
+T.test("union-review: отсутствие обновлённого главы не вызывает ежеминутный опрос", function()
+    local w = Wow.World()
+    w:Guild("Чиллзон")
+    local n = w:Client({ first = "Новый", surname = "Ожидающий", guild = "Чиллзон", rank = 3 })
+    local send, count, repeatedHigh = n.ns.Comm.Send, 0, false
+    n.ns.Comm.Send = function(dist, msg, opts)
+        if msg == "UQ~1" then
+            count = count + 1
+            if count > 1 and opts.prio ~= true then repeatedHigh = true end
+        end
+        return send(dist, msg, opts)
+    end
+    w:Run(1800)
+    T.ok(count > 1 and count <= 6, "повторы редеют при отсутствии нового каталога")
+    T.no(repeatedHigh, "повторы не обгоняют чат")
+end)
+
+T.test("union-review: повторный запрос каталога получает обычный приоритет", function()
+    local w, k, o = Build()
+    w:Run(30)
+    local reply, priorities = k.ns.Security.ShareTrust, {}
+    k.ns.Security.ShareTrust = function(bootstrap)
+        priorities[#priorities + 1] = bootstrap
+        return reply(bootstrap)
+    end
+    for _ = 1, 2 do
+        k.ns.Comm.Dispatch("UQ~1", o:Name(), "GUILD", { unionControl = true })
+        w:Run(6)
+    end
+    T.ok(#priorities >= 2, "оба запроса обслужены")
+    T.eq(priorities[#priorities], false, "повторный каталог наравне с чатом")
+end)
+
+T.test("union-review: очистка истёкшего допуска сохраняет ручной запрет корня", function()
+    local w, k, o = Build()
+    w:Run(90)
+    T.ok(k.ns.Issuers.Revoke(o:Name())); w:Run(5)
+    for _, c in ipairs(w.clients) do c.clockSkew = c.ns.Config.AUTH_ISSUER_TTL + 86400 end
+    w:Run(90)
+    local gk = k.ns.Util.GuildKey(k.guild)
+    local list = k.ns.store.security.issuers[gk]
+    T.no(list and list[o.ns.myKey], "истёкшее доказательство отзыва удалено")
+    T.eq(k.ns.store.security.issuerBlocks[gk][o.ns.myKey], k.ns.Security.PublicKey(), "ручное решение не исчезло при уборке")
+    T.ok(k.ns.Issuers.Grant(o:Name(), o.ns.Security.PublicKey())); w:Run(10)
+    T.ok(o.ns.Issuers.For(o.guild, o.ns.myKey), "явное разрешение корня снова выдаёт допуск")
+end)
+
+T.test("union-review: рядовой восстанавливает локальное доверие через офицеров своей гильдии", function()
+    local w, k, _, v = Build()
+    w:Pair(v, k); w:Run(40)
+    local n = w:Client({ first = "Новый", surname = "Северный", guild = v.guild, rank = 3 })
+    v.ns.Roster.Scan(); w:Run(60)
+    T.ok(n.ns.UnionAuthority.Current(), "исходное доверие получено")
+    T.ok(n.ns.UnionAuthority.Reset(), "явный локальный сброс доступен рядовому")
+    T.no(n.ns.Security.CanManageUnion(), "сброс не даёт управления")
+    v.ns.UnionAuthority.Share("GUILD", true); w:Run(10)
+    T.eq(n.ns.UnionAuthority.Current().public, k.ns.Security.PublicKey(), "новое доверие получено от настоящего офицера")
+end)
+
+T.test("union-review: сброс после передачи главы принимает новое поколение 1", function()
+    local w, k, o, v = Build()
+    w:Pair(v, k); w:Run(60)
+    k.rank, o.rank = 1, 0
+    k.ns.Roster.Scan(); o.ns.Roster.Scan(); w:Run(90)
+    local gk = v.ns.Util.GuildKey(v.guild)
+    T.eq(v.ns.store.security.union[gk].generation, 2, "переход ключа уже был")
+    T.ok(o.ns.UnionAuthority.Reset()); w:Run(15)
+    T.ok(v.ns.UnionAuthority.Reset())
+    w:Pair(v, o); w:Run(30)
+    T.eq(v.ns.UnionAuthority.Current().generation, 1, "новая цепочка закреплена явно")
+    T.eq(v.ns.store.security.union[gk].generation, 1, "счётчик прежней цепочки не мешает решению")
+    T.ok(o.ns.Security.RemoveGuild(v.guild)); w:Run(45)
+    T.no(v.ns.IsMember(), "решения восстановленного ключа действуют")
+end)
+
+T.test("union-review: первичное доверие не заменяет уже проверенный ключ главы", function()
+    local w, k, o = Build()
+    w:Run(60)
+    T.ok(o.ns.Security.Member(k.guild, k:Name()), "ключ настоящего главы уже проверен")
+    o.ns.store.security.owner = nil
+    local Pack, Ed = o.ns.Security.Control.Pack, o.ns.Ed25519
+    local _, saved = next(o.ns.db.securityKeys)
+    local body = Pack("UNIONOWNER", { o.ns.group, o.ns.faction, k:Name(), o.ns.Security.PublicKey(), 1, o.ns.ServerTime() })
+    local raw = Pack("OWNER", { body, Ed.ToB64(Ed.Sign(Ed.FromB64(saved.seed), body)), "" })
+    o.ns.Comm.Dispatch("UO~" .. Ed.ToB64(raw), o:Name(), "GUILD", { unionControl = true })
+    w:Run(2)
+    local owner = o.ns.UnionAuthority.Current()
+    T.ok(not owner or owner.public == k.ns.Security.PublicKey(), "офицер не закрепил свой ключ под именем главы")
+end)
+
+T.test("union-review: новый глава без ключа получает объяснение и нерабочие кнопки", function()
+    local w, k, o, v = Build()
+    w:Pair(v, k); w:Run(45)
+    k.rank, o.rank = 1, 0
+    k:Logout(); w:AddOffline(k.guild, k:Name() .. "-" .. k.realm, 1)
+    o.ns.Roster.Scan(); w:Run(10)
+    o.ns.UI.Toggle("union")
+    local ui = o.ns.UnionPane.frames
+    T.ok(o.ns.Security.CanManageUnion()); T.no(o.ns.Security.CanSignUnion())
+    T.ok(ui.message:GetText():find("owner-reset", 1, true), "восстановление объяснено главе")
+    T.no(ui.connect.enabled, "связь недоступна до восстановления ключа")
+    local ok, why = o.ns.Security.Link(v:Name())
+    T.no(ok); T.eq(why, o.ns.L.UNION_KEY_REQUIRED, "настоящему главе не говорят, что он не глава")
+    for _, row in ipairs(ui.rows) do
+        if row.entry.guild == v.guild then
+            T.no(row.action.enabled, "удаление не выглядит доступным")
+            row.action.scripts.OnClick(); row.action.scripts.OnClick()
+        end
+    end
+    T.ok(o.ns.Util.IsMemberGuild(v.guild), "неподписанное действие состав не меняет")
+end)
+
 T.test("union: управляет ровно текущий глава Чиллзон", function()
     local w, k, o, v = Build()
     T.ok(k.ns.Security.CanManageUnion(), "глава главной гильдии")

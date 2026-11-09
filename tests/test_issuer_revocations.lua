@@ -56,13 +56,162 @@ local function Seed(c)
     local _, key = next(c.ns.db.securityKeys)
     return c.ns.Ed25519.FromB64(key.seed)
 end
-local function Forge(signer, grant, credential, issued)
+local function Forge(signer, grant, credential, issued, authority)
     local body = Pack("ISSUERREVOKE", { signer.ns.group, signer.ns.faction, grant.guild,
         grant.name, grant.public, grant.revision, grant.issued, issued or signer.ns.ServerTime(), "0" })
     local Ed = signer.ns.Ed25519
-    local leader = signer.ns.Issuers.For(signer.guild, signer.ns.myKey) or grant
+    local leader = authority or signer.ns.Issuers.For(signer.guild, signer.ns.myKey) or grant
     return "KV~" .. Ed.ToB64(Pack("REVOKE", { body, grant.raw, leader.raw, credential.raw, Ed.ToB64(Ed.Sign(Seed(signer), body)) }))
 end
+
+local function ChangeScope(root, subject, previous, scope)
+    local ns, Ed = root.ns, root.ns.Ed25519
+    local now = ns.ServerTime()
+    local body = Pack("ISSUER", { ns.group, ns.faction, subject.guild, subject:Name(), subject.ns.Security.PublicKey(),
+        now, now + ns.Config.AUTH_ISSUER_TTL, "1", (previous and previous.revision or 0) + 1,
+        ns.Security.PublicKey(), scope })
+    return "KD~" .. Ed.ToB64(Pack("GRANT", { body, Ed.ToB64(Ed.Sign(Seed(root), body)) }))
+end
+
+local function Wire(c, record) return "KV~" .. c.ns.Ed25519.ToB64(record.raw) end
+
+T.test("issuer-review: на диске остаются канонические доказательства без двоичных копий", function()
+    local w, k, _, v, o = Build()
+    Demote(w, o); w:Run(90)
+    local s, gk = v.ns.store.security, v.ns.Util.GuildKey(v.guild)
+    local r, d, owner = s.issuerRevocations[gk][o.ns.myKey], s.issuers[gk][o.ns.myKey], k.ns.store.security.owner
+    T.eq(r.sig, nil); T.eq(r.grant, nil); T.eq(r.certificate, nil); T.eq(r.leader, nil); T.eq(r.wire, nil)
+    T.eq(d.sig, nil); T.eq(d.body, nil)
+    T.eq(owner.sig, nil); T.eq(owner.body, nil); T.eq(owner.previous, nil)
+    for _, c in ipairs(w.clients) do
+        for _, key in pairs(c.ns.db.securityKeys) do T.eq(key.pk, nil, "двоичный публичный ключ остаётся только в памяти") end
+    end
+    -- SavedVariables предыдущего варианта содержали разобранные подписи и цепочки.
+    s.issuers[gk][o.ns.myKey] = v.ns.Issuers.Read(d.raw)
+    local f = v.ns.Security.Control.Unpack(r.raw, "REVOKE", 5, 4500)
+    r.sig, r.grant, r.certificate = v.ns.Ed25519.FromB64(f[5]), v.ns.Issuers.Read(f[2]), v.ns.Security.Control.Certificate(f[4])
+    s.owner.sig, s.owner.body = "\0двоичная копия", "лишняя копия"
+    v:Logout()
+    local back = w:Client({ first = v.first, surname = v.surname, guild = v.guild, rank = v.rank, db = v.ns.db })
+    w:Run(10)
+    s = back.ns.store.security
+    T.eq(s.issuers[gk][o.ns.myKey].sig, nil, "старый допуск очищен при входе")
+    T.eq(s.issuerRevocations[gk][o.ns.myKey].sig, nil, "старый архив очищен при входе")
+    T.eq(s.owner.sig, nil, "старый ключ управления очищен при входе")
+    T.ok(s.issuerRevocations[gk][o.ns.myKey].raw, "доказательство отзыва сохранено")
+    Errors(w)
+end)
+
+T.test("issuer-review: истёкшие доказательства удаляются и не возвращаются повтором пакета", function()
+    local w, k, _, v, o = Build()
+    Demote(w, o); w:Run(90)
+    local gk = k.ns.Util.GuildKey(v.guild)
+    local r = k.ns.store.security.issuerRevocations[gk][o.ns.myKey]
+    local grant = v.ns.store.security.issuers[gk][o.ns.myKey]
+    for _, c in ipairs(w.clients) do c.clockSkew = c.ns.Config.AUTH_ISSUER_TTL + 86400 end
+    w:Run(61)
+    for _, c in ipairs({ k, v }) do
+        T.eq(c.ns.store.security.issuerRevocations[gk], nil, "архив, чьи допуски истекли, очищен")
+        T.eq(c.ns.store.security.issuers[gk], nil, "истёкшие корневые допуски очищены")
+    end
+    k.ns.Comm.Dispatch(Wire(k, r), v:Name(), "WHISPER")
+    k.ns.Comm.Dispatch("KD~" .. k.ns.Ed25519.ToB64(grant.raw), v:Name(), "WHISPER"); w:Run(2)
+    T.eq(k.ns.store.security.issuerRevocations[gk], nil, "истёкший KV не восстановлен")
+    T.eq(k.ns.store.security.issuers[gk], nil, "истёкший KD не восстановлен")
+    Errors(w)
+end)
+
+T.test("issuer-review: бывший глава не обходит известное разжалование старой датой или самосертификатом", function()
+    local w, k, p, v, o, b = Build()
+    local grant, authority, cert = o.ns.Issuers.For(o.guild, o.ns.myKey), v.ns.Issuers.For(v.guild, v.ns.myKey), v.ns.Security.MyCertificate()
+    local backdated = Forge(v, grant, cert, math.max(cert.issued, grant.issued, authority.issued), authority)
+    v.rank, b.rank = 1, 0
+    v.ns.Roster.Scan()
+    v.ns.Comm.Dispatch(backdated, v:Name(), "WHISPER")
+    local downgrade = ChangeScope(p, v, authority, "issuer")
+    k.ns.Comm.Dispatch(downgrade, p:Name(), "WHISPER"); w:Run(3)
+    k.ns.Comm.Dispatch(backdated, v:Name(), "WHISPER")
+    local Ed, now = v.ns.Ed25519, v.ns.ServerTime()
+    local body = Pack("CREDENTIAL", { v.ns.group, v.ns.faction, v.guild, v:Name(), v.ns.Security.PublicKey(),
+        "leader", 0, now, now + 600, v:Name(), v.ns.Security.PublicKey(), "0", 1 })
+    local fake = { raw = Pack("CERT", { body, Ed.ToB64(Ed.Sign(Seed(v), body)), authority.raw }) }
+    k.ns.Comm.Dispatch(Forge(v, grant, fake, now, authority), v:Name(), "WHISPER"); w:Run(5)
+    for _, c in ipairs({ k, v }) do
+        local list = c.ns.store.security.issuerRevocations[c.ns.Util.GuildKey(v.guild)]
+        T.no(list and list[o.ns.myKey], "новый отзыв после известной потери полномочий отклонён")
+    end
+    Errors(w)
+end)
+
+T.test("issuer-review: действующий глава переподписывает архив после смены полномочий", function()
+    local w, k, p, v, o, b = Build()
+    Demote(w, o); w:Run(90)
+    local gk = v.ns.Util.GuildKey(v.guild)
+    local old = v.ns.store.security.issuerRevocations[gk][o.ns.myKey]
+    local authority = v.ns.Issuers.For(v.guild, v.ns.myKey)
+    v.rank, b.rank = 1, 0
+    local downgrade, promote = ChangeScope(p, v, authority, "issuer"), ChangeScope(p, b, nil, "leader")
+    for _, c in ipairs(w.clients) do
+        c.ns.Roster.Scan()
+        c.ns.Comm.Dispatch(downgrade, p:Name(), "WHISPER")
+        c.ns.Comm.Dispatch(promote, p:Name(), "WHISPER")
+    end
+    w:Run(90)
+    local fresh = b.ns.store.security.issuerRevocations[gk][o.ns.myKey]
+    T.ok(fresh and fresh.raw ~= old.raw, "сохранённый отзыв подписан заново")
+    local f = b.ns.Security.Control.Unpack(fresh.raw, "REVOKE", 5, 4500)
+    T.eq(b.ns.Security.Control.Certificate(f[4]).key, b.ns.myKey, "подписал действующий глава")
+    T.eq(k.ns.store.security.issuerRevocations[gk][o.ns.myKey].raw, fresh.raw, "новое доказательство распространено")
+    local n = w:Client({ first = "Новый", surname = "После Смены", guild = k.guild, rank = 3 })
+    k.ns.Roster.Scan(); w:Run(90)
+    T.ok(n.ns.store.security.issuerRevocations[gk] and n.ns.store.security.issuerRevocations[gk][o.ns.myKey],
+        "новая установка получила отзыв действующего главы")
+    Errors(w)
+end)
+
+T.test("issuer-review: корневой отзыв шёпотом передаётся пассивному члену гильдии", function()
+    local w, k, p, _, o = Build()
+    local n = w:Client({ first = "Тихий", surname = "Читатель", guild = k.guild, rank = 3 })
+    k.ns.Roster.Scan(); w:Run(60)
+    local d = o.ns.Issuers.For(o.guild, o.ns.myKey)
+    local ns, Ed, now = p.ns, p.ns.Ed25519, p.ns.ServerTime()
+    local body = Pack("ISSUER", { ns.group, ns.faction, d.guild, d.name, d.public,
+        now, now + ns.Config.AUTH_ISSUER_TTL, "0", d.revision + 1, d.root, "issuer" })
+    local wire = "KD~" .. Ed.ToB64(Pack("GRANT", { body, Ed.ToB64(Ed.Sign(Seed(p), body)) }))
+    local send, forwarded = k.ns.Comm.Send, false
+    k.ns.Comm.Send = function(dist, msg, opts)
+        if dist == "GUILD" and msg == wire and opts.prio == k.ns.Comm.PRIO_CONTROL then forwarded = true end
+        return send(dist, msg, opts)
+    end
+    k.ns.Comm.Dispatch(wire, p:Name(), "WHISPER"); w:Run(1)
+    k.ns.Comm.Send = send
+    T.ok(forwarded, "проверенный KD немедленно поставлен в GUILD")
+    w:Run(8)
+    local stored = n.ns.store.security.issuers[n.ns.Util.GuildKey(d.guild)]
+    T.ok(stored and stored[d.key] and not stored[d.key].active, "пассивный читатель получил KD по GUILD")
+    T.eq(n.ns.Issuers.Current(d.raw), nil, "старый допуск запрещён всем читателям")
+    Errors(w)
+end)
+
+T.test("issuer-review: получатели GUILD не рассылают KV заново каждому реле", function()
+    local w, k, _, v, o, b = Build()
+    Demote(w, o); w:Run(90)
+    local gk = b.ns.Util.GuildKey(v.guild)
+    local rev = v.ns.store.security.issuerRevocations[gk][o.ns.myKey]
+    b.ns.store.security.issuerRevocations[gk] = nil
+    b.ns.Relay.Candidates = function() return { { name = k:Name() } } end
+    b.ns.Relay.TrustOf = function() return true end
+    local share, count = b.ns.IssuerRevocations.Share, 0
+    b.ns.IssuerRevocations.Share = function(target, priority)
+        if target ~= "GUILD" then count = count + 1 end
+        return share(target, priority)
+    end
+    b.ns.Comm.Dispatch(Wire(b, rev), k:Name(), "GUILD"); w:Run(1)
+    b.ns.IssuerRevocations.Share = share
+    T.ok(b.ns.store.security.issuerRevocations[gk][o.ns.myKey], "проверенный отзыв сохранён")
+    T.eq(count, 0, "один GUILD не размножается всеми читателями")
+    Errors(w)
+end)
 
 T.test("issuer-revoke: офицер и глава чужой гильдии не подписывают отзыв", function()
     local w, k, _, v, o, _, q = Build()
@@ -121,7 +270,7 @@ T.test("issuer-revoke: возвращение корня и новое назн�
     local grant = o.ns.Issuers.For(o.guild, o.ns.myKey)
     T.ok(grant and grant.revision > rev.revision, "корень выдал новый допуск после реального повышения")
     k.ns.Comm.Dispatch("KD~" .. k.ns.Ed25519.ToB64(grant.raw), p:Name(), "WHISPER"); w:Run(5)
-    k.ns.Comm.Dispatch(rev.wire, o:Name(), "WHISPER"); w:Run(5)
+    k.ns.Comm.Dispatch(Wire(k, rev), o:Name(), "WHISPER"); w:Run(5)
     T.ok(k.ns.Issuers.Current(grant.raw), "архивный отзыв касается прежней ревизии")
     Errors(w)
 end)
@@ -226,11 +375,35 @@ T.test("issuer-revoke: отзыв, пришедший до состава объ
     -- Первый корень и UO уже получены, KA ещё собирается или проверяется.
     n.ns.store.security.roots[main] = k.ns.Security.Roots()[main]
     n.ns.store.security.owner = k.ns.UnionAuthority.Current()
-    n.ns.Comm.Dispatch(rev[o.ns.myKey].wire, k:Name(), "WHISPER")
+    n.ns.Comm.Dispatch(Wire(n, rev[o.ns.myKey]), k:Name(), "WHISPER")
     n.ns.Comm.Dispatch(k.ns.store.security.policies[gk].wire, k:Name(), "WHISPER")
     w:Run(2)
     T.ok(n.ns.Util.IsMemberGuild(v.guild), "подписанное решение главы проверено")
     local seen = n.ns.store.security.issuerRevocations[gk]
     T.ok(seen and seen[o.ns.myKey], "предшествующий KV дождался корня и проверен")
+    Errors(w)
+end)
+
+T.test("issuer-revoke: пропавшая строка ростера не отзывает офлайн-офицера", function()
+    local w, k, _, v, o = Build()
+    local raw = o.ns.Issuers.For(o.guild, o.ns.myKey).raw
+    o:Logout() -- как при скрытых офлайн-строках, без добавления строки AddOffline
+    v.ns.Roster.Scan(); w:Run(90)
+    T.ok(k.ns.Issuers.Current(raw), "отсутствие строки не является разжалованием")
+    local list = v.ns.store.security.issuerRevocations[v.ns.Util.GuildKey(o.guild)]
+    T.no(list and list[o.ns.myKey], "глава не подписывает необоснованный KV")
+    Errors(w)
+end)
+
+T.test("issuer-revoke: корень не отзывает допуск из-за скрытой офлайн-строки", function()
+    local w, k, p, _, o = Build()
+    local raw = o.ns.Issuers.For(o.guild, o.ns.myKey).raw
+    for i, row in ipairs(w.guilds[p.guild].members) do
+        if row.full then table.remove(w.guilds[p.guild].members, i); break end
+    end
+    p = w:Client({ first = p.first, surname = p.surname, guild = p.guild, rank = p.rank, db = p.ns.db })
+    w:Run(30)
+    o:Logout(); p.ns.Roster.Scan(); w:Run(90)
+    T.ok(k.ns.Issuers.Current(raw), "корневой KD не отзывает отсутствующую строку")
     Errors(w)
 end)

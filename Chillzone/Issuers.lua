@@ -12,6 +12,15 @@ local function Store()
     return s.issuers
 end
 local function Root(guild) return S.Roots()[U.GuildKey(guild)] end
+local function Blocks()
+    local s = ns.store.security
+    s.issuerBlocks = s.issuerBlocks or {}
+    return s.issuerBlocks
+end
+local function Compact(d)
+    return { raw = d.raw, guild = d.guild, name = d.name, key = d.key, public = d.public,
+        issued = d.issued, expires = d.expires, active = d.active, revision = d.revision, root = d.root, scope = d.scope }
+end
 function I.IsGrant(raw) return type(raw) == "string" and raw:sub(1, 6) == "GRANT:" end
 function I.Read(raw)
     if not I.IsGrant(raw) then return end
@@ -37,7 +46,8 @@ local function Latest(d)
 end
 local function Admissible(d)
     local root = d and Root(d.guild)
-    if not root or root.public ~= d.root or d.issued > ns.ServerTime() + 30 then return false end
+    if not root or root.public ~= d.root or d.issued > ns.ServerTime() + 30
+        or (d.active and d.expires or d.issued + C.AUTH_ISSUER_TTL) <= ns.ServerTime() then return false end
     local old = Latest(d)
     return not old or old.root ~= d.root or (d.revision >= old.revision and d.issued >= old.issued
         and (d.revision ~= old.revision or d.raw == old.raw))
@@ -53,13 +63,23 @@ function I.Current(raw)
         and not ns.Roster.IsOfficerRank(ns.Roster.RankOf(d.name)) then return end
     return d
 end
-local function Keep(d)
+local function Keep(d, dist)
     local gk = U.GuildKey(d.guild)
     Store()[gk] = Store()[gk] or {}
     local old = Store()[gk][d.key]
     if not old or old.raw ~= d.raw then
-        Store()[gk][d.key] = d
-        if not d.active then ns.Fire("ISSUER_REVOCATION", "KD~" .. Ed.ToB64(d.raw), gk .. ":" .. d.key) end
+        Store()[gk][d.key] = Compact(d)
+        if d.blocked then
+            Blocks()[gk] = Blocks()[gk] or {}
+            Blocks()[gk][d.key] = d.root
+        end
+        if not d.active then
+            local wire = "KD~" .. Ed.ToB64(d.raw)
+            ns.Fire("ISSUER_REVOCATION", wire, gk .. ":" .. d.key)
+            if dist == "WHISPER" then
+                ns.Comm.Send("GUILD", wire, { prio = ns.Comm.PRIO_CONTROL, key = "issuer-revoke:" .. gk .. ":" .. d.key })
+            end
+        end
     end
 end
 function I.Verify(raw)
@@ -106,6 +126,7 @@ local function Issue(name, public, active, manual)
         now, now + C.AUTH_ISSUER_TTL, active and "1" or "0", revision, root.public, scope })
     local function Guard()
         return IsRoot() and ns.MyGuild() == guild and S.MyRoot() == root
+            and (active or manual or ns.Roster.OfficerDemoted(name))
             and (not active or (ns.Roster.IsOfficerRank(ns.Roster.RankOf(name))
                 and scope == (ns.Roster.RankOf(name) == 0 and "leader" or "issuer")))
     end
@@ -116,6 +137,7 @@ local function Issue(name, public, active, manual)
         local d = I.Read(Pack("GRANT", { body, Ed.ToB64(sig) }))
         if not d or not Admissible(d) then return end
         d.blocked = manual and not active or nil
+        if manual and active and Blocks()[U.GuildKey(guild)] then Blocks()[U.GuildKey(guild)][key] = nil end
         Keep(d)
         ns.Comm.Send("GUILD", "KD~" .. Ed.ToB64(d.raw), { key = "issuer:" .. key, guard = Guard })
     end)
@@ -131,12 +153,13 @@ function I.Tick(keys)
     if not IsRoot() then return end
     local list = Store()[U.GuildKey(ns.MyGuild())] or {}
     for _, d in pairs(list) do
-        if d.active and d.root == S.MyRoot().public and not ns.Roster.IsOfficerRank(ns.Roster.RankOf(d.name)) then
+        if d.active and d.root == S.MyRoot().public and ns.Roster.OfficerDemoted(d.name) then
             if Issue(d.name, d.public, false) then return end
         end
     end
     for key, peer in pairs(keys) do
-        local blocked = list[key] and list[key].blocked
+        local blocked = Blocks()[U.GuildKey(ns.MyGuild())]
+        blocked = blocked and blocked[key] == S.MyRoot().public
         if key ~= ns.myKey and not blocked and ns.Now() - peer.at <= C.PEER_WINDOW
             and ns.Roster.IsOfficerRank(ns.Roster.RankOf(peer.name)) then
             local d = list[key]
@@ -193,7 +216,27 @@ ns.Comm.On("KD", function(msg, sender, dist)
     if not d or not Admissible(d) or (d.active and d.expires <= ns.ServerTime()) then return end
     if Latest(d) and Latest(d).raw == d.raw then return end
     S.Control.Job(function() return Ed.Verify(Ed.FromB64(d.root), d.body, d.sig) end, function(valid)
-        if valid and Admissible(d) then Keep(d) end
+        if valid and Admissible(d) then Keep(d, dist) end
     end)
 end)
-ns.On("LOGIN", function() ns.store.security.issuers = ns.store.security.issuers or {} end)
+function I.Sweep(restore)
+    local now = ns.ServerTime()
+    for gk, list in pairs(Store()) do
+        for key, d in pairs(list) do
+            if d.blocked then
+                Blocks()[gk] = Blocks()[gk] or {}
+                Blocks()[gk][key] = d.root
+            end
+            -- KD должен перекрывать и прежний допуск с максимальным сроком.
+            if (d.active and d.expires or d.issued + C.AUTH_ISSUER_TTL) <= now then list[key] = nil
+            elseif restore then list[key] = Compact(d) end
+        end
+        if not next(list) then Store()[gk] = nil end
+    end
+    for key, entry in pairs(shared) do if ns.Now() - entry.at >= C.AUTH_INTRODUCE then shared[key] = nil end end
+    for gk, list in pairs(Blocks()) do
+        local root = S.Roots()[gk]
+        for key, public in pairs(list) do if not root or root.public ~= public then list[key] = nil end end
+        if not next(list) then Blocks()[gk] = nil end
+    end
+end

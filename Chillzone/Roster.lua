@@ -9,6 +9,7 @@ local Roster = {}
 ns.Roster = Roster
 
 Roster.byKey = {} -- [Key] = rankIndex
+Roster.rankKnown = {} -- [Key] = ранг действительно прочитан, а не заменён запасным значением
 Roster.rankNames = {} -- [Key] = название звания
 Roster.online = {} -- [Key] = в игре ли по последнему чтению ростера
 Roster.members = {} -- строки ростера: { name, key, rank, rankName, level, class, zone, online, days }
@@ -102,6 +103,12 @@ function Roster.IsOfficerRank(rank)
 	end
 	return v
 end
+-- Отсутствие строки или ранга не доказывает разжалование: ростер может скрывать офлайн.
+function Roster.OfficerDemoted(name)
+	local key = U.Key(name)
+	return Roster.Fresh() and key ~= nil and Roster.rankKnown[key] == true
+		and Roster.byKey[key] ~= nil and not Roster.IsOfficerRank(Roster.byKey[key])
+end
 
 -- Роль согильдийца в связи (U.TrustRole) по моему ростеру; nil — не в гильдии или рядовой
 -- (когда Config.TRUST_ANY_MEMBER выключен).
@@ -180,12 +187,13 @@ function Roster.Scan()
 	if not numTotal or numTotal == 0 then return end
 	lastScan = ns.Now()
 	rankOfficer = {} -- права званий могли поменяться
-	local rows, byKey, rankNames, onlineByKey = {}, {}, {}, {}
+	local rows, byKey, rankNames, onlineByKey, rankKnown = {}, {}, {}, {}, {}
 	for i = 1, numTotal do
 		local name, rankName, rankIndex, level, _, zone, _, _, isOnline, _, classFile = GetGuildRosterInfo(i)
 		if name then
 			local key = U.Key(name)
 			if key and byKey[key] == nil then
+				rankKnown[key] = type(rankIndex) == "number"
 				rankIndex = rankIndex or 9
 				byKey[key] = rankIndex
 				rankNames[key] = rankName
@@ -204,6 +212,7 @@ function Roster.Scan()
 	end
 	Roster.byKey, Roster.rankNames, Roster.members, Roster.guild = byKey, rankNames, rows, guild
 	Roster.online = onlineByKey
+	Roster.rankKnown = rankKnown
 	Roster.scannedAt = ns.Now()
 	local r = Roster.Build(guild, rows, numOnline, ns.faction, ns.ServerTime())
 	if ns.Census then r.users = ns.Census.Users() end
@@ -240,6 +249,7 @@ ns.RegisterEvent("PLAYER_GUILD_UPDATE", function(unit)
 		if not ns.MyGuild() then
 			Roster.byKey, Roster.rankNames, Roster.members, Roster.report, Roster.guild = {}, {}, {}, nil, nil
 			Roster.online = {}
+			Roster.rankKnown = {}
 		end
 		rankOfficer = {}
 		Roster.RequestScan(true)

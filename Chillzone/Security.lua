@@ -30,6 +30,9 @@ local lastLegacyProbe = -1e9
 local lastNativeHello = -1e9
 local nativeTrustPending = false
 local nativeUnionPending = false
+local nativeUnionBootstrap = false
+local unionQueries = {}
+local unionQueryAt, unionQueryDelay = -1e9, 0
 local MAX_CERT, MAX_WIRE, MAX_PENDING, FP_LEN = 1800, 7000, 32, 16
 
 local function Store()
@@ -111,6 +114,9 @@ end
 function S.CanSignUnion()
     local owner = ns.UnionAuthority and ns.UnionAuthority.Current()
     return S.CanManageUnion() and owner ~= nil and owner.public == S.PublicKey()
+end
+function S.UnionDenied()
+    return S.CanManageUnion() and ns.L.UNION_KEY_REQUIRED or ns.L.UNION_ONLY_LEADER
 end
 -- Офицеру гильдии вне объединения доступен только запрос связи. Главная гильдия всегда в объединении.
 function S.CanRequestUnion()
@@ -479,10 +485,11 @@ local function StartIdentity(rotate)
     if not seed or #seed ~= 32 then saved = { seed = Ed.ToB64(Entropy()), sequence = 0 }; ns.db.securityKeys[scope] = saved end
     seed = Ed.FromB64(saved.seed)
     saved.sequence = math.max(tonumber(saved.sequence) or 0, ns.ServerTime() * 10000)
+    for _, key in pairs(ns.db.securityKeys) do key.pk = nil end
     identity = nil
     Job(function() return Ed.PublicKey(seed) end, function(pk)
         if not pk or ns.db.securityKeys[scope] ~= saved then return end
-        saved.pk, saved.public = pk, Ed.ToB64(pk)
+        saved.public = Ed.ToB64(pk)
         identity = setmetatable({ seed = seed, pk = pk, public = saved.public }, {
             __index = function(_, k) return saved[k] end,
             __newindex = function(_, k, v) saved[k] = v end,
@@ -500,7 +507,11 @@ function S.Say()
     local mine = S.MyCertificate()
     -- K1 понимает и 0.8; новый запрос состава идёт отдельно, чтобы старый издатель не потерял ключ.
     -- UQ раньше K1: приоритетный каталог не должен прерывать уже начатую выдачу KP.
-    if needUnion then ns.Comm.Send("GUILD", "UQ~1", { prio = ns.Comm.PRIO_BOOTSTRAP, key = "union-query" }) end
+    if needUnion and lastHello >= unionQueryAt then
+        ns.Comm.Send("GUILD", "UQ~1", { prio = unionQueryDelay == 0 and ns.Comm.PRIO_BOOTSTRAP or true, key = "union-query" })
+        unionQueryDelay = math.min(3600, math.max(60, unionQueryDelay * 2))
+        unionQueryAt = lastHello + unionQueryDelay
+    elseif not needUnion then unionQueryAt, unionQueryDelay = -1e9, 0 end
     ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0"),
         { prio = ns.Comm.PRIO_BOOTSTRAP, key = "identity" })
     if mine and (not lastSaid or lastSaid.raw ~= mine.raw or lastHello - lastSaid.at >= C.AUTH_ANNOUNCE) then
@@ -773,7 +784,6 @@ end
 ns.Comm.On("KA", function(msg, sender, dist, ctx)
     if dist ~= "GUILD" and dist ~= "WHISPER" then return end
     if #msg > 3000 or not Budget("n:" .. Peer(sender), C.AUTH_NEW_PER_MIN) then return end
-    if Store().ownerReset then return end
     -- Куски KA могут обогнать растянутую на кадры проверку UO. Ограниченная очередь
     -- ничего не подтверждает: после закрепления ключа документ проходит обычную проверку.
     local queuedPublic, queuedEncoded = msg:match("^KA~([%w_-]+)~([%w_-]+)~[%w_-]+$")
@@ -786,6 +796,7 @@ ns.Comm.On("KA", function(msg, sender, dist, ctx)
         pendingPolicies[#pendingPolicies + 1] = { msg = msg, sender = sender, dist = dist, ctx = ctx, at = ns.Now() }
         return
     end
+    if Store().ownerReset then return end
     if Store().owner then
         if ctx and not ctx.unionControl then return end
         local public, encoded, signature = msg:match("^KA~([%w_-]+)~([%w_-]+)~([%w_-]+)$")
@@ -859,6 +870,10 @@ ns.On("UNION_OWNER", function()
     for _, p in ipairs(waitingPolicies) do
         if ns.Now() - p.at <= 30 then ns.Comm.Dispatch(p.msg, p.sender, p.dist, p.ctx) end
     end
+end)
+ns.On("UNION_RESET", function()
+    pendingPolicies = {}
+    unionQueryAt, unionQueryDelay = ns.Now() + 60, 60
 end)
 local LINK_TTL, LINK_RETRY = 180, 15
 local function LinkPermission()
@@ -1006,7 +1021,8 @@ end
 -- Добавить известную гильдию без запроса связи. Решение получает её корневой офицер, когда
 -- он в игре вместе с главой, или персонаж этого аккаунта из неё — через SavedVariables.
 function S.AddKnown(guild)
-    if not S.CanSignUnion() or type(guild) ~= "string" or U.IsMainGuild(guild) then return false end
+    if not S.CanSignUnion() then return false, S.UnionDenied() end
+    if type(guild) ~= "string" or U.IsMainGuild(guild) then return false end
     local s, gk = Store(), U.GuildKey(guild)
     local root, entry = s and s.roots[gk], s and s.union[gk]
     if not root or (entry and entry.active) or not GuildName(root.guild) or not Name(root.name) then return false end
@@ -1014,7 +1030,8 @@ function S.AddKnown(guild)
     return true
 end
 function S.RemoveGuild(guild)
-    if not S.CanSignUnion() or U.IsMainGuild(guild) then return false end
+    if not S.CanSignUnion() then return false, S.UnionDenied() end
+    if U.IsMainGuild(guild) then return false end
     local s, gk = Store(), U.GuildKey(guild)
     local old = s and s.union[gk]
     if not old or not old.active then return false end
@@ -1044,7 +1061,7 @@ function S.Link(name)
     if not root then return false, ns.L.AUTH_LINK_ROOT end
     name = U.TellName(name)
     local key = U.Key(name)
-    if not CanLinkHere() then return false, ns.L.UNION_ONLY_LEADER end
+    if not CanLinkHere() then return false, S.UnionDenied() end
     if not key or key == "" or ns.Roster.RankOf(name) ~= nil then return false, ns.L.AUTH_LINK_NAME end
     serial = serial + 1
     local p = { nonce = tostring(ns.ServerTime()) .. "." .. serial, target = name,
@@ -1065,7 +1082,7 @@ function S.Accept(name)
     if why then return false, why end
     local key = U.Key(name)
     local p, root = pending[key], ns.MyGuild() and Root(ns.MyGuild())
-    if not CanLinkHere() then return false, ns.L.UNION_ONLY_LEADER end
+    if not CanLinkHere() then return false, S.UnionDenied() end
     if not root then return false, ns.L.AUTH_LINK_ROOT end
     if not p or ns.Now() > p.untilAt then return false, ns.L.AUTH_LINK_NO_REQUEST:format(U.Display(name)) end
     if not U.IsMemberGuild(p.guild) and not S.CanManageUnion() then return false, ns.L.UNION_ONLY_LEADER end
@@ -1126,9 +1143,12 @@ ns.Comm.On("KT", function(msg, sender, dist)
     -- Pin потом не заменяет: настоящий корень при её подключении был бы отвергнут.
     if guild then Pin(guild, name, public) end
 end)
-local function NativeTrustReply(union)
+local function NativeTrustReply(union, bootstrap)
     if not S.CanAdmin() then return end
-    if union then nativeUnionPending = true end
+    if union then
+        nativeUnionPending = true
+        nativeUnionBootstrap = nativeUnionBootstrap or bootstrap ~= false
+    end
     if nativeTrustPending then return end
     nativeTrustPending = true
     ns.After(math.max(0, 5 - (ns.Now() - lastNativeHello)), "доверие новым участникам", function()
@@ -1137,7 +1157,9 @@ local function NativeTrustReply(union)
         lastNativeHello = ns.Now()
         if nativeUnionPending then
             nativeUnionPending = false
-            S.ShareTrust(true)
+            local priority = nativeUnionBootstrap
+            nativeUnionBootstrap = false
+            S.ShareTrust(priority)
         else
             local root = Root(ns.MyGuild())
             if root then ShareRoot(root.guild, root) end
@@ -1147,7 +1169,10 @@ local function NativeTrustReply(union)
 end
 ns.Comm.On("UQ", function(msg, sender, dist, ctx)
     if msg == "UQ~1" and dist == "GUILD" and ctx and ctx.unionControl and NativeRole(sender) then
-        NativeTrustReply(true)
+        local key = U.Key(sender)
+        local first = not unionQueries[key]
+        unionQueries[key] = ns.Now()
+        NativeTrustReply(true, first)
     end
 end)
 ns.Comm.On("K1", function(msg, sender, dist)
@@ -1323,6 +1348,8 @@ end)
 -- а рассылать его по GUILD и шёпотом пришлось бы до конца срока, неделю.
 local function Sweep(restore)
     local s, now = Store(), ns.ServerTime()
+    ns.Issuers.Sweep(restore)
+    ns.IssuerRevocations.Sweep(restore)
     for _, part in ipairs({ { s.certs, "" }, { s.delegations, "@" } }) do
         local lists, prefix = part[1], part[2]
         for gk, list in pairs(lists) do
@@ -1456,11 +1483,13 @@ ns.On("LOGIN", function()
         for key, t in pairs(served) do if clock - t >= 60 then served[key] = nil end end
         for key, t in pairs(resent) do if clock - t >= 60 then resent[key] = nil end end
         for key, t in pairs(introduced) do if clock - t >= C.AUTH_INTRODUCE then introduced[key] = nil end end
+        for key, t in pairs(unionQueries) do if clock - t >= 3600 then unionQueries[key] = nil end end
     end)
 end)
 ns.On("GUILD_CHANGED", function()
     keys, issuing, pending, outgoing, hints = {}, {}, {}, {}, {}
     acceptedLinks = {}
+    unionQueries, unionQueryAt, unionQueryDelay = {}, -1e9, 0
     lastHello, lastPolicy, lastSaid = -1e9, -1e9, nil
     S.Say()
 end)

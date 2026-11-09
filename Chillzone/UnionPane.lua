@@ -79,6 +79,7 @@ local function RowAt(i)
             return
         end
         if not S.CanManageUnion() then return end
+        if not S.CanSignUnion() then message:SetText(L.UNION_KEY_REQUIRED); return end
         local key = (entry.known and "add:" or "remove:") .. entry.guild
         if entry.request then
             local ok, why = S.Accept(entry.contact)
@@ -87,10 +88,11 @@ local function RowAt(i)
             confirming = key
         elseif entry.known then
             confirming = nil
-            message:SetText(S.AddKnown(entry.guild) and L.UNION_KNOWN_ADDED:format(entry.guild)
-                or L.UNION_KNOWN_FAILED)
+            local ok, why = S.AddKnown(entry.guild)
+            message:SetText(ok and L.UNION_KNOWN_ADDED:format(entry.guild) or why or L.UNION_KNOWN_FAILED)
         else
-            S.RemoveGuild(entry.guild)
+            local ok, why = S.RemoveGuild(entry.guild)
+            if not ok then message:SetText(why or L.UNION_REMOVE_FAILED) end
             confirming = nil
         end
         P.Render()
@@ -136,7 +138,7 @@ local function Fill(row, item)
     row.label:SetText(label)
     row.action:SetShown(action ~= nil and not item.main)
     row.action:SetText(action or "")
-    row.action:SetEnabled(not item.disabled)
+    row.action:SetEnabled(not item.disabled and not (S.CanManageUnion() and not S.CanSignUnion()))
 end
 local function Place(frame, y)
     frame:ClearAllPoints()
@@ -175,6 +177,7 @@ local function Layout(mode)
     caption:SetShown(manage)
     input:SetShown(manage)
     connect:SetShown(manage)
+    connect:SetEnabled(manage and S.CanSignUnion())
     scroll:ClearAllPoints()
     scroll:SetPoint("TOPLEFT", 12, manage and -96 or -16)
     scroll:SetPoint("BOTTOMRIGHT", -30, 12)
@@ -193,6 +196,8 @@ function P.Render()
     local mode = pane and Mode()
     if not mode then P.Hide(); return end
     Layout(mode)
+    if mode == "manage" and not S.CanSignUnion() then message:SetText(L.UNION_KEY_REQUIRED)
+    elseif message:GetText() == L.UNION_KEY_REQUIRED then message:SetText("") end
     local y, rowCount, headerCount = 0, 0, 0
     for _, section in ipairs(mode == "manage" and ManageSections() or RequestSections()) do
         if #section.items > 0 then
@@ -231,6 +236,8 @@ local function RenderIfShown()
     if pane and pane:IsShown() then P.Render() end
 end
 ns.On("AUTH_ROOT", RenderIfShown)
+ns.On("UNION_OWNER", RenderIfShown)
+ns.On("UNION_RESET", RenderIfShown)
 ns.On("UNION_LINK", function(text)
     if message then message:SetText(text) end
     RenderIfShown()

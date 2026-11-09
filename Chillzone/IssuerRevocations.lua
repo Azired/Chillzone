@@ -25,13 +25,15 @@ local function Read(raw)
     if not p or not d or not d.active or not leader or leader.scope ~= "leader" or not c or not sig or #sig ~= 64
         or p[1] ~= ns.group or p[2] ~= ns.faction or p[3] ~= d.guild or p[4] ~= d.name or p[5] ~= d.public
         or revision ~= d.revision or tonumber(p[7]) ~= d.issued or not issued or issued < d.issued
+        or d.issued + C.AUTH_ISSUER_TTL <= ns.ServerTime()
         or issued > ns.ServerTime() + 30 or p[9] ~= "0" or U.GuildKey(c.guild) ~= U.GuildKey(d.guild)
         or c.role ~= "leader" or c.rank ~= 0 or c.issued > issued or c.expires <= issued
         or issued - c.issued > C.AUTH_ROLE_TTL then return end
     if leader.root ~= d.root or U.GuildKey(leader.guild) ~= U.GuildKey(d.guild) or leader.public ~= c.public
         or leader.key ~= c.key then return end
     return { raw = raw, wire = "KV~" .. Ed.ToB64(raw), body = f[1], sig = sig, grant = d, certificate = c,
-        leader = leader, guild = d.guild, key = d.key, root = d.root, revision = revision, issued = issued }
+        leader = leader, guild = d.guild, key = d.key, root = d.root, revision = revision, issued = issued,
+        expires = d.issued + C.AUTH_ISSUER_TTL }
 end
 local function Latest(guild, key)
     local list = Store()[U.GuildKey(guild)]
@@ -66,6 +68,20 @@ local function GrantAt(d, at)
         and (newer.public ~= d.public or (d.scope == "leader" and newer.scope ~= "leader")) then return false end
     return Ed.ValidPublicKey(Ed.FromB64(d.public)) and Ed.Verify(Ed.FromB64(root.public), d.body, d.sig)
 end
+-- Дата в отзыве выбирается самим подписантом. Уже известная потеря полномочий
+-- запрещает любой ещё не принятый отзыв, даже с прежней датой и старой подписью.
+local function CurrentAuthority(r)
+    local d, root = r.leader, Root(r.guild)
+    if not root or root.public ~= r.root then return false end
+    local list = ns.store.security.issuers[U.GuildKey(r.guild)]
+    local latest = list and list[d.key]
+    if latest and latest.root == d.root and latest.revision >= d.revision then d = latest end
+    if not d.active or d.scope ~= "leader" or d.public ~= r.leader.public
+        or d.expires <= ns.ServerTime() or R.Blocks(d) then return false end
+    if U.GuildKey(r.guild) == U.GuildKey(ns.MyGuild()) and ns.Roster.Fresh()
+        and ns.Roster.rankKnown[d.key] and ns.Roster.RankOf(d.name) ~= 0 then return false end
+    return true
+end
 -- Архивное доказательство проверяется на момент выдачи отзыва. Истечение короткого
 -- сертификата позже не возвращает уже отозванный годовой допуск новым установкам.
 local function CertificateAt(c, at)
@@ -91,9 +107,10 @@ function R.Share(target, priority)
         for _, r in pairs(list) do
             local root, key = Root(r.guild), target .. ":" .. U.GuildKey(r.guild) .. ":" .. r.key
             local old = shared[key]
-            if root and root.public == r.root and (target == "GUILD" or not old or old.raw ~= r.raw
+            local proof = Read(r.raw)
+            if root and root.public == r.root and proof and CurrentAuthority(proof) and (target == "GUILD" or not old or old.raw ~= r.raw
                 or ns.Now() - old.at >= C.AUTH_INTRODUCE) then
-                if ns.Comm.Send(target == "GUILD" and "GUILD" or "WHISPER", r.wire,
+                if ns.Comm.Send(target == "GUILD" and "GUILD" or "WHISPER", proof.wire,
                     { target = target ~= "GUILD" and target or nil, prio = priority, key = "issuer-revoke:" .. key }) then
                     shared[key] = { raw = r.raw, at = ns.Now() }
                 end
@@ -105,10 +122,11 @@ local function Keep(r, dist)
     if not Newer(r) then return end
     local gk = U.GuildKey(r.guild)
     Store()[gk] = Store()[gk] or {}
-    Store()[gk][r.key] = r
+    Store()[gk][r.key] = { raw = r.raw, guild = r.guild, key = r.key, root = r.root,
+        revision = r.revision, issued = r.issued, expires = r.expires }
     ns.Fire("ISSUER_REVOCATION", r.wire, gk .. ":" .. r.key)
     if dist ~= "GUILD" then R.Share("GUILD", ns.Comm.PRIO_CONTROL) end
-    if ns.Relay then
+    if dist ~= "GUILD" and ns.Relay then
         for _, e in ipairs(ns.Relay.Candidates()) do
             if ns.Relay.TrustOf(e.name) then R.Share(e.name, true) end
         end
@@ -119,20 +137,25 @@ local function LeaderCertificate()
     local c = S.MyCertificate()
     return c and c.role == "leader" and c.rank == 0 and S.Level(c) == 3 and c or nil
 end
-function R.Revoke(name)
+function R.Revoke(name, archive)
     local cert, key, root = LeaderCertificate(), U.Key(name), S.MyRoot()
     local list = ns.store.security.issuers[U.GuildKey(ns.MyGuild())] or {}
-    local d = key and list[key]
+    local previous = archive and Read(archive.raw)
+    local d = previous and previous.grant or key and list[key]
     local leader = I.For(ns.MyGuild(), ns.myKey)
-    if not cert or not root or not d or not d.active or d.root ~= root.public or R.Blocks(d) or pending[key]
+    if not cert or not root or not d or not d.active or (archive and not previous)
+        or (archive and archive.expires or d.expires) <= ns.ServerTime() or d.root ~= root.public or pending[key]
         or not leader or leader.scope ~= "leader" or leader.public ~= cert.public
-        or ns.Roster.IsOfficerRank(ns.Roster.RankOf(name)) then return false end
+        or (archive and Latest(d.guild, key) ~= archive)
+        or (not archive and (R.Blocks(d) or not ns.Roster.OfficerDemoted(name))) then return false end
     local body = Pack("ISSUERREVOKE", { ns.group, ns.faction, d.guild, d.name, d.public,
-        d.revision, d.issued, ns.ServerTime(), "0" })
+        d.revision, d.issued, math.max(ns.ServerTime(), archive and archive.issued + 1 or 0), "0" })
     local function Guard()
         local current = LeaderCertificate()
         return current and current.raw == cert.raw and S.MyRoot() == root and ns.MyGuild() == d.guild
-            and not ns.Roster.IsOfficerRank(ns.Roster.RankOf(name)) and not R.Blocks(d)
+            and I.For(ns.MyGuild(), ns.myKey) and I.For(ns.MyGuild(), ns.myKey).raw == leader.raw
+            and (archive and Latest(d.guild, key) == archive
+                or not archive and ns.Roster.OfficerDemoted(name) and not R.Blocks(d))
     end
     pending[key] = true
     local queued = S.SignControl(body, Guard, function(sig)
@@ -145,12 +168,21 @@ function R.Revoke(name)
     return queued
 end
 function R.Tick()
-    if not LeaderCertificate() then return end
+    local cert = LeaderCertificate()
+    if not cert then return end
+    -- Сохранённый отзыв остаётся действующим. Его новое доказательство нужно клиентам,
+    -- которые уже знают о смене главы и больше не принимают старую подпись впервые.
+    for _, archive in pairs(Store()[U.GuildKey(ns.MyGuild())] or {}) do
+        local proof = Read(archive.raw)
+        if proof and (proof.certificate.public ~= cert.public or not CurrentAuthority(proof)) then
+            if R.Revoke(proof.grant.name, archive) then return end
+        end
+    end
     local root = S.MyRoot()
     -- Корень уже выпускает обычный подписанный KD; второго документа не требуется.
     if root and root.public == S.PublicKey() and U.Key(root.name) == ns.myKey then return end
     for _, d in pairs(ns.store.security.issuers[U.GuildKey(ns.MyGuild())] or {}) do
-        if d.active and not R.Blocks(d) and not ns.Roster.IsOfficerRank(ns.Roster.RankOf(d.name)) then
+        if d.active and not R.Blocks(d) and ns.Roster.OfficerDemoted(d.name) then
             if R.Revoke(d.name) then return end
         end
     end
@@ -175,7 +207,7 @@ ns.Comm.On("KV", function(msg, sender, dist)
         return
     end
     local r = raw and Read(raw)
-    if not r or not Newer(r) or checking[r.raw] then return end
+    if not r or not Newer(r) or not CurrentAuthority(r) or checking[r.raw] then return end
     local count = 0; for _ in pairs(checking) do count = count + 1 end
     if count >= 16 then return end
     checking[r.raw] = true
@@ -186,7 +218,7 @@ ns.Comm.On("KV", function(msg, sender, dist)
         return Ed.Verify(r.certificate.pk, r.body, r.sig)
     end, function(valid)
         checking[r.raw] = nil
-        if valid and Newer(r) then Keep(r, dist) end
+        if valid and Newer(r) and CurrentAuthority(r) then Keep(r, dist) end
     end)
     if not queued then checking[r.raw] = nil end
 end)
@@ -200,4 +232,18 @@ ns.On("AUTH_ROOT", function(guild)
         end
     end
 end)
-ns.On("LOGIN", function() ns.store.security.issuerRevocations = ns.store.security.issuerRevocations or {} end)
+function R.Sweep(restore)
+    for gk, list in pairs(Store()) do
+        for key, r in pairs(list) do
+            local proof = (restore or not r.expires) and Read(r.raw)
+            local expires = r.expires or proof and proof.expires
+            if not expires or expires <= ns.ServerTime() then list[key] = nil
+            elseif restore then
+                list[key] = { raw = r.raw, guild = r.guild, key = r.key, root = r.root,
+                    revision = r.revision, issued = r.issued, expires = expires }
+            end
+        end
+        if not next(list) then Store()[gk] = nil end
+    end
+    for key, entry in pairs(shared) do if ns.Now() - entry.at >= C.AUTH_INTRODUCE then shared[key] = nil end end
+end
