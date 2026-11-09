@@ -170,17 +170,20 @@ end
 function R.Tick()
     local cert = LeaderCertificate()
     if not cert then return end
+    local root = S.MyRoot()
+    local ownRoot = root and root.public == S.PublicKey() and U.Key(root.name) == ns.myKey
     -- Сохранённый отзыв остаётся действующим. Его новое доказательство нужно клиентам,
     -- которые уже знают о смене главы и больше не принимают старую подпись впервые.
     for _, archive in pairs(Store()[U.GuildKey(ns.MyGuild())] or {}) do
         local proof = Read(archive.raw)
         if proof and (proof.certificate.public ~= cert.public or not CurrentAuthority(proof)) then
-            if R.Revoke(proof.grant.name, archive) then return end
+            if ownRoot then
+                if I.EndorseArchive(archive) then return end
+            elseif R.Revoke(proof.grant.name, archive) then return end
         end
     end
-    local root = S.MyRoot()
     -- Корень уже выпускает обычный подписанный KD; второго документа не требуется.
-    if root and root.public == S.PublicKey() and U.Key(root.name) == ns.myKey then return end
+    if ownRoot then return end
     for _, d in pairs(ns.store.security.issuers[U.GuildKey(ns.MyGuild())] or {}) do
         if d.active and not R.Blocks(d) and ns.Roster.OfficerDemoted(d.name) then
             if R.Revoke(d.name) then return end

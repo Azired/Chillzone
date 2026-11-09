@@ -169,6 +169,27 @@ T.test("issuer-review: действующий глава переподписы�
     Errors(w)
 end)
 
+T.test("issuer-review: новый глава-корень подтверждает сохранённый архив даже без строки отозванного игрока", function()
+    local w, k, p, v, o = Build()
+    local raw = o.ns.Issuers.For(o.guild, o.ns.myKey).raw
+    Demote(w, o); w:Run(90)
+    local gk = v.ns.Util.GuildKey(v.guild)
+    -- Уже проверенный архив в SavedVariables мог быть получен до смены роли корня
+    -- либо другим персонажем того же аккаунта. Новое доверие здесь не создаётся.
+    local archive = {}; for key, value in pairs(v.ns.store.security.issuerRevocations[gk][o.ns.myKey]) do archive[key] = value end
+    p.ns.store.security.issuerRevocations[gk] = { [o.ns.myKey] = archive }
+    o:Logout(); v.rank = 1
+    for i, row in ipairs(w.guilds[p.guild].members) do if row.full then table.remove(w.guilds[p.guild].members, i); break end end
+    p = w:Client({ first = p.first, surname = p.surname, guild = p.guild, rank = 0, db = p.ns.db })
+    for _, c in ipairs(w.clients) do c.ns.Roster.Scan() end
+    w:Run(90)
+    local d = p.ns.store.security.issuers[gk][o.ns.myKey]
+    T.ok(d and not d.active and d.revision > archive.revision, "сохранённый отзыв подтверждён корневым KD")
+    k.ns.Comm.Dispatch("KD~" .. k.ns.Ed25519.ToB64(d.raw), p:Name(), "WHISPER"); w:Run(5)
+    T.eq(k.ns.Issuers.Current(raw), nil, "архив распространяется без старой подписи главы")
+    Errors(w)
+end)
+
 T.test("issuer-review: корневой отзыв шёпотом передаётся пассивному члену гильдии", function()
     local w, k, p, _, o = Build()
     local n = w:Client({ first = "Тихий", surname = "Читатель", guild = k.guild, rank = 3 })

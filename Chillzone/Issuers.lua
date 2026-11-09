@@ -114,19 +114,27 @@ local function IsRoot()
     local root = S.MyRoot()
     return S.CanAdmin() and root and root.public == S.PublicKey() and U.Key(root.name) == ns.myKey
 end
-local function Issue(name, public, active, manual)
+local function Archived(archive)
+    if not archive then return false end
+    local gk = U.GuildKey(ns.MyGuild())
+    local list = (ns.store.security.issuerRevocations or {})[gk]
+    local d = (Store()[gk] or {})[archive.key]
+    return list and list[archive.key] == archive and S.MyRoot() and archive.root == S.MyRoot().public
+        and archive.expires > ns.ServerTime() and (not d or d.root ~= archive.root or d.revision <= archive.revision)
+end
+local function Issue(name, public, active, manual, archive)
     if not IsRoot() then return false end
     local guild, key, root = ns.MyGuild(), U.Key(name), S.MyRoot()
     if not key or pending[key] then return false end
     local list = Store()[U.GuildKey(guild)] or {}
     local old, now = list[key], ns.ServerTime()
-    local revision = (old and old.root == root.public and old.revision or 0) + 1
+    local revision = math.max(old and old.root == root.public and old.revision or 0, archive and archive.revision or 0) + 1
     local scope = ns.Roster.RankOf(name) == 0 and "leader" or "issuer"
     local body = Pack("ISSUER", { ns.group, ns.faction, guild, U.Display(name), public,
         now, now + C.AUTH_ISSUER_TTL, active and "1" or "0", revision, root.public, scope })
     local function Guard()
         return IsRoot() and ns.MyGuild() == guild and S.MyRoot() == root
-            and (active or manual or ns.Roster.OfficerDemoted(name))
+            and (active or manual or ns.Roster.OfficerDemoted(name) or Archived(archive))
             and (not active or (ns.Roster.IsOfficerRank(ns.Roster.RankOf(name))
                 and scope == (ns.Roster.RankOf(name) == 0 and "leader" or "issuer")))
     end
@@ -149,6 +157,14 @@ function I.Revoke(name)
     return d and Issue(d.name, d.public, false, true) or false
 end
 function I.Grant(name, public) return Issue(name, public, true, true) end
+function I.EndorseArchive(archive)
+    if not IsRoot() or not Archived(archive) then return false end
+    local f = Unpack(archive.raw, "REVOKE", 5, 4500)
+    local d = f and I.Read(f[2])
+    if not d or d.key ~= archive.key or U.GuildKey(d.guild) ~= U.GuildKey(ns.MyGuild())
+        or d.root ~= archive.root or d.revision ~= archive.revision then return false end
+    return Issue(d.name, d.public, false, false, archive)
+end
 function I.Tick(keys)
     if not IsRoot() then return end
     local list = Store()[U.GuildKey(ns.MyGuild())] or {}
