@@ -322,7 +322,7 @@ T.test("chat tab: копия союза идёт в выбранную вкла�
 	T.eq(#h.messages.lines, 3)
 end)
 
-T.test("chat tab: несколько вкладок Chattynator получают чат, историю и отладку", function()
+T.test("chat tab: несколько вкладок Chattynator получают чат и историю, журнал остаётся отдельным", function()
 	local h, ns, env = BuildChattynator()
 	env.GUILD = "Гильдия"
 	local tabs = { { "GENERAL", "GUILD", ns.L.CHAT_TAB_NAME }, { "Торговля" } }
@@ -358,16 +358,21 @@ T.test("chat tab: несколько вкладок Chattynator получают
 	T.same(delivered[3], delivered[1])
 	T.same(delivered[4], delivered[2])
 	ns.char.chatMirror = false
-	ns.db.settings.debug = true
+	local printedBefore = #h.client.printed
+	ns.Diagnostics.SetEnabled(true)
 	ns.Log("Журнал союза")
-	T.eq(delivered[5][1], 2)
-	T.eq(delivered[6][1], 1)
-	T.ok(delivered[5][3]:find("Журнал союза", 1, true))
-	ns.db.settings.debug = false
+	T.eq(#delivered, 4, "запись журнала не попадает во вкладки Chattynator")
+	T.eq(#h.client.printed, printedBefore, "запись журнала не попадает в штатный чат")
+	ns.Diagnostics.SetEnabled(false)
 	ns.db.errors = { "Сохранённая ошибка" }
 	h.client:Slash("/chillzone", "log 1")
-	T.ok(delivered[#delivered - 1][3]:find("Сохранённая ошибка", 1, true))
-	T.ok(delivered[#delivered][3]:find("Сохранённая ошибка", 1, true))
+	T.eq(ns.UI.Current(), "journal", "команда открывает отдельный журнал")
+	local journal = ns.JournalPane.frames
+	journal.copy.scripts.OnClick(journal.copy)
+	T.ok(journal.box:GetText():find("Журнал союза", 1, true), "отчёт содержит запись")
+	T.ok(journal.box:GetText():find("Сохранённая ошибка", 1, true), "отчёт содержит сохранённую ошибку")
+	T.eq(#delivered, 4, "команда log не выводит отчёт в Chattynator")
+	T.eq(#h.client.printed, printedBefore, "команда log не выводит отчёт в штатный чат")
 	ns.db.errors = {}
 
 	ns.char.chatMirror = true
@@ -375,7 +380,8 @@ T.test("chat tab: несколько вкладок Chattynator получают
 	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Оставшаяся вкладка")
 	T.eq(delivered[#delivered][1], 1)
 	T.eq(h.client:Saw("Оставшаяся вкладка"), 0)
-	ns.UI.Render()
+	ns.UI.Toggle("settings")
+	p.button.scripts.OnClick(p.button)
 	T.eq(p.items[4].text:GetText(), "|cffff6060«Торговля» закрыта|r")
 	p.items[4].scripts.OnClick(p.items[4])
 	T.same(ns.Chat.SelectedWindows(), { "Гильдия" })
