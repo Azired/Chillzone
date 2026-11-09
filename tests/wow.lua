@@ -466,7 +466,9 @@ function World:Client(opts)
 	c.env.ChillzoneDB = opts.db
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
-		if not f:find("^libs/") or f == "libs/Ed25519.lua" then
+		-- В 0.9 моста /г ещё не было.
+		local legacyBridge = opts.legacy and f == "GuildBridge.lua"
+		if not legacyBridge and (not f:find("^libs/") or f == "libs/Ed25519.lua") then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)

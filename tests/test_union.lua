@@ -377,7 +377,14 @@ T.test("union: глава с одним аккаунтом подключает 
 end)
 
 T.test("union: представителю не в игре решение не шепчется каждые 10 минут", function()
+    math.randomseed(14)
     local w, k, _, v = Build()
+    -- Без переписи от гильдии мост не опрашивает контакт. Здесь недоступность
+    -- должна обнаружиться именно на отправке подписанного решения главы.
+    local getRow = k.ns.Data.Row
+    k.ns.Data.Row = function(guild)
+        if guild ~= v.guild then return getRow(guild) end
+    end
     w:Pair(v, k)
     w:Run(60)
     T.ok(v.ns.IsMember())

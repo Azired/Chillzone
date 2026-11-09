@@ -34,9 +34,6 @@ local function Build()
 	local observer = w:Client({ first = "Яков", surname = "Юга", guild = a.guild, rank = 3 })
 	local plainA = PlainClient(w, a.guild, "Юга")
 	local plainB = PlainClient(w, b.guild, "Севера")
-	for _, c in ipairs({ headA, headB, a, b, observer }) do
-		c.env.C_GuildInfo.GetInfoText = function() return w.guilds[c.guild].info or "" end
-	end
 	w:Run(30)
 	w:Init(headA, headB)
 	w:Pair(headB, headA)
@@ -51,16 +48,10 @@ local function Build()
 	return w, a, b, observer, plainA, plainB, headA, headB
 end
 
-local function SetPolicy(w, own, peer)
-	w.guilds[own.guild].info = "Правила гильдии\n[CZBRIDGE1] " .. peer.guild
-end
-
 local function Pair(w, a, b, headA, headB)
-	SetPolicy(w, a, b)
 	headA:Logout()
-	SetPolicy(w, b, a)
 	headB:Logout()
-	T.ok(Wait(w, function() return a.ns.GuildBridge.Ready() and b.ns.GuildBridge.Ready() end, 1600),
+	T.ok(Wait(w, function() return a.ns.GuildBridge.Ready(b.guild) and b.ns.GuildBridge.Ready(a.guild) end, 1600),
 		"рядовые участники стали связными при двух офлайн-главах")
 end
 
@@ -81,26 +72,43 @@ local function FireGuild(c, author, text, lineID)
 	c:Fire("CHAT_MSG_GUILD", text, stamp, "", "", stamp, "", 0, 0, "", 0, lineID, author:Guid())
 end
 
-T.test("guild bridge: выключен изначально и ждёт согласия двух гильдий", function()
-	local w, a, b, observer, plainA, plainB, headA, headB = Build()
-	T.no(a.ns.GuildBridge.Ready())
-	T.no(b.ns.GuildBridge.Ready())
-	SetPolicy(w, a, b)
-	headA:Logout()
-	headB:Logout()
-	T.ok(Wait(w, function() return a.ns.Census.IsReporter() and b.ns.Census.IsReporter() end, 230))
-	w:Run(90)
-	T.no(a.ns.GuildBridge.Ready())
-	T.no(observer.ns.GuildBridge.Ready(), "второй участник не стал связным")
-	w:GuildSay(plainA, "только местный чат", "GUILD")
+T.test("guild bridge: подписанного членства достаточно, посторонняя гильдия не получает чат", function()
+	local w, a, b, _, plainA, plainB, headA, headB = Build()
+	local outside = w:Guild("Чиллзон Восток").name
+	local headX = w:Client({ first = "Глава", surname = "Востока", guild = outside, rank = 0 })
+	local plainX = PlainClient(w, outside, "Востока")
+	w:Run(30)
+	w:Init(headX)
+	T.no(headX.ns.IsMember(), "похожее название и свой корень не дают членства")
+	T.ok(Wait(w, function()
+		return headA.ns.GuildBridge.Ready(b.guild) and headB.ns.GuildBridge.Ready(a.guild)
+	end, 1600), "мост включился без изменений в описаниях гильдий")
+	T.no(headA.ns.GuildBridge.Ready(outside))
+	T.no(headX.ns.GuildBridge.Ready())
+
+	local text = "переслать только в союз"
+	w:GuildSay(plainA, text, "GUILD")
 	w:Run(15)
-	T.same(plainA.lines, { "только местный чат" })
-	T.eq(#plainB.lines, 0)
-	T.eq(History(a, a.guild, plainA, "только местный чат"), 0)
-	T.eq(History(b, a.guild, plainA, "только местный чат"), 0)
+	T.same(plainA.lines, { text })
+	T.eq(#plainB.lines, 1)
+	T.eq(#plainX.lines, 0)
+	T.eq(History(headX, a.guild, plainA, text), 0)
 	for _, packet in ipairs(w.log) do
-		T.no(packet.dist == "WHISPER" and packet.msg:find("только местный чат", 1, true),
-			"без согласия не передаётся даже текст пакета")
+		if packet.msg:sub(1, 3) == "BM~" and packet.msg:find(text, 1, true) then
+			T.eq(w:FindByTell(packet.target), headB, "пакет адресован только связному из союза")
+		end
+	end
+
+	T.ok(headA.ns.Security.RemoveGuild(b.guild))
+	T.no(headA.ns.GuildBridge.Ready(b.guild), "новое решение сразу исключает гильдию из рассылки")
+	local removed = "после исключения"
+	w:GuildSay(plainA, removed, "GUILD")
+	w:Run(15)
+	T.same(plainA.lines, { text, removed })
+	T.eq(#plainB.lines, 1, "исключённая гильдия не получает новые строки")
+	for _, packet in ipairs(w.log) do
+		T.no(packet.msg:sub(1, 3) == "BM~" and packet.msg:find(removed, 1, true),
+			"текст не передаётся исключённой гильдии даже пакетом")
 	end
 end)
 
@@ -159,7 +167,9 @@ T.test("guild bridge: новый связной выбирается после 
 	w:Run(15)
 	T.eq(#plainB.lines, 1)
 
-	T.ok(Wait(w, function() return observer.ns.GuildBridge.Ready() and b.ns.GuildBridge.Ready() end, 1600),
+	T.ok(Wait(w, function()
+		return observer.ns.GuildBridge.Ready(b.guild) and b.ns.GuildBridge.Ready(a.guild)
+	end, 1600),
 		"мост восстановился автоматически")
 	w:GuildSay(plainA, last, "GUILD")
 	w:Run(30)
@@ -171,11 +181,6 @@ T.test("guild bridge: новый связной выбирается после 
 	T.eq(History(b, a.guild, plainA, first), 1)
 	T.eq(History(b, a.guild, plainA, gap), 0, "старая строка не была переслана после восстановления")
 	T.eq(History(b, a.guild, plainA, last), 1)
-
-	w.guilds[b.guild].info = "Мост выключен"
-	T.no(b.ns.GuildBridge.Ready(), "при удалении отметки назначение сразу прекращается")
-	w:Run(50)
-	T.no(observer.ns.GuildBridge.Ready())
 end)
 
 T.test("guild bridge: без свежей переписи реплики остаются в исходной гильдии", function()
@@ -222,4 +227,39 @@ T.test("guild bridge: сертификат другого игрока не да
 	w:Deliver(a, "GUILD", a.ns.PREFIX, wire, nil, true)
 	w:Run(2)
 	T.eq(History(observer, b.guild, plainB, text), 0)
+end)
+
+T.test("guild bridge: одна исходная реплика идёт в две гильдии без повторов в истории", function()
+	local w, a, b, observer, plainA, plainB, headA, headB = Build()
+	local third = w:Guild("Чиллзон Запад").name
+	local headC = w:Client({ first = "Глава", surname = "Запада", guild = third, rank = 0 })
+	local plainC = PlainClient(w, third, "Запада")
+	w:Run(30)
+	w:Init(headC)
+	w:Pair(headC, headA)
+	T.ok(Wait(w, function()
+		return headA.ns.GuildBridge.Ready(b.guild) and headA.ns.GuildBridge.Ready(third)
+			and headB.ns.GuildBridge.Ready(a.guild) and headC.ns.GuildBridge.Ready(a.guild)
+	end, 1600), "у главной гильдии два активных соседа")
+
+	local text = "одна реплика для всего союза"
+	w:GuildSay(plainA, text, "GUILD")
+	w:Run(30)
+	T.same(plainA.lines, { text })
+	T.eq(#plainB.lines, 1)
+	T.eq(#plainC.lines, 1)
+	T.ok(plainB.lines[1]:find(text, 1, true))
+	T.ok(plainC.lines[1]:find(text, 1, true))
+	local sent = 0
+	for _, packet in ipairs(w.log) do
+		if packet.msg:sub(1, 3) == "BM~" and packet.msg:find(text, 1, true) then
+			T.eq(packet.from, headA:Name(), "реплику пересылает только исходный связной")
+			sent = sent + 1
+		end
+	end
+	T.eq(sent, 2, "по одному пакету каждой соседней гильдии")
+	for _, c in ipairs({ headA, a, observer, headB, b, headC }) do
+		T.eq(History(c, a.guild, plainA, text), 1, c:Name() .. ": в истории одна реплика")
+		T.eq(#c.ns.db.errors, 0, table.concat(c.ns.db.errors, " | "))
+	end
 end)
