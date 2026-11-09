@@ -132,7 +132,7 @@ T.test("chat tab: копия союза идёт в выбранную вкла�
 	T.eq(#h.messages.lines, 3)
 end)
 
-T.test("chat tab: несколько вкладок Chattynator получают чат, историю и отладку", function()
+T.test("chat tab: несколько вкладок Chattynator получают чат и историю, диагностика остаётся в журнале", function()
 	local h, ns, env = BuildChattynator()
 	env.GUILD = "Гильдия"
 	local tabs = { { "GENERAL", "GUILD", ns.L.CHAT_TAB_NAME }, { "Торговля" } }
@@ -168,17 +168,21 @@ T.test("chat tab: несколько вкладок Chattynator получают
 	T.same(delivered[3], delivered[1])
 	T.same(delivered[4], delivered[2])
 	ns.char.chatMirror = false
+	local printed = #h.client.printed
 	ns.db.settings.debug = true
 	ns.Log("Журнал союза")
-	T.eq(delivered[5][1], 2)
-	T.eq(delivered[6][1], 1)
-	T.ok(delivered[5][3]:find("Журнал союза", 1, true))
+	T.eq(#delivered, 4, "запись диагностики не попадает во вкладки Chattynator")
+	T.eq(#h.client.printed, printed, "запись диагностики не попадает в основной чат")
+	T.ok(ns.Diagnostics.Report():find("Журнал союза", 1, true), "запись сохранена в журнале")
 	ns.db.settings.debug = false
 	ns.db.errors = { "Сохранённая ошибка" }
 	h.client:Slash("/chillzone", "log 1")
-	T.ok(delivered[#delivered - 1][3]:find("Сохранённая ошибка", 1, true))
-	T.ok(delivered[#delivered][3]:find("Сохранённая ошибка", 1, true))
+	T.eq(ns.UI.Current(), "journal", "команда открывает отдельный журнал")
+	T.eq(#delivered, 4, "просмотр журнала не пишет во вкладки Chattynator")
+	T.eq(#h.client.printed, printed, "просмотр журнала не пишет в основной чат")
+	T.ok(ns.Diagnostics.Report():find("Сохранённая ошибка", 1, true), "сохранённая ошибка есть в отчёте")
 	ns.db.errors = {}
+	ns.UI.Toggle("settings")
 
 	ns.char.chatMirror = true
 	tabs[2] = nil
@@ -186,6 +190,7 @@ T.test("chat tab: несколько вкладок Chattynator получают
 	T.eq(delivered[#delivered][1], 1)
 	T.eq(h.client:Saw("Оставшаяся вкладка"), 0)
 	ns.UI.Render()
+	p.button.scripts.OnClick(p.button) -- После просмотра журнала список вкладок открывается заново.
 	T.eq(p.items[4].text:GetText(), "|cffff6060«Торговля» закрыта|r")
 	p.items[4].scripts.OnClick(p.items[4])
 	T.same(ns.Chat.SelectedWindows(), { "Гильдия" })
