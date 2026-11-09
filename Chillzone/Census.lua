@@ -272,9 +272,9 @@ ns.Comm.On("Q1", function(_, sender, dist)
 	if dist ~= "GUILD" or not Census.IsReporter() then return end
 	local now = ns.Now()
 	if now - lastQ1Answer < C.Q1_GAP then return end
-	if #ns.Data.Cached() == 0 then return end
 	lastQ1Answer = now
 	ns.Security.ShareTrust() -- корни и ключ репортёра — раньше самих конвертов
+	ns.Relay.ShareCandidates(true) -- будущему репортёру нужны живые запасные реле
 	for _, c in ipairs(ns.Data.Cached()) do
 		ns.Security.IntroduceWire("GUILD", c.raw, true) -- спросивший мог отбросить прежний KP
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = "q1:" .. c.key })

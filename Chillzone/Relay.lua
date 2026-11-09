@@ -631,10 +631,23 @@ ns.Comm.On("RY", function(msg, sender, dist)
 	ns.Fire("RELAYS")
 end)
 
+-- Пассивные читатели не получают RY. Без сертификатов общей тройки будущий
+-- репортёр знает только прежнее реле и после его выхода не находит живое.
+-- Q1 повторяет эту рассылку для вошедших позже; обычные повторы ограничены Introduce.
+function Relay.ShareCandidates(force)
+	if not ns.Census.IsReporter() or U.IsMainGuild(ns.MyGuild()) then return end
+	for _, e in ipairs(Top()) do
+		local c = ns.Security.Member(C.MAIN_GUILD, e.name)
+		if c then ns.Security.Introduce("GUILD", c.raw, force) end
+	end
+end
+
 ns.On("AUTH_PEER", function(c, sender)
 	if not U.IsMainGuild(c.guild) or not Relay.TrustOf(sender) or ns.IsMe(sender) then return end
 	local e = Entry(U.Key(sender), sender)
 	e.verified, e.asked, e.down = Now(), nil, nil
+	Relay.Invalidate()
+	Relay.ShareCandidates()
 	FlushHold()
 end)
 
@@ -752,7 +765,12 @@ end)
 -- реле преемника.
 ns.On("REPORTER", function(me)
 	if not ns.IsMember() then return end
-	if me then Relay.Register() else Relay.HandOver() end
+	if me then
+		Relay.Register()
+		Relay.ShareCandidates()
+	else
+		Relay.HandOver()
+	end
 end)
 
 ns.On("AUTH_ROOT", Relay.Invalidate)

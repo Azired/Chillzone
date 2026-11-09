@@ -44,6 +44,8 @@ local function Build(opts)
 end
 
 local function Pair(w, a, b, headA, headB)
+	T.ok(b.ns.Security.Member(a.guild, a:Name()),
+		"будущий связной заранее получил проверенный сертификат запасного реле от своей гильдии")
 	headA:Logout()
 	headB:Logout()
 	T.ok(Wait(w, function() return a.ns.GuildBridge.Ready(b.guild) and b.ns.GuildBridge.Ready(a.guild) end, 1600),
@@ -113,6 +115,41 @@ T.test("guild bridge: старый выбранный репортёр не ме
 	T.eq(#plainB.lines, 0)
 	T.eq(NativeCount(w), 1)
 	NoErrors(a, b, observer, headA, headB)
+end)
+
+T.test("guild bridge: поздний читатель узнаёт запасное реле по Q1 и заменяет ушедших связных", function()
+	local w, a, b, observer, plainA, plainB, headA, headB = Build()
+	T.ok(Wait(w, function()
+		return headA.ns.GuildBridge.Ready(b.guild) and headB.ns.GuildBridge.Ready(a.guild)
+	end, 1600))
+	-- Сертификаты тройки уже разосланы, а до их очередного продления ещё далеко.
+	-- Новичку нужны они из ответа своей гильдии на Q1, не личный случайный опрос корня.
+	w:Run(180)
+	local late = w:Client({ first = "Новый", surname = "Севера", guild = b.guild, rank = 3 })
+	T.no(late.ns.Security.Member(a.guild, a:Name()), "до синхронизации сертификата нет")
+	w:Run(180)
+	T.ok(late.ns.Security.MyCertificate())
+	T.no(late.ns.Census.IsReporter(), "пока глава в сети, новичок остаётся читателем")
+	T.ok(late.ns.Security.Member(a.guild, a:Name()), "Q1 принёс проверенный сертификат живого запасного реле")
+	local requested = false
+	for _, packet in ipairs(w.log) do
+		if packet.from == late:Name() and packet.dist == "GUILD" and packet.msg == "Q1~" then requested = true end
+	end
+	T.ok(requested, "новичок запросил снимок обычным Q1")
+	headA:Logout()
+	headB:Logout()
+	b:Logout()
+	T.ok(Wait(w, function()
+		return a.ns.GuildBridge.Ready(late.guild) and late.ns.GuildBridge.Ready(a.guild)
+	end, 1600), "поздний читатель сам восстановил связь после выхода прежнего руководства")
+	local text = "поздний читатель продолжил связь"
+	w:GuildSay(plainA, text, "GUILD")
+	w:Run(15)
+	T.eq(History(late, a.guild, plainA, text, "MAGE"), 1)
+	T.eq(History(observer, a.guild, plainA, text, "MAGE"), 1)
+	T.eq(#plainB.lines, 0)
+	T.eq(NativeCount(w), 1)
+	NoErrors(a, late, observer)
 end)
 
 T.test("guild bridge: подписанное членство ограничивает получателей импорта", function()
