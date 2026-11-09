@@ -3,6 +3,7 @@ local ADDON, ns = ...
 local S, I, U, C, Ed = ns.Security, ns.Issuers, ns.Util, ns.Config, ns.Ed25519
 local Pack, Unpack = S.Control.Pack, S.Control.Unpack
 local R, pending, checking, shared = {}, {}, {}, {}
+local waitingRoots = {}
 ns.IssuerRevocations = R
 
 local function Store()
@@ -158,7 +159,22 @@ ns.Comm.On("KV", function(msg, sender, dist)
     if dist ~= "GUILD" and dist ~= "WHISPER" then return end
     if #msg > 6100 or not S.Control.Budget("issuer-revoke:" .. (U.Key(sender) or "?"), C.AUTH_NEW_PER_MIN) then return end
     local encoded = msg:match("^KV~([%w_-]+)$")
-    local r = encoded and Read(Ed.FromB64(encoded))
+    local raw = encoded and Ed.FromB64(encoded)
+    local f = raw and Unpack(raw, "REVOKE", 5, 4500)
+    local target = f and I.Read(f[2])
+    if target and (not Root(target.guild) or (not U.IsMemberGuild(target.guild)
+        and U.GuildKey(target.guild) ~= U.GuildKey(ns.MyGuild()))) then
+        -- Начальная рассылка KV может обогнать KA и установку чужого корня.
+        -- Очередь лишь сохраняет байты: право отзыва проверяется после получения корня.
+        for i = #waitingRoots, 1, -1 do
+            if ns.Now() - waitingRoots[i].at > 30 then table.remove(waitingRoots, i)
+            elseif waitingRoots[i].msg == msg then return end
+        end
+        if #waitingRoots >= 8 then table.remove(waitingRoots, 1) end
+        waitingRoots[#waitingRoots + 1] = { msg = msg, sender = sender, dist = dist, at = ns.Now(), guild = target.guild }
+        return
+    end
+    local r = raw and Read(raw)
     if not r or not Newer(r) or checking[r.raw] then return end
     local count = 0; for _ in pairs(checking) do count = count + 1 end
     if count >= 16 then return end
@@ -173,5 +189,15 @@ ns.Comm.On("KV", function(msg, sender, dist)
         if valid and Newer(r) then Keep(r, dist) end
     end)
     if not queued then checking[r.raw] = nil end
+end)
+ns.On("AUTH_ROOT", function(guild)
+    local previous = waitingRoots
+    waitingRoots = {}
+    for _, p in ipairs(previous) do
+        if ns.Now() - p.at <= 30 then
+            if U.GuildKey(p.guild) == U.GuildKey(guild) then ns.Comm.Dispatch(p.msg, p.sender, p.dist)
+            else waitingRoots[#waitingRoots + 1] = p end
+        end
+    end
 end)
 ns.On("LOGIN", function() ns.store.security.issuerRevocations = ns.store.security.issuerRevocations or {} end)

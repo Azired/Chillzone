@@ -215,3 +215,22 @@ T.test("issuer-revoke: корень не выдаёт право главы по
     T.no(published, "отменённый допуск главы не поставлен в сеть")
     Errors(w)
 end)
+
+T.test("issuer-revoke: отзыв, пришедший до состава объединения, применяется после проверки корня", function()
+    local w, k, _, v, o = Build()
+    Demote(w, o); w:Run(90)
+    local gk, main = k.ns.Util.GuildKey(o.guild), k.ns.Util.GuildKey(k.guild)
+    local rev = k.ns.store.security.issuerRevocations[gk]
+    T.ok(rev and rev[o.ns.myKey], "главная гильдия получила настоящий отзыв")
+    local n = w:Client({ first = "Новый", surname = "Читатель", guild = k.guild, rank = 3 })
+    -- Первый корень и UO уже получены, KA ещё собирается или проверяется.
+    n.ns.store.security.roots[main] = k.ns.Security.Roots()[main]
+    n.ns.store.security.owner = k.ns.UnionAuthority.Current()
+    n.ns.Comm.Dispatch(rev[o.ns.myKey].wire, k:Name(), "WHISPER")
+    n.ns.Comm.Dispatch(k.ns.store.security.policies[gk].wire, k:Name(), "WHISPER")
+    w:Run(2)
+    T.ok(n.ns.Util.IsMemberGuild(v.guild), "подписанное решение главы проверено")
+    local seen = n.ns.store.security.issuerRevocations[gk]
+    T.ok(seen and seen[o.ns.myKey], "предшествующий KV дождался корня и проверен")
+    Errors(w)
+end)
