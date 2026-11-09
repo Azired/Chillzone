@@ -134,8 +134,8 @@ local function Hello(s, closing)
 	local wire = table.concat({ "BH", c.guild, c.peerGuild, s.nonce,
 		closing and "!" or s.remote or "", ns.ServerTime() }, "~")
 	local key = U.GuildKey(c.peerGuild)
-	-- Приветствия моста идут в общей очереди срочных пакетов, не обгоняя регистрацию реле.
-	local opts = { target = s.peer, prio = true,
+	-- Фоновые приветствия уступают срочным сообщениям и обмену сертификатами.
+	local opts = { target = s.peer,
 		key = closing and ("bridge:close:" .. key .. ":" .. s.nonce) or ("bridge:hello:" .. key) }
 	if closing then
 		opts.guard = function() return Security.Member(c.peerGuild, s.peer) ~= nil end
