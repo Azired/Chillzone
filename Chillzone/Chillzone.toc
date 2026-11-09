@@ -29,6 +29,7 @@ Census.lua
 Relay.lua
 Chat.lua
 GuildChat.lua
+GuildBridge.lua
 Who.lua
 Recruit.lua
 RecruitSync.lua

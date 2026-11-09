@@ -139,11 +139,13 @@ end
 -- Обычный чат гильдии и офицеров: сервер отдаёт строку всем в игре (и автору), офицерам — по рангу.
 function World:GuildSay(from, msg, kind)
 	local event = kind == "OFFICER" and "CHAT_MSG_OFFICER" or "CHAT_MSG_GUILD"
+	local lineID = (self.guildLineID or 0) + 1
+	self.guildLineID = lineID
 	self.log[#self.log + 1] = { t = self.now, from = from:Name(), dist = kind, msg = msg }
 	for _, c in ipairs(self.clients) do
 		if c.online and c.guild == from.guild and (kind ~= "OFFICER" or c.rank <= 1) then
 			local stamp = Stamp(from)
-			self:Schedule(self.now + 0.05, function() c:Fire(event, msg, stamp, "", "", stamp, "", 0, 0, "", 0, 1, from:Guid()) end, c)
+			self:Schedule(self.now + 0.05, function() c:Fire(event, msg, stamp, "", "", stamp, "", 0, 0, "", 0, lineID, from:Guid()) end, c)
 		end
 	end
 end

@@ -15,6 +15,7 @@ local SUITES = {
 	"test_relay",
 	"test_chat",
 	"test_guildmirror",
+	"test_guild_bridge",
 	"test_security",
 	"test_link",
 	"test_union",
