@@ -76,6 +76,47 @@ T.test("security: чужой подписанный RL переносит тол
     T.eq(c.A:Saw(text), 1, "реле переносит настоящий пакет с именем из сертификата автора")
 end)
 
+T.test("security: повторы чужого RL не расходуют лимит настоящего автора", function()
+    local w, c = Build()
+    local wire, out = nil, c.V.ns.Relay.Out
+    c.V.ns.Relay.Out = function(mode, inner)
+        if mode == "P" then wire = inner end
+        return out(mode, inner)
+    end
+    c.V.ns.Relay.Pick = function() return { key = c.A.ns.myKey, name = c.A:Name() } end
+    c.V:Slash("/cz1", "пакет для проверки повторов"); w:Run(10)
+    T.ok(wire, "перехвачен настоящий подписанный пакет")
+    T.eq(c.A:Saw("пакет для проверки повторов"), 1, "пакет уже принят и сохранён в кэше")
+    T.ok(c.A.ns.Relay.TrustOf(c.M:Name()), "рядовой главной гильдии является доверенным реле")
+    local dropped = c.A.ns.Relay.stats.dropped
+    for _ = 1, c.A.ns.Config.RELAY_PER_MIN + 2 do
+        c.M.ns.Comm.Send("WHISPER", c.M.ns.Codec.EncodeRL("P", wire), { target = c.A:Name(), prio = true })
+    end
+    w:Run(15)
+    T.eq(c.A.ns.Relay.stats.dropped, dropped, "дубли не выбирают лимит автора")
+    c.V:Slash("/cz1", "строка после повторов чужого реле"); w:Run(20)
+    T.eq(c.G:Saw("строка после повторов чужого реле"), 1, "следующая строка настоящего автора дошла")
+    T.eq(c.G:Saw("пакет для проверки повторов"), 1, "повторная доставка подавлена")
+end)
+
+T.test("security: лимит разных RL сохраняется и разрешает повтор после восстановления", function()
+    local w, c = Build()
+    local last, limit = nil, c.A.ns.Config.RELAY_PER_MIN
+    local dropped = c.A.ns.Relay.stats.dropped
+    for i = 1, limit + 2 do
+        local payload = c.V.ns.Codec.EncodeChat("A", c.V.guild, 9500 + i, "DRUID", "проверка лимита " .. i)
+        T.ok(c.V.ns.Security.Seal(payload, function(wire) last = wire end)); w:Run(1)
+        T.ok(last)
+        c.A.ns.Relay.HandleRL(c.V:Name(), "P", last); w:Run(1)
+    end
+    T.eq(c.A.ns.Relay.stats.dropped - dropped, 2, "разные подписанные пакеты ограничены прежним лимитом")
+    local text = "проверка лимита " .. (limit + 2)
+    T.eq(c.A:Saw(text), 0, "пакет сверх лимита не доставлен")
+    w:Run(61)
+    c.A.ns.Relay.HandleRL(c.V:Name(), "P", last); w:Run(5)
+    T.eq(c.A:Saw(text), 1, "первый отказ по лимиту не записал пакет как уже доставленный")
+end)
+
 T.test("security: expired and retired authority credentials fail closed", function()
     local w, c = Build()
     local credential = c.V.ns.Security.MyCertificate()

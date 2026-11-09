@@ -467,9 +467,9 @@ Relay.Out = Out
 ---------------------------------------------------------------------------
 -- Работа реле
 ---------------------------------------------------------------------------
-local function Seen(dk, now)
+local function Seen(dk, now, remember)
 	if seen[dk] and now - seen[dk] <= C.RELAY_DEDUPE then return true end
-	seen[dk] = now
+	if remember ~= false then seen[dk] = now end
 	return false
 end
 
@@ -492,11 +492,15 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 	local okey = U.Key(origin)
 	local ig = Relay.InnerGuild(inner)
 	if not okey or not ig or not U.IsMemberGuild(ig) then return end
+	local dk = Codec.DedupeKey(okey, inner)
+	-- Дубли не расходуют лимит автора. Отказ по лимиту ещё не означает доставку:
+	-- такой пакет можно повторить после восстановления лимита.
+	if Seen(dk, now, false) then return end
 	if not RateOk(okey, now) then
 		Relay.stats.dropped = Relay.stats.dropped + 1
 		return
 	end
-	if Seen(Codec.DedupeKey(okey, inner), now) then return end
+	Seen(dk, now)
 	local igk = U.GuildKey(ig)
 	local mine = MyGuildKey()
 	if igk ~= mine then ns.Comm.Inject(clear, certificate.name,
