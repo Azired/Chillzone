@@ -59,7 +59,11 @@ local function Trusted(key)
 end
 
 -- Ключ репортёра гильдии. withoutMe — выбор без меня: кто пересылает гильдии, пока я после
--- входа молчу (LOGIN_QUIET), хотя гильдия уже выбрала меня.
+-- входа молчу (LOGIN_QUIET), хотя гильдия уже выбрала меня. Вышедшего из игры снимает свежий
+-- ростер: окно приветов (PEER_WINDOW) втрое длиннее аренды у реле, и всё это время гильдия
+-- ждала бы пересылки от того, кого нет. Ростер читают не одновременно, и выбор может
+-- разойтись, но лишь пока кто-то ещё выбирает ушедшего: он ничего не пересылает, а убрать
+-- невыбранного значит не изменить выбор, поэтому двух действующих репортёров не бывает.
 function Census.Reporter(withoutMe)
 	if not ns.myKey then return nil end
 	local now = ns.Now()
@@ -67,7 +71,7 @@ function Census.Reporter(withoutMe)
 	local me = not withoutMe and helloReady ~= false and ns.Security.MyCertificate() and ns.myKey or nil
 	local officers = me and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
 	for key, peer in pairs(live) do
-		if peer.unready then
+		if peer.unready or ns.Roster.LeftGame(key, peer.t) then
 			live[key] = nil
 		elseif ns.Roster.IsOfficerRank(ns.Roster.byKey[key]) then
 			officers = true

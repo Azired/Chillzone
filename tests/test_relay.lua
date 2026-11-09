@@ -44,6 +44,12 @@ end
 
 local function Key(c, name) return c.ns.Util.Key(name) end
 
+-- Выход из игры как на сервере: строка ростера остаётся, но уже вне игры.
+local function Quit(w, cl)
+	cl:Logout()
+	w:AddOffline(cl.guild, cl:Name() .. "-" .. cl.realm, cl.rank, cl.level, cl.class, 0)
+end
+
 -- Настоящие ростер и перепись, но без фоновых таймеров: проверяем точные границы
 -- REPORT_EVERY / REPORT_IDLE и не смешиваем отправку отчёта с доставкой по сети.
 local function CensusReports(withVeteran)
@@ -510,6 +516,55 @@ T.test("relay: офицер без сертификата не прерывае�
 	w:Run(30)
 	T.eq(c.B:Saw("Строка после передачи роли"), 1)
 	T.eq(alla:Saw("Строка после передачи роли"), 1)
+end)
+
+T.test("census: ростер снимает с выборов только того, кто молчит с момента чтения", function()
+	local w = Wow.World()
+	local guild = "Чиллзон Север"
+	w:Guild(guild)
+	local A = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 1 })
+	local V = w:Client({ first = "Вера", surname = "Верная", guild = guild, rank = 1 })
+	local census, roster, C = V.ns.Census, V.ns.Roster, V.ns.Config
+	local alla, vera = Key(V, A:Name()), V.ns.myKey
+	V.ns.Security.MyCertificate = function() return {} end -- проверяем только выбор
+	Quit(w, A)
+	w.now = 1000
+	roster.Scan()
+	local heard = w.now + 1
+	census.Peers()[alla] = { t = heard, name = A:Name(), z = true }
+	w.now = heard + 4
+	T.eq(census.Reporter(), alla, "привет новее ростера: тот мог не успеть узнать о входе")
+	w.now = heard + C.ROSTER_LAG
+	roster.Scan()
+	T.eq(census.Reporter(), alla, "привет в пределах отставания ростера")
+	w.now = heard + C.ROSTER_LAG + 1
+	roster.Scan()
+	T.eq(census.Reporter(), vera, "ростер прочитан позже и показывает её вне игры")
+	w.now = roster.scannedAt + C.AUTH_ROSTER_TTL + 1
+	T.ok(w.now - heard <= C.PEER_WINDOW, "окно приветов ещё не кончилось")
+	T.eq(census.Reporter(), alla, "без свежего ростера остаётся только окно приветов")
+	T.eq(#V.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("relay: вышедшего репортёра сменяет тот, кого ростер видит в игре, раньше конца окна приветов", function()
+	local w, c = Build()
+	local guild = "Чиллзон Север"
+	local config = c.B.ns.Config
+	local Ya = w:Client({ first = "Яна", surname = "Ясная", guild = guild, rank = 3 })
+	w:Run(200)
+	T.eq(Ya.ns.Census.Reporter(), Key(Ya, "Вера Верная"), "до выхода репортёр — Вера")
+	Quit(w, c.V)
+	-- Минута до чтения ростера и запас на регистрацию у реле, пока истекает аренда Веры.
+	local waited = config.SCAN_EVERY + 45
+	T.ok(waited + 20 < config.PEER_WINDOW - 30, "сценарий заканчивается заметно раньше PEER_WINDOW")
+	w:Run(waited)
+	T.ok(c.B.ns.Census.IsReporter(), "Борис стал репортёром")
+	T.eq(Ya.ns.Census.Reporter(), Key(Ya, "Борис Быстрый"), "Яна выбирает Бориса")
+	c.G:Slash("/cz1", "строка после выхода репортёра")
+	w:Run(20)
+	T.eq(c.B:Saw("строка после выхода репортёра"), 1, "репортёр видит строку")
+	T.eq(Ya:Saw("строка после выхода репортёра"), 1, "рядовая видит строку через нового репортёра")
+	T.eq(#Ya.ns.db.errors, 0, "без ошибок")
 end)
 
 T.test("relay: RG от рядового отклоняется — и чат, и отчёт", function()

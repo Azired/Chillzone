@@ -33,6 +33,22 @@ local function Errors(c)
     end
 end
 
+-- Север на 0.9, обновились только upgrade. Глава Севера, он же репортёр, выходит из игры:
+-- как на сервере, строка ростера остаётся, но уже вне игры.
+local function ReporterQuits(upgrade)
+    local w, c = Build()
+    c.y = w:Client({ first = "Яна", surname = "Ясная", guild = "Чиллзон Север", rank = 3, legacy = true })
+    w:Run(240)
+    for _, name in ipairs(upgrade) do c[name] = Upgrade(w, c[name]) end
+    w:Run(200)
+    T.eq(c.y.ns.Census.Reporter(), c.y.ns.Util.Key("Вера Верная"), "до выхода репортёр — Вера")
+    local gone = c.v
+    c.v = nil
+    gone:Logout()
+    w:AddOffline(gone.guild, gone:Name() .. "-" .. gone.realm, gone.rank, gone.level, gone.class, 0)
+    return w, c
+end
+
 T.test("migration: участник обновляется до главы и сохраняет чат со старой версией", function()
     local w, c = Build()
     c.b = Upgrade(w, c.b)
@@ -45,6 +61,42 @@ T.test("migration: участник обновляется до главы и с
     c.k:Slash("/cz1", "старый клиент пишет новому")
     w:Run(40)
     T.eq(c.b:Saw("старый клиент пишет новому"), 1, "новая версия получила подписанную строку старой")
+    Errors(c)
+end)
+
+T.test("migration: обновлённый преемник вышедшего репортёра работает раньше старых клиентов", function()
+    local w, c = ReporterQuits({ "b" })
+    local config = c.b.ns.Config
+    local boris = c.b.ns.Util.Key("Борис Быстрый")
+    w:Run(config.SCAN_EVERY + 45)
+    T.ok(c.b.ns.Census.IsReporter(), "Борис стал репортёром раньше конца окна приветов")
+    c.k:Slash("/cz1", "строка до конца окна")
+    w:Run(20)
+    T.eq(c.k.ns.Relay.Reporters()[c.k.ns.Util.GuildKey("Чиллзон Север")].key, boris, "реле 0.9 отдало аренду Борису")
+    -- Пока жила аренда Веры, реле 0.9 отказывало, но отвечало: он не считает реле недоступным.
+    for _, e in pairs(c.b.ns.Relay.Known()) do T.ok(not e.down, e.name .. ": реле доступно") end
+    T.eq(c.b:Saw("строка до конца окна"), 1, "новый клиент уже получает строки")
+    T.eq(c.y:Saw("строка до конца окна"), 0, "старая Яна до конца окна отклоняет RG, как и раньше")
+    w:Run(config.PEER_WINDOW)
+    c.k:Slash("/cz1", "строка после окна")
+    w:Run(20)
+    T.eq(c.b:Saw("строка после окна"), 1, "Борис видит строку один раз")
+    T.eq(c.y:Saw("строка после окна"), 1, "после окна старая Яна принимает нового репортёра")
+    Errors(c)
+end)
+
+T.test("migration: обновлённый рядовой дожидается старого преемника вышедшего репортёра", function()
+    local w, c = ReporterQuits({ "y" })
+    local config = c.y.ns.Config
+    w:Run(config.SCAN_EVERY + 45)
+    T.eq(c.y.ns.Census.Reporter(), c.y.ns.Util.Key("Борис Быстрый"), "новая Яна уже выбрала Бориса")
+    T.no(c.b.ns.Census.IsReporter(), "старый Борис до конца окна приветов не работает")
+    w:Run(config.PEER_WINDOW)
+    T.ok(c.b.ns.Census.IsReporter(), "после окна работает и старый клиент")
+    c.k:Slash("/cz1", "строка через старого преемника")
+    w:Run(20)
+    T.eq(c.b:Saw("строка через старого преемника"), 1, "Борис видит строку один раз")
+    T.eq(c.y:Saw("строка через старого преемника"), 1, "новая Яна принимает старого репортёра")
     Errors(c)
 end)
 
