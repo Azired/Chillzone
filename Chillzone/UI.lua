@@ -24,6 +24,7 @@ local TABS = {
 	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" } },
 	{ key = "debug", text = "TAB_DEBUG", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" } },
+	{ key = "journal", text = "TAB_JOURNAL", icons = { "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "union", text = "TAB_UNION", icons = { "Interface\\Icons\\INV_Misc_GroupLooking" } },
 }
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
@@ -426,7 +427,8 @@ function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncTabs()
 	if current ~= "union" then ns.UnionPane.Hide() end
-	if not ns.IsMember() and current ~= "settings" and current ~= "union" then current = "join"
+	if current ~= "journal" then ns.JournalPane.Hide() end
+	if not ns.IsMember() and current ~= "settings" and current ~= "union" and current ~= "journal" then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
 	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
 	if current ~= "requests" then ns.RecruitPane.HideInbox() end
@@ -464,6 +466,12 @@ function UI.Render()
 		return
 	end
 	settings:Hide()
+	if current == "journal" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.JournalPane.Show()
+		return
+	end
 	if current == "requests" then
 		scroll:Hide()
 		ns.CensusPane.Hide()
@@ -613,6 +621,7 @@ local function Create()
 	ns.RecruitPane.BuildInbox(body)
 	ns.CensusPane.Build(body)
 	ns.UnionPane.Build(body)
+	ns.JournalPane.Build(body)
 	body:Hide()
 
 	ns.ChatPane.Build(f)
@@ -620,7 +629,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.JournalPane.Hide() end)
 	local elapsed, debugElapsed = 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)

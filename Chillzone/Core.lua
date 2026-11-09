@@ -20,15 +20,6 @@ function ns.Print(msg, ...)
 	if frame then frame:AddMessage(ns.COLOR .. "Chillzone|r: " .. tostring(msg)) end
 end
 
--- Отладка следует выбору вкладок общего чата, даже если его копии выключены.
--- До загрузки модуля чата доступно только основное окно.
-local function DebugPrint(msg)
-	local chat = ns.Chat
-	local frames = chat and chat.Frames and chat.Frames()
-		or { chat and chat.Frame and chat.Frame() or DEFAULT_CHAT_FRAME }
-	for _, frame in ipairs(frames) do frame:AddMessage(msg) end
-end
-
 function ns.Log(fmt, ...)
 	local msg
 	if select("#", ...) > 0 then
@@ -41,8 +32,8 @@ function ns.Log(fmt, ...)
 	if not db then return end
 	local log = db.log
 	log[#log + 1] = (date and date("%m-%d %H:%M:%S ") or "") .. msg
-	while #log > 300 do table.remove(log, 1) end
-	if db.settings.debug then DebugPrint(ns.COLOR .. "Chillzone|r: |cff999999" .. msg .. "|r") end
+	while #log > 1000 do table.remove(log, 1) end
+	ns.logRevision = (ns.logRevision or 0) + 1
 end
 
 ---------------------------------------------------------------------------
@@ -55,8 +46,11 @@ function ns.SafeCall(where, fn, ...)
 		local db = ns.db
 		if db then
 			db.errors = db.errors or {}
-			table.insert(db.errors, 1, ("%s: %s"):format(where, tostring(err)))
+			local stamp = date and date("%m-%d %H:%M:%S") or "?"
+			local record = ("[%s, v%s] %s: %s"):format(stamp, ns.VERSION, where, tostring(err))
+			table.insert(db.errors, 1, record)
 			while #db.errors > 20 do table.remove(db.errors) end
+			ns.Log("ошибка Lua: %s", record)
 		end
 		if not warnedError then
 			warnedError = true
@@ -280,16 +274,17 @@ ns.Command("status", function()
 end, L.HELP_STATUS)
 
 ns.Command("debug", function()
-	ns.db.settings.debug = not ns.db.settings.debug
-	DebugPrint(ns.COLOR .. "Chillzone|r: " .. (ns.db.settings.debug and L.DEBUG_ON or L.DEBUG_OFF))
+	ns.Diagnostics.SetEnabled(not ns.Diagnostics.Enabled())
+	ns.UI.Toggle("journal")
 end, L.HELP_DEBUG)
 
 ns.Command("log", function(arg)
 	local n = tonumber(arg) or 20
-	local log = ns.db.log
-	for i = math.max(1, #log - n + 1), #log do DebugPrint("|cff999999" .. log[i] .. "|r") end
-	for i = 1, math.min(3, #(ns.db.errors or {})) do DebugPrint("|cffff6060" .. ns.db.errors[i] .. "|r") end
+	ns.UI.Toggle("journal")
+	ns.JournalPane.SetLimit(math.max(1, math.floor(n)))
 end, L.HELP_LOG)
+
+ns.Command("journal", function() ns.UI.Toggle("journal") end, L.HELP_JOURNAL)
 
 -- true — команда найдена, даже если её обработчик завершился ошибкой.
 -- Короткие алиасы отправляют в чат только текст, не совпавший с командой.
