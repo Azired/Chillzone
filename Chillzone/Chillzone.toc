@@ -32,6 +32,7 @@ Update.lua
 Census.lua
 Relay.lua
 Chat.lua
+ChatConfig.lua
 ChatLinks.lua
 ChatTab.lua
 ChattynatorTab.lua
