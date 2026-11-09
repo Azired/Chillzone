@@ -389,6 +389,97 @@ T.test("chat tab: несколько вкладок Chattynator получают
 	T.eq(#ns.db.errors, 0)
 end)
 
+T.test("chat tab: защиты Chattynator исключают журнал боя и вкладку поиска", function()
+	local h, ns, env = BuildChattynator()
+	env.GENERAL, env.COMBAT_LOG = "Общая", "Журнал боя"
+	local search = "|TInterface\\Icons\\INV_Misc_Spyglass_03:0|t"
+	local api = env.Chattynator.API
+	api.GetWindowsAndTabs = function() return { { "GENERAL", "COMBAT_LOG", search, ns.L.CHAT_TAB_NAME, "Торговля" }, { "Гильдия" } } end
+	api.AddMessageToWindowAndTab = function() error("служебная вкладка не должна получать строки") end
+	local windows = ns.Chat.MirrorWindows()
+	T.eq(#windows, 3, "в списке только обычные вкладки")
+	T.eq(windows[1].name, "Общая")
+	T.eq(windows[2].name, "Торговля")
+	T.eq(windows[2].window, 1)
+	T.eq(windows[2].tab, 5, "индексы API не меняются после фильтрации")
+	T.eq(windows[3].name, "Гильдия")
+	T.eq(windows[3].window, 2)
+	T.eq(windows[3].tab, 1)
+	for i, name in ipairs({ "COMBAT_LOG", "Журнал боя", search }) do
+		T.no(ns.Chat.SetWindow(name), "служебная вкладка не выбирается: " .. name)
+		ns.char.chatWindows = { name } -- Выбор, сохранённый до добавления защиты.
+		ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Запасной вывод " .. i)
+		T.eq(h.client:Saw("Запасной вывод " .. i), 1)
+	end
+	T.eq(#ns.db.errors, 0)
+end)
+
+T.test("chat tab: защиты Chattynator сохраняют строку при ошибке API", function()
+	local h, ns, env = BuildChattynator()
+	local api, delivered, fallback = env.Chattynator.API, {}, {}
+	api.GetWindowsAndTabs = function() return { { "Гильдия", "Торговля" } } end
+	local failing = true
+	api.AddMessageToWindowAndTab = function(window, tab, line)
+		local caller = debug.getinfo(2, "S")
+		T.eq(caller.what, "Lua")
+		T.ok(caller.source:find("Chillzone/Chat.lua", 1, true), "источник строки сохранён для фильтров")
+		if failing == true or failing == tab then error("Chattynator ещё не готов") end
+		delivered[#delivered + 1] = { window, tab, line }
+	end
+	local original = env.DEFAULT_CHAT_FRAME.AddMessage
+	env.DEFAULT_CHAT_FRAME.AddMessage = function(frame, ...)
+		fallback[#fallback + 1] = { ... }
+		original(frame, ...)
+	end
+	T.ok(ns.Chat.SetWindow("Гильдия"))
+	ns.char.chatTime = true
+	local function Show(text)
+		ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", text)
+	end
+	Show("Ошибка одной вкладки")
+	local stamp = "|cff999999" .. env.date("%H:%M", ns.ServerTime()) .. "|r "
+	local line = stamp .. ns.Chat.Format("A", "Чиллзон", "Автор Чата", "MAGE", "Ошибка одной вкладки")
+	T.same(fallback, { { line, ns.Chat.Color("A") } }, "в основное окно приходит вся строка с цветом и временем")
+	T.ok(ns.Chat.ToggleWindow("Торговля"))
+	Show("Ошибка двух вкладок")
+	T.eq(h.client:Saw("Ошибка двух вкладок"), 1, "несколько ошибок не создают дубли")
+	T.ok(ns.Chat.ToggleWindow(""))
+	Show("Основное тоже выбрано")
+	T.eq(h.client:Saw("Основное тоже выбрано"), 1)
+	ns.char.chatWindows = { "", "Гильдия", "Торговля" }
+	Show("Основное выбрано первым")
+	T.eq(h.client:Saw("Основное выбрано первым"), 1)
+	T.same(ns.Chat.SelectedWindows(), { "", "Гильдия", "Торговля" }, "ошибка не сбрасывает выбор")
+
+	ns.char.chatWindows = { "Гильдия", "Торговля" }
+	h.client:Slash("/chillzone", "history 1")
+	T.eq(h.client:Saw("Ошибка одной вкладки"), 2, "каждая строка истории тоже сохраняется")
+	T.eq(h.client:Saw("Ошибка двух вкладок"), 2)
+	T.eq(h.client:Saw("Основное тоже выбрано"), 2)
+	T.eq(h.client:Saw("Основное выбрано первым"), 2)
+	local failures = 0
+	for _, record in ipairs(ns.db.log) do
+		if record:find("Chattynator не принял строку", 1, true) then failures = failures + 1 end
+	end
+	T.eq(failures, 1, "ошибка API записывается один раз за сеанс")
+	T.eq(#ns.db.errors, 0, "временная ошибка API не считается ошибкой Chillzone")
+
+	failing = false
+	Show("API восстановился")
+	T.eq(#delivered, 2, "обе выбранные вкладки снова получают строку")
+	T.eq(h.client:Saw("API восстановился"), 0)
+	failing = 2
+	Show("Ошибка только второй вкладки")
+	T.eq(#delivered, 3, "исправная вкладка продолжает получать строки")
+	T.eq(delivered[3][2], 1)
+	T.eq(h.client:Saw("Ошибка только второй вкладки"), 1)
+	ns.char.chatMirror = false
+	failing = true
+	Show("Копии выключены")
+	T.eq(h.client:Saw("Копии выключены"), 0)
+	T.eq(#delivered, 3)
+end)
+
 T.test("chat tab: время видно в специальной вкладке Chattynator и её истории", function()
 	local h, ns, env = BuildChattynator()
 	ns.char.chatMirror = false
