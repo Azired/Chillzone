@@ -6,6 +6,8 @@ local ChattynatorTab = {}
 ns.ChattynatorTab = ChattynatorTab
 
 local panels, active, registered = {}, nil, nil
+local selectedMirrorWindow
+local watchedWindows = setmetatable({}, { __mode = "k" })
 
 local function ReadWarning()
 	if not ns.IsMember() then return L.CHAT_TAB_NOT_MEMBER end
@@ -133,6 +135,53 @@ end
 
 function ChattynatorTab.ActiveHost()
 	if active and active:IsVisible() then return active end
+end
+
+-- API даёт контейнер окон и названия вкладок. В Chattynator 230 выбранный индекс
+-- хранится в tabIndex; только читаем его и ставим безопасные пост-хуки выбора вкладки.
+function ChattynatorTab.InputHost()
+	local custom = ChattynatorTab.ActiveHost()
+	local api = API()
+	if not api or type(api.GetHyperlinkHandler) ~= "function" or type(api.GetWindowsAndTabs) ~= "function" then
+		return custom, true
+	end
+	local ok, handler = pcall(api.GetHyperlinkHandler)
+	if not ok or not handler or type(handler.GetChildren) ~= "function" then return custom, true end
+	local read, tabs = pcall(api.GetWindowsAndTabs)
+	if not read or type(tabs) ~= "table" then return custom, true end
+	local windows = { handler:GetChildren() }
+	local primary, selected
+	local hook = rawget(_G, "hooksecurefunc")
+	for _, window in ipairs(windows) do
+		local id = type(window.GetID) == "function" and window:GetID()
+		if type(id) == "number" and tabs[id] and window:IsVisible() then
+			if id == 1 then primary = window end
+			if window == selectedMirrorWindow then selected = window end
+			if type(hook) == "function" and not watchedWindows[window] then
+				watchedWindows[window] = true
+				for _, name in ipairs({ "SetTabSelectedAndFilter", "SetTabSelectedOnly" }) do
+					if type(window[name]) == "function" then
+						pcall(hook, window, name, function()
+							selectedMirrorWindow = name == "SetTabSelectedAndFilter" and window or nil
+							ns.Fire("CHATTYNATOR_TAB")
+						end)
+					end
+				end
+			end
+		end
+	end
+	if custom and not selected then return custom, true end
+	local window = selected or primary
+	if not window or not ns.char or ns.char.chatMirror == false then return end
+	local id, index = window:GetID(), rawget(window, "tabIndex")
+	local key = tabs[id] and tabs[id][index]
+	local messages = rawget(window, "ScrollingMessages")
+	if type(key) ~= "string" or not messages or not messages:IsVisible() then return end
+	local label = rawget(_G, key)
+	if Chat.WindowSelected(key) or (type(label) == "string" and Chat.WindowSelected(label))
+		or (id == 1 and index == 1 and Chat.WindowSelected("")) then
+		return messages, "mirror"
+	end
 end
 
 function ChattynatorTab.Register()
