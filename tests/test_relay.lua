@@ -249,10 +249,13 @@ end)
 
 T.test("relay: реле пишет само — без шёпота RL", function()
 	local w, c = Build()
+	w:Run(c.A.ns.Config.RELAY_SETTLE) -- сразу после входа реле шлёт своё и через других
 	local text = "слово реле"
+	local before = #w.log
 	c.A:Slash("/cz1", text)
 	w:Run(30)
-	for _, e in ipairs(w.log) do
+	for i = before + 1, #w.log do
+		local e = w.log[i]
 		T.no(e.from == "Арагорн Светлый" and e.dist == "WHISPER" and e.msg:find("^RL~"), "реле не шепчет RL себе")
 	end
 	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит") end
@@ -1026,6 +1029,44 @@ T.test("relay: перезашедшее реле из тройки пишет в
 	back:Slash("/cz1", text)
 	w:Run(30)
 	T.eq(picks, 0, "через других реле строка не идёт")
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+end)
+
+T.test("relay: вернувшееся реле пишет и тем, кто ещё считает его офлайн", function()
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "O", "R1" })
+	local db = c.O.ns.db
+	c.O:Logout()
+	c.O = w:Client({ first = "Олег", surname = "Старший", guild = "Чиллзон", rank = 1, db = db })
+	local back, have, miss = c.O, "Чиллзон Север", "Орден Чиллзона"
+	for _ = 1, 60 do
+		if Lease(back, have) or Lease(back, miss) then break end
+		w:Run(1)
+	end
+	if not Lease(back, have) then have, miss = miss, have end
+	T.ok(Lease(back, have), "одна из гильдий уже зарегистрировалась")
+	-- Вторая гильдия заметила выход и до конца RELAY_DOWN у этого реле не регистрируется. Состояние
+	-- ставится каждую секунду: ответ на RR, уже идущий к её репортёру, снял бы отметку «офлайн».
+	local down, key, gk = back.ns.Config.RELAY_DOWN, back.ns.Util.Key(back:Name()), back.ns.Util.GuildKey(miss)
+	local function Away()
+		for _, cl in pairs(c) do
+			local e = cl.guild == miss and cl.ns.Relay.Known()[key]
+			if e then e.down, e.asked, e.verified = w.now + down, nil, nil end
+		end
+		back.ns.Relay.Reporters()[gk] = nil
+	end
+	for _ = 1, down / 2 do
+		Away()
+		w:Run(1)
+	end
+	Away()
+	T.ok(Lease(back, have), "первая гильдия держит аренду")
+	T.eq(Lease(back, miss), nil, "вторая гильдия так и не зарегистрировалась")
+	T.ok(back.ns.Relay.Serving(), "реле обслуживает гильдию")
+	T.ok(back.ns.Relay.InTop(), "реле в общей тройке")
+	local text = "реле вернулось несколько минут назад"
+	back:Slash("/cz1", text)
+	w:Run(30)
 	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
 	NoErrors(c)
 end)
