@@ -314,12 +314,15 @@ function ChatPane.RenderPeople()
 	end
 	for i = #items + 1, #rows do rows[i]:Hide() end
 	peopleChild:SetHeight(math.max(#items * PEOPLE_ROW, 10))
-	if count then count:SetText(L.WIN_ONLINE:format(ChatPane.Counts(current, items, online))) end
+	if count then
+		local ownGuild = Chat.GUILD_CHANNELS[current] == true
+		count:SetShown(ownGuild)
+		if ownGuild then count:SetText(L.WIN_ONLINE:format(ChatPane.Counts(current, items, online))) end
+	end
 end
 
--- «В сети: X из Y» под списком людей — про людей этого канала. В чате гильдии — согильдийцы по
--- ростеру (в списке только те, кто в игре); в остальных — люди списка: офицеры гильдии, главы
--- и офицеры гильдий «Чиллзон», писавшие за час. Общий счёт всех гильдий — в шапке окна (UI.lua).
+-- Счётчик виден только в чатах своей гильдии: в G — по ростеру, в O — по списку офицеров.
+-- В общих каналах список людей неполный; общий онлайн объединения показан в шапке окна.
 function ChatPane.Counts(channel, items, online)
 	if channel == "G" then
 		local r = ns.Roster.report

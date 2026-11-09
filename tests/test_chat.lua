@@ -1131,6 +1131,8 @@ T.test("окно: «В сети» под списком людей — про л
 	V.ns.ChatPane.RenderPeople()
 	local r = V.ns.Roster.report
 	local label = V.ns.ChatPane.frames.count
+	label:Show() -- В игре новая шрифтовая строка сразу видна; в симуляторе это задаётся явно.
+	T.ok(label:IsShown(), "в чате гильдии счётчик виден")
 	T.eq(label:GetText(), ("В сети: %s из %s"):format(r.online, r.total), "чат гильдии — по ростеру")
 	V.ns.ChatPane.Select("O")
 	V.ns.ChatPane.RenderPeople()
@@ -1138,12 +1140,22 @@ T.test("окно: «В сети» под списком людей — про л
 	local n = 0
 	for _, p in ipairs(items) do if not p.header then n = n + 1 end end
 	T.eq(label:GetText(), ("В сети: %s из %s"):format(online, n), "офицеры — только офицеры")
+	T.ok(label:IsShown(), "в чате офицеров гильдии счётчик виден")
 	T.ok(n < r.total, "офицеров меньше, чем всех")
 	V.ns.ChatPane.Select("L")
 	V.ns.ChatPane.RenderPeople()
-	local on, all = V.ns.ChatPane.Counts("L")
-	T.eq(label:GetText(), ("В сети: %s из %s"):format(on, all), "«Главы» — люди списка")
+	local _, all = V.ns.ChatPane.Counts("L")
+	T.no(label:IsShown(), "в общем канале глав счётчик скрыт")
 	T.ok(all >= 3 and all < V.ns.Views.Status().total, "главы, а не все участники")
+	for _, channel in ipairs({ "A", "C", "G", "O", "L", "G" }) do
+		V.ns.ChatPane.Select(channel)
+		V.ns.ChatPane.RenderPeople()
+		T.eq(label:IsShown(), channel == "G" or channel == "O", "видимость после переключения канала " .. channel)
+		if label:IsShown() then
+			local on, total = V.ns.ChatPane.Counts(channel)
+			T.eq(label:GetText(), ("В сети: %s из %s"):format(on, total), "при возврате счётчик обновлён")
+		end
+	end
 	Errors(c)
 end)
 
