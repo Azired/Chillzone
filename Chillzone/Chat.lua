@@ -100,8 +100,14 @@ local function SendToChattynator(target, ...)
 	target.send(target.window, target.tab, ...)
 end
 
+local chattyFailed = false
 local function AddToChattynator(target, ...)
-	ns.SafeCall("chattynator mirror", SendToChattynator, target, ...)
+	local ok, err = pcall(SendToChattynator, target, ...)
+	if not ok and not chattyFailed then
+		chattyFailed = true
+		ns.Log("Chattynator не принял строку: %s", tostring(err))
+	end
+	return ok
 end
 
 function Chat.MirrorWindows()
@@ -114,12 +120,15 @@ function Chat.MirrorWindows()
 	if not ok or type(windows) ~= "table" then return out end
 	for windowIndex, tabs in ipairs(windows) do
 		for tabIndex, key in ipairs(tabs) do
-			local label = rawget(_G, key)
-			local name = type(label) == "string" and label or key
-			-- Специальная вкладка Chillzone получает строки прямо из истории.
-			if U.Fold(name) ~= U.Fold(L.CHAT_TAB_NAME) then
-				out[#out + 1] = { name = name, key = key, window = windowIndex, tab = tabIndex,
-					send = api.AddMessageToWindowAndTab, AddMessage = AddToChattynator }
+			-- Журнал боя и временная вкладка поиска (название с кодом текстуры) не принимают копии.
+			if type(key) == "string" and U.Trim(key) ~= "" and key ~= "COMBAT_LOG" and not key:find("|", 1, true) then
+				local label = rawget(_G, key)
+				local name = type(label) == "string" and label or key
+				-- Специальная вкладка Chillzone получает строки прямо из истории.
+				if U.Fold(name) ~= U.Fold(L.CHAT_TAB_NAME) then
+					out[#out + 1] = { name = name, key = key, window = windowIndex, tab = tabIndex,
+						send = api.AddMessageToWindowAndTab, AddMessage = AddToChattynator }
+				end
 			end
 		end
 	end
@@ -265,6 +274,21 @@ function Chat.Frames()
 	return out
 end
 
+-- При ошибке API сохраняем строку в основном окне один раз, даже если упали несколько
+-- выбранных вкладок или основное окно уже выбрано. skip уже получил строку отдельно.
+local function WriteToFrames(frames, text, r, g, b, skip)
+	local failed, mainWritten = false, skip == DEFAULT_CHAT_FRAME
+	for _, f in ipairs(frames) do
+		if f ~= skip then
+			if f:AddMessage(text, r, g, b) == false then failed = true end
+			if f == DEFAULT_CHAT_FRAME then mainWritten = true end
+		end
+	end
+	if failed and not mainWritten and DEFAULT_CHAT_FRAME then
+		DEFAULT_CHAT_FRAME:AddMessage(text, r, g, b)
+	end
+end
+
 -- Метка канала в чате игры: ссылка addon:Chillzone:chan:<tier>, цветом канала.
 function Chat.Tag(tier)
 	return "|c" .. Chat.TIER_COLOR[tier] .. "|H" .. Chat.TAG_LINK .. tier .. "|h[" .. L["TIER_" .. tier] .. "]|h|r"
@@ -357,9 +381,7 @@ function Chat.Show(tier, guild, sender, class, text)
 		local line = stamp .. Chat.Format(tier, guild, sender, class, text)
 		local r, g, b = Chat.Color(tier)
 		if tab then tab:AddMessage(line, r, g, b) end
-		for _, f in ipairs(frames) do
-			if f ~= tab then f:AddMessage(line, r, g, b) end
-		end
+		WriteToFrames(frames, line, r, g, b, tab)
 	end
 	Chat.Remember(tier, guild, sender, class, text)
 end
@@ -722,7 +744,7 @@ ns.Command("history", function(arg)
 	for i = math.max(1, #list - 19), #list do
 		local e = list[i]
 		local line = "|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r " .. Chat.Format(tier, e.g, e.s, e.c, e.x)
-		for _, f in ipairs(frames) do f:AddMessage(line, Chat.Color(tier)) end
+		WriteToFrames(frames, line, Chat.Color(tier))
 	end
 end, L.HELP_HISTORY)
 
