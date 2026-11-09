@@ -50,6 +50,7 @@ read_globals = {
 	"FCFDock_SelectWindow",
 	"FCF_CanOpenNewWindow",
 	"FCF_GetChatWindowInfo",
+	"FCF_GetCurrentChatFrame",
 	"FCF_GetNumActiveChatFrames",
 	"FCF_OpenNewWindow",
 	"FCF_SelectDockFrame",

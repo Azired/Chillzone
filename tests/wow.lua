@@ -172,6 +172,8 @@ local function NewFrame(c, name)
 	end
 	function methods.SetScript(self, k, fn) self.scripts[k] = fn end
 	function methods.GetScript(self, k) return self.scripts[k] end
+	function methods.GetFrameLevel(self) return rawget(self, "frameLevel") or 1 end
+	function methods.SetFrameLevel(self, level) self.frameLevel = level end
 	function methods.HookScript(self, k, fn)
 		local original = self.scripts[k]
 		self.scripts[k] = function(...)
@@ -449,6 +451,7 @@ local function Env(c)
 		return win.name, 14, 1, 1, 1, 0, win.shown == true, false, win.docked
 	end
 	env.NUM_CHAT_WINDOWS = 10
+	env.FCF_GetCurrentChatFrame = function() return c.currentChatFrame end
 	c.createdWindows = {}
 	env.FCF_GetNumActiveChatFrames = function()
 		local count = 0
