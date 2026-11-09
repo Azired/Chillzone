@@ -8,6 +8,22 @@ ns.ChatTab = ChatTab
 local input, anchor, layoutAnchor, hostedAnchor, ticker
 local mutedNative, nativeAlpha
 local inputInset, smileButton, smileTarget, hookedPicker
+local selectionHooks = {}
+local stopped = false
+
+-- OpenChat сам направляет Enter в это поле, а команды со слэшем оставляет игре.
+local function FocusAPI()
+	local api = rawget(_G, "ChatFrameUtil")
+	if type(api) == "table" and type(api.SetChatFocusOverride) == "function"
+		and type(api.GetChatFocusOverride) == "function" and type(api.ClearChatFocusOverride) == "function" then
+		return api
+	end
+end
+
+local function ReleaseFocusOverride()
+	local api = FocusAPI()
+	if api and input and api.GetChatFocusOverride() == input then api.ClearChatFocusOverride() end
+end
 
 local function FindWindow(name)
 	for _, window in ipairs(Chat.Windows()) do
@@ -51,7 +67,9 @@ local function ChattynatorLoaded()
 end
 
 local function HostedWindow()
-	return ns.ChattynatorTab and ns.ChattynatorTab.ActiveHost()
+	if not ns.ChattynatorTab then return end
+	if FocusAPI() then return ns.ChattynatorTab.InputHost() end
+	return ns.ChattynatorTab.ActiveHost(), true
 end
 
 local function IsSelected(frame, hosted)
@@ -115,9 +133,19 @@ end
 local function SelectedWindow()
 	local char = ns.char
 	if not char or not char.chatOn or not ns.IsMember() then return end
-	local host = HostedWindow()
+	local host, hosted = HostedWindow()
 	local frame = host or ChatTab.OutputFrame()
-	local hosted = host ~= nil
+	if not host then hosted = false end
+	if not host and FocusAPI() and not ChattynatorLoaded() and char.chatMirror ~= false then
+		local selected = SelectedInDock(rawget(_G, "GENERAL_CHAT_DOCK"))
+		for _, window in ipairs(Chat.Windows()) do
+			if window.frame == selected and (Chat.WindowSelected(window.name)
+				or (selected == DEFAULT_CHAT_FRAME and Chat.WindowSelected(""))) then
+				frame = selected
+				break
+			end
+		end
+	end
 	if not IsSelected(frame, hosted) then return end
 	-- Штатный ввод с фокусом остаётся доступным для команд игры.
 	local native = NativeInput(frame, hosted)
@@ -209,6 +237,7 @@ local function AddSmileButton()
 end
 
 local function HideInput()
+	ReleaseFocusOverride()
 	ReleaseSmilePicker(true)
 	if input and input:IsShown() then
 		input:ClearFocus()
@@ -233,6 +262,7 @@ end
 
 local function CreateInput()
 	local box = CreateFrame("EditBox", nil, UIParent, "InputBoxTemplate")
+	box.supportsSlashCommands = false
 	box:SetAutoFocus(false)
 	box:EnableMouse(true)
 	box:SetHeight(24)
@@ -251,7 +281,7 @@ local function CreateInput()
 	-- Убираем своё поле сразу при смене вкладки или открытии штатного ввода.
 	box:SetScript("OnUpdate", function()
 		local native = anchor and NativeInput(anchor, hostedAnchor)
-		local target = hostedAnchor and anchor or native or anchor
+		local target = hostedAnchor == true and anchor or native or anchor
 		if not IsSelected(anchor, hostedAnchor) or target ~= layoutAnchor
 			or NativeInputFocused(rawget(_G, "ACTIVE_CHAT_EDIT_BOX"))
 			or NativeInputFocused(native) or not MuteNative(native) then
@@ -267,10 +297,10 @@ local function Refresh()
 	if not frame then HideInput(); return end
 	if not input then input = CreateInput() end
 	AddSmileButton()
-	local target = hosted and frame or native or frame
+	local target = hosted == true and frame or native or frame
 	if layoutAnchor ~= target or not input:IsShown() then
 		input:ClearAllPoints()
-		if hosted then
+		if hosted == true then
 			input:SetHeight(24)
 			input:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 4, 3)
 			input:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -4, 3)
@@ -286,13 +316,29 @@ local function Refresh()
 	if not MuteNative(native) then HideInput(); return end
 	anchor, layoutAnchor, hostedAnchor = frame, target, hosted
 	if not input:IsShown() then input:Show() end
+	local api = FocusAPI()
+	if api then
+		local current = api.GetChatFocusOverride()
+		if not current or current == input then api.SetChatFocusOverride(input) end
+	end
 end
 
-local function Track()
-	if not ticker and ns.char and (type(ns.char.chatTab) == "string" or HostedWindow()) then
+local function Track(defer)
+	if stopped then return end
+	local hook = rawget(_G, "hooksecurefunc")
+	if type(hook) == "function" then
+		for _, name in ipairs({ "FCF_SelectDockFrame", "FCFDock_SelectWindow", "FCF_Tab_OnClick" }) do
+			local fn = rawget(_G, name)
+			if type(fn) == "function" and not selectionHooks[name] then
+				local ok = pcall(hook, name, function() ns.SafeCall("chat tab selection", Refresh) end)
+				if ok then selectionHooks[name] = true end
+			end
+		end
+	end
+	if not ticker and ns.char and (FocusAPI() or type(ns.char.chatTab) == "string" or HostedWindow()) then
 		ticker = ns.Every(0.15, "chat tab", Refresh, true)
 	end
-	if ticker then Refresh() end
+	if ticker and not defer then Refresh() end
 end
 
 local function Failed(message)
@@ -338,8 +384,14 @@ function ChatTab.Open()
 	return true
 end
 
-ns.On("LOGIN", Track)
+ns.On("LOGIN", function() stopped = false; Track(true) end)
 ns.On("SETTINGS", Track)
+ns.On("CHAT_WINDOWS", function() Track() end)
+ns.On("UNION", function() Track() end)
 ns.On("GUILD_CHANGED", Track)
 ns.On("CHATTYNATOR_TAB", Track)
-ns.RegisterEvent("PLAYER_LOGOUT", HideInput)
+ns.RegisterEvent("PLAYER_LOGOUT", function()
+	stopped = true
+	if ticker then ticker.Cancel(); ticker = nil end
+	HideInput()
+end)
