@@ -25,11 +25,11 @@ local known = {} -- [Key] = { key, name, verified, asked, down }: реле, о �
 local reporters = {}
 local regOf = {} -- (я реле) [Key репортёра] = guildKey
 local claims = {} -- (я реле) [guildKey] = { name, key, t }: кому отказано при живой аренде
-ns.On("ISSUER_REVOCATION", function(wire)
+ns.On("ISSUER_REVOCATION", function(wire, subject)
 	if not U.IsMainGuild(ns.MyGuild()) then return end
 	for gk, held in pairs(reporters) do
 		ns.Comm.Send("WHISPER", wire, { target = held.name, prio = ns.Comm.PRIO_CONTROL,
-			key = "issuer-revocation:" .. gk .. ":" .. wire:sub(1, 2) })
+			key = "issuer-revocation:" .. gk .. ":" .. subject })
 	end
 end)
 -- Решение главы доходит до действующего репортёра даже после исключения гильдии:

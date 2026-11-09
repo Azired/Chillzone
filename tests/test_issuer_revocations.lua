@@ -78,6 +78,74 @@ T.test("issuer-revoke: офицер и глава чужой гильдии не
     Errors(w)
 end)
 
+T.test("issuer-revoke: офицер не получает право отзыва через поддельный сертификат главы", function()
+    local w, k, _, v, o = Build()
+    local grant, now, Ed = o.ns.Issuers.For(o.guild, o.ns.myKey), o.ns.ServerTime(), o.ns.Ed25519
+    local body = Pack("CREDENTIAL", { o.ns.group, o.ns.faction, o.guild, o:Name(), o.ns.Security.PublicKey(),
+        "leader", 0, now, now + 600, o:Name(), o.ns.Security.PublicKey(), "0", 1 })
+    local fake = { raw = Pack("CERT", { body, Ed.ToB64(Ed.Sign(Seed(o), body)), grant.raw }) }
+    local target = v.ns.Issuers.For(v.guild, v.ns.myKey)
+    k.ns.Comm.Dispatch(Forge(o, target, fake), o:Name(), "WHISPER"); w:Run(10)
+    T.ok(k.ns.Issuers.Current(target.raw), "обычный корневой допуск не содержит права отзыва главы")
+    Errors(w)
+end)
+
+T.test("issuer-revoke: сохранённый дочерний сертификат перестаёт работать после отзыва", function()
+    local w, k, _, _, o, b = Build()
+    local grant, Ed, now = o.ns.Issuers.For(o.guild, o.ns.myKey), o.ns.Ed25519, o.ns.ServerTime()
+    local body = Pack("CREDENTIAL", { o.ns.group, o.ns.faction, o.guild, b:Name(), b.ns.Security.PublicKey(),
+        "member", 3, now, now + 600, o:Name(), o.ns.Security.PublicKey(), "0", 1 })
+    local raw = Pack("CERT", { body, Ed.ToB64(Ed.Sign(Seed(o), body)), grant.raw })
+    local accepted = false
+    k.ns.Security.CheckCertificate(raw, b:Name(), function() accepted = true end); w:Run(2)
+    T.ok(accepted, "настоящий допуск действительно разрешал выдачу")
+    Demote(w, o); w:Run(90)
+    accepted = false
+    k.ns.Security.CheckCertificate(raw, b:Name(), function() accepted = true end); w:Run(2)
+    T.no(accepted, "отзыв отменяет и ранее проверенный дочерний сертификат")
+    Errors(w)
+end)
+
+T.test("issuer-revoke: возвращение корня и новое назначение не отменяются старым отзывом", function()
+    local w, k, p, v, o = Build()
+    Demote(w, o); w:Run(90)
+    local rev = v.ns.store.security.issuerRevocations[v.ns.Util.GuildKey(o.guild)][o.ns.myKey]
+    T.ok(rev, "первоначальное разжалование подписано")
+    o.rank = 1
+    for i, row in ipairs(w.guilds[p.guild].members) do
+        if row.full then table.remove(w.guilds[p.guild].members, i); break end
+    end
+    p = w:Client({ first = p.first, surname = p.surname, guild = p.guild, rank = p.rank, db = p.ns.db })
+    for _, c in ipairs(w.clients) do c.ns.Roster.Scan() end
+    w:Run(120)
+    local grant = o.ns.Issuers.For(o.guild, o.ns.myKey)
+    T.ok(grant and grant.revision > rev.revision, "корень выдал новый допуск после реального повышения")
+    k.ns.Comm.Dispatch("KD~" .. k.ns.Ed25519.ToB64(grant.raw), p:Name(), "WHISPER"); w:Run(5)
+    k.ns.Comm.Dispatch(rev.wire, o:Name(), "WHISPER"); w:Run(5)
+    T.ok(k.ns.Issuers.Current(grant.raw), "архивный отзыв касается прежней ревизии")
+    Errors(w)
+end)
+
+T.test("issuer-revoke: потеря звания главы во время подписи отменяет отзыв", function()
+    local w, k, _, v, o, b = Build()
+    local Ed, sign = v.ns.Ed25519, v.ns.Ed25519.Sign
+    local changed = false
+    Ed.Sign = function(seed, body, pk)
+        local sig = sign(seed, body, pk)
+        if body:sub(1, 13) == "ISSUERREVOKE:" then
+            v.rank, b.rank, changed = 1, 0, true
+            v.ns.Roster.Scan()
+        end
+        return sig
+    end
+    Demote(w, o); w:Run(12)
+    Ed.Sign = sign
+    T.ok(changed, "игровое право изменилось после настоящей подписи")
+    local list = k.ns.store.security.issuerRevocations[k.ns.Util.GuildKey(o.guild)]
+    T.no(list and list[o.ns.myKey], "результат от прежнего главы не отправлен")
+    Errors(w)
+end)
+
 T.test("issuer-revoke: отзыв переживает истечение сертификата главы и новую установку", function()
     local w, k, _, v, o = Build()
     local raw = o.ns.Issuers.For(o.guild, o.ns.myKey).raw
@@ -103,5 +171,13 @@ T.test("issuer-revoke: просроченное подтверждение ро�
     k.ns.Comm.Dispatch(Forge(v, grant, cert, issued), v:Name(), "WHISPER")
     w:Run(2)
     T.ok(k.ns.Issuers.Current(grant.raw), "старую роль нельзя использовать для нового решения")
+    Errors(w)
+end)
+
+T.test("issuer-revoke: старое хранилище без таблицы отзывов не ломает проверку допуска", function()
+    local w, _, _, v, o = Build()
+    local grant = o.ns.Issuers.For(o.guild, o.ns.myKey)
+    v.ns.store.security.issuerRevocations = nil
+    T.ok(v.ns.Issuers.Current(grant.raw), "первый доступ инициализирует новое хранилище")
     Errors(w)
 end)

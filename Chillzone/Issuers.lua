@@ -6,7 +6,11 @@ local I, pending = {}, {}
 local shared = {}
 ns.Issuers = I
 
-local function Store() return ns.store.security.issuers end
+local function Store()
+    local s = ns.store.security
+    if type(s.issuers) ~= "table" then s.issuers = {} end
+    return s.issuers
+end
 local function Root(guild) return S.Roots()[U.GuildKey(guild)] end
 function I.IsGrant(raw) return type(raw) == "string" and raw:sub(1, 6) == "GRANT:" end
 function I.Read(raw)
@@ -55,7 +59,7 @@ local function Keep(d)
     local old = Store()[gk][d.key]
     if not old or old.raw ~= d.raw then
         Store()[gk][d.key] = d
-        if not d.active then ns.Fire("ISSUER_REVOCATION", "KD~" .. Ed.ToB64(d.raw)) end
+        if not d.active then ns.Fire("ISSUER_REVOCATION", "KD~" .. Ed.ToB64(d.raw), gk .. ":" .. d.key) end
     end
 end
 function I.Verify(raw)

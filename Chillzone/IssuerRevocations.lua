@@ -5,7 +5,11 @@ local Pack, Unpack = S.Control.Pack, S.Control.Unpack
 local R, pending, checking, shared = {}, {}, {}, {}
 ns.IssuerRevocations = R
 
-local function Store() return ns.store.security.issuerRevocations end
+local function Store()
+    local s = ns.store.security
+    if type(s.issuerRevocations) ~= "table" then s.issuerRevocations = {} end
+    return s.issuerRevocations
+end
 local function Root(guild) return S.Roots()[U.GuildKey(guild)] end
 local function Integer(value, max)
     local n = type(value) == "string" and value:match("^%d+$") and tonumber(value)
@@ -39,7 +43,7 @@ end
 function R.LegacyBlocked(guild, key)
     local r, root = Latest(guild, key), Root(guild)
     if not r or not root or r.root ~= root.public then return false end
-    local list = ns.store.security.issuers[U.GuildKey(guild)]
+    local list = (ns.store.security.issuers or {})[U.GuildKey(guild)]
     local d = list and list[key]
     return not d or d.root ~= r.root or d.revision <= r.revision
 end
@@ -101,7 +105,7 @@ local function Keep(r, dist)
     local gk = U.GuildKey(r.guild)
     Store()[gk] = Store()[gk] or {}
     Store()[gk][r.key] = r
-    ns.Fire("ISSUER_REVOCATION", r.wire)
+    ns.Fire("ISSUER_REVOCATION", r.wire, gk .. ":" .. r.key)
     if dist ~= "GUILD" then R.Share("GUILD", ns.Comm.PRIO_CONTROL) end
     if ns.Relay then
         for _, e in ipairs(ns.Relay.Candidates()) do
