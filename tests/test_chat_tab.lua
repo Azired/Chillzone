@@ -140,7 +140,7 @@ T.test("chat input: слэш после Enter передаёт ввод WoW во
 	ns.Chat.Send = function() sent = sent + 1; return true end
 	local native = env.ChatFrame1EditBox
 	for _, frame in ipairs({ h.tab, env.ChatFrame1 }) do
-		for _, text in ipairs({ "/", "/г ", "/с ", "/g привет", "/s привет", "/cast Ледяная стрела", "/cz1 привет" }) do
+		for _, text in ipairs({ "/", "/г ", "/с ", "/g привет", "/s привет", "/w Глеб Гордый привет", "/ш Глеб Гордый привет", "/cast Ледяная стрела", "/cz1 привет" }) do
 			h:Select(frame)
 			api.OpenChat("")
 			local box = h.box
@@ -182,6 +182,13 @@ T.test("chat input: слэш в середине сообщения и прог�
 	if box.scripts.OnTextChanged then box.scripts.OnTextChanged(box, false) end
 	T.ok(box:HasFocus(), "программный черновик не открывает штатное поле")
 	T.eq(h.nativeOpens, before)
+	box.scripts.OnEnterPressed(box)
+	T.ok(env.ChatFrame1EditBox:HasFocus(), "Enter передаёт подготовленный шёпот штатному вводу")
+	T.eq(env.ChatFrame1EditBox:GetText(), "/w Глеб Гордый ")
+	h:CloseNative()
+	h:Tick()
+	api.OpenChat("")
+	before = h.nativeOpens
 	-- Между сменой вкладки и таймером старое поле уже не должно открывать команду.
 	h.selected = env.ChatFrame2
 	TypeInUnion(box, "/г ")
