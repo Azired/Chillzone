@@ -4,7 +4,7 @@ local ADDON, ns = ...
 local C = {}
 ns.Config = C
 
-C.VERSION = "0.11.0"
+C.VERSION = "0.11.1"
 C.PREFIX = "CHZSIGNED1" -- чат и сертификаты совместимы с 0.8
 C.UNION_PREFIX = "CHZUNION1" -- решения главы отделены от старых каталогов офицеров
 
