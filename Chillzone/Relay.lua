@@ -374,9 +374,9 @@ end
 
 local function Hold(mode, inner)
 	if mode == "L" then
-		local t = Codec.InnerType(inner)
+		local guild = Relay.InnerGuild(inner)
 		for i = #hold, 1, -1 do
-			if hold[i].mode == "L" and Codec.InnerType(hold[i].inner) == t then table.remove(hold, i) end
+			if hold[i].mode == "L" and Relay.InnerGuild(hold[i].inner) == guild then table.remove(hold, i) end
 		end
 	end
 	hold[#hold + 1] = { mode = mode, inner = inner, t = Now() }
@@ -455,8 +455,9 @@ function Out(mode, inner)
 		Relay.PingAll()
 		return false
 	end
-	local key = mode == "L" and ("rl:" .. Codec.InnerType(inner)) or nil
+	local key = mode == "L" and ("rl:" .. Codec.InnerType(inner) .. ":" .. (Relay.InnerGuild(inner) or "")) or nil
 	ns.Security.Introduce(e.name)
+	ns.Security.IntroduceWire(e.name, inner)
 	ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name, key = key, prio = mode == "P", logged = Logged(inner) })
 	Remember(e.key, mode, inner)
 	return true
@@ -518,13 +519,36 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 			end
 		end
 	end
+	-- Автор может знать только запасное реле. Его аренды не обязаны совпадать
+	-- с общей тройкой: после переезда репортёра пакет должен попасть и туда.
+	-- Свой пакет Out уже отправляет тройке; повторно переносим только чужой.
+	if okey ~= ns.myKey and not Relay.InTop() then
+		local e = Relay.Pick()
+		if not e or SeniorUnasked(e) then
+			Hold(mode, inner)
+			Relay.PingAll()
+		else
+			ns.Security.Introduce(e.name)
+			ns.Security.Introduce(e.name, certificate.raw)
+			ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name,
+				key = mode == "L" and ("rl-forward:" .. okey) or nil,
+				prio = mode == "P", logged = Logged(inner) })
+			Remember(e.key, mode, inner)
+		end
+	end
 end
 
 -- Я реле: сообщение автора (RL) — проверить подпись и разослать.
 function Relay.HandleRL(origin, mode, inner)
 	if Codec.InnerType(inner) ~= "S1" then Relay.stats.untrusted = Relay.stats.untrusted + 1; return end
 	return ns.Security.Open(inner, origin, function(clear, certificate)
-		Relay.Forward(origin, mode, inner, clear, certificate)
+		-- Прямой автор либо проверенное реле главной гильдии. Имя автора берётся
+		-- только из проверенного сертификата, подпись S1 при пересылке не меняется.
+		if certificate.key ~= U.Key(origin) and not Relay.TrustOf(origin) then
+			Relay.stats.untrusted = Relay.stats.untrusted + 1
+			return
+		end
+		Relay.Forward(certificate.name, mode, inner, clear, certificate)
 	end)
 end
 

@@ -1118,6 +1118,46 @@ T.test("relay: отчёты доходят до гильдии, зарегист
 	NoErrors(c)
 end)
 
+T.test("relay: входящий отчёт проходит через реле вне тройки без аренды получателя", function()
+	local w, c = PartialNetwork({
+		root = { "Ярослав", "Старший", 0 }, O1 = { "Богдан", "Бравый", 1 },
+		O2 = { "Виктор", "Верный", 1 }, O3 = { "Глафира", "Гордая", 1 },
+	}, { "O1", "O2", "O3" })
+	ConnectSouth(w, c)
+	for _, id in ipairs({ "O1", "O2", "O3" }) do
+		c.root.ns.Security.Introduce(c.J:Name(), c[id].ns.Security.MyCertificate().raw, true)
+	end
+	w:Run(90)
+	c.J.ns.Relay.Register(); w:Run(20)
+	T.no(c.root.ns.Relay.InTop(), "выбранное автором реле вне общей тройки")
+	for _, id in ipairs({ "O1", "O2", "O3" }) do T.ok(Lease(c[id], c.J.guild), "тройка обслуживает получателя") end
+	c.root.ns.Relay.Reporters()[c.root.ns.Util.GuildKey(c.J.guild)] = nil
+	local rootPeer = { key = c.root.ns.myKey, name = c.root:Name() }
+	c.V.ns.Relay.Pick = function() return rootPeer end
+	w:Run(65)
+	c.V.ns.Roster.Scan()
+	local stamp = c.V.ns.Roster.report.st
+	c.V.ns.Census.MaybeReport(true); w:Run(90)
+	local row = c.J.ns.Data.Row(c.V.guild)
+	T.ok(row and row.r.st >= stamp, "отчёт передан тройке и доставлен без аренды у первого реле")
+	-- При поиске следующего реле нельзя склеить отчёты разных гильдий в один S1.
+	local pick = c.root.ns.Relay.Pick
+	c.root.ns.Relay.Pick = function() return nil end
+	c.G.ns.Relay.Pick = function() return rootPeer end
+	w:Run(65)
+	c.V.ns.Roster.Scan(); c.G.ns.Roster.Scan()
+	local northStamp, orderStamp = c.V.ns.Roster.report.st, c.G.ns.Roster.report.st
+	c.V.ns.Census.MaybeReport(true); c.G.ns.Census.MaybeReport(true); w:Run(10)
+	c.root.ns.Relay.Pick = pick
+	c.O1.ns.Comm.Send("WHISPER", "RY~", { target = c.root:Name(), prio = true }); w:Run(90)
+	T.ok(c.J.ns.Data.Row(c.V.guild).r.st >= northStamp, "очередь сохранила отчёт Севера")
+	T.ok(c.J.ns.Data.Row(c.G.guild).r.st >= orderStamp, "очередь сохранила отчёт Ордена")
+	local text = "через запасное реле без аренды"
+	c.V:Slash("/cz1", text); w:Run(35)
+	T.eq(c.J:Saw(text), 1, "строка тоже доходит один раз")
+	NoErrors(c)
+end)
+
 T.test("relay: старый отчёт от реле не вытесняет новый из очереди гильдии", function()
 	local w, c = Build()
 	local reporter = c.V.ns.Census.IsReporter() and c.V or c.B

@@ -59,6 +59,23 @@ T.test("security: real signed packets reject relay mutations and forged credenti
     T.no(accepted, "public-key substitution requires a real authority signature")
 end)
 
+T.test("security: чужой подписанный RL переносит только доверенное реле с исходной подписью", function()
+    local w, c = Build()
+    local text = "проверенная передача между реле"
+    local payload = c.V.ns.Codec.EncodeChat("A", c.V.guild, 9042, "DRUID", text)
+    local wire
+    T.ok(c.V.ns.Security.Seal(payload, function(value) wire = value end))
+    w:Run(3); T.ok(wire)
+    Whisper(w, c.B, c.A, c.V.ns.Codec.EncodeRL("P", wire)); w:Run(5)
+    T.eq(c.A:Saw(text), 0, "согильдиец автора не может выступить реле")
+    local changed = wire:gsub(text, "изменённый текст реле", 1)
+    T.no(changed == wire)
+    Whisper(w, c.M, c.A, c.V.ns.Codec.EncodeRL("P", changed)); w:Run(5)
+    T.eq(c.A:Saw("изменённый текст реле"), 0, "доверенное реле не может менять подпись автора")
+    Whisper(w, c.M, c.A, c.V.ns.Codec.EncodeRL("P", wire)); w:Run(10)
+    T.eq(c.A:Saw(text), 1, "реле переносит настоящий пакет с именем из сертификата автора")
+end)
+
 T.test("security: expired and retired authority credentials fail closed", function()
     local w, c = Build()
     local credential = c.V.ns.Security.MyCertificate()
