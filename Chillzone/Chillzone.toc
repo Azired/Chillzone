@@ -28,6 +28,9 @@ Update.lua
 Census.lua
 Relay.lua
 Chat.lua
+ChatLinks.lua
+ChatTab.lua
+ChattynatorTab.lua
 GuildChat.lua
 Who.lua
 Recruit.lua
