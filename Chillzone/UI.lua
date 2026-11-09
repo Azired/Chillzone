@@ -270,6 +270,90 @@ local function BuildPicker()
 	settingsY = settingsY + 30
 end
 
+-- ПКМ по метке канала в чате игры. Своя рамка, как у меню людей: общие dropdown игры не меняем.
+local tagMenu
+
+local function RefreshTagMenu(m)
+	local reason = ns.Chat.WindowCreateError()
+	m.create:SetEnabled(not reason)
+	m.create.text:SetText(reason or L.WINDOW_CREATE)
+	m.create.text:SetFontObject(reason and "GameFontDisableSmall" or "GameFontHighlightSmall")
+end
+
+local function WatchTagMenu(m, dt)
+	local down = IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton")
+	if not down then
+		m.waitForRelease = false
+	elseif not m.waitForRelease and not m:IsMouseOver() then
+		m:Hide()
+		return
+	end
+	m.elapsed = (m.elapsed or 0) + (dt or 0)
+	if m.elapsed >= 0.1 then m.elapsed = 0; RefreshTagMenu(m) end
+end
+
+function UI.TagMenu()
+	if tagMenu then return tagMenu end
+	local m = CreateFrame("Frame", nil, UIParent)
+	m:SetSize(220, 12 + 2 * ITEM_H)
+	m:SetFrameStrata("DIALOG")
+	m:SetClampedToScreen(true)
+	m:EnableMouse(true)
+	local edge = m:CreateTexture(nil, "BACKGROUND", nil, -1)
+	edge:SetPoint("TOPLEFT", -1, 1)
+	edge:SetPoint("BOTTOMRIGHT", 1, -1)
+	edge:SetColorTexture(0.5, 0.5, 0.5, 0.9)
+	local bg = m:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0.06, 0.06, 0.06, 0.96)
+	m.title = m:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	m.title:SetPoint("TOPLEFT", 10, -6)
+	m.title:SetPoint("RIGHT", -10, 0)
+	m.title:SetHeight(ITEM_H)
+	m.title:SetJustifyH("LEFT")
+	local b = CreateFrame("Button", nil, m)
+	b:SetPoint("TOPLEFT", 6, -6 - ITEM_H)
+	b:SetPoint("RIGHT", -6, 0)
+	b:SetHeight(ITEM_H)
+	b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	b.text:SetPoint("LEFT", 4, 0)
+	b.text:SetPoint("RIGHT", -4, 0)
+	b.text:SetJustifyH("LEFT")
+	b.text:SetWordWrap(false)
+	local hl = b:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	hl:SetColorTexture(1, 1, 1, 0.1)
+	b:SetScript("OnClick", function()
+		m:Hide()
+		ns.SafeCall("create chat window", ns.Chat.CreateWindow)
+	end)
+	m.create = b
+	m:SetScript("OnUpdate", WatchTagMenu)
+	m:Hide()
+	tagMenu = m
+	return m
+end
+
+function UI.HideTagMenu()
+	if tagMenu then tagMenu:Hide() end
+end
+
+function UI.OpenTagMenu(tier)
+	if not ns.Chat.TIER_LEVEL[tier] then return false end
+	local m = UI.TagMenu()
+	if m:IsShown() and m.tier == tier then m:Hide(); return true end
+	GameTooltip:Hide()
+	m.tier, m.waitForRelease, m.elapsed = tier, true, 0
+	m.title:SetText(L["TIER_" .. tier])
+	local x, y = GetCursorPosition()
+	local scale = UIParent:GetEffectiveScale() or 1
+	m:ClearAllPoints()
+	m:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x / scale, y / scale)
+	RefreshTagMenu(m)
+	m:Show()
+	return true
+end
+
 -- Цвет текста общего чата: своя палитра. ColorPickerFrame — такой же общий глобал игры, как UIDropDownMenu.
 local SWATCH = 20
 local swatches = {}

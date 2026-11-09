@@ -192,6 +192,45 @@ function Chat.ToggleWindow(name)
 	return true
 end
 
+function Chat.WindowCreateError()
+	if InCombatLockdown and InCombatLockdown() then return L.WINDOW_CREATE_COMBAT end
+	if type(FCF_OpenNewWindow) ~= "function" then return L.WINDOW_CREATE_UNAVAILABLE end
+	if type(FCF_CanOpenNewWindow) == "function" then
+		if not FCF_CanOpenNewWindow() then return L.WINDOW_CREATE_LIMIT end
+	elseif type(FCF_GetNumActiveChatFrames) == "function" then
+		local limit = tonumber(NUM_CHAT_WINDOWS) or 10
+		if (tonumber(FCF_GetNumActiveChatFrames()) or limit) >= limit then return L.WINDOW_CREATE_LIMIT end
+	else
+		return L.WINDOW_CREATE_UNAVAILABLE
+	end
+end
+
+-- Только явный щелчок игрока: штатная функция создаёт и пристыковывает новое окно.
+-- При полном ряду её старые версии могут затереть последнее окно, поэтому проверяем лимит заранее.
+function Chat.CreateWindow()
+	local reason = Chat.WindowCreateError()
+	if reason then ns.Print(reason); return false end
+	local used = {}
+	for _, w in ipairs(Chat.Windows()) do used[U.Fold(w.name)] = true end
+	for _, name in ipairs(Chat.SelectedWindows()) do used[U.Fold(name)] = true end
+	local name, suffix = L.TIER_A, 1
+	while used[U.Fold(name)] do
+		suffix = suffix + 1
+		name = L.TIER_A .. " " .. suffix
+	end
+	local ok, frame = pcall(FCF_OpenNewWindow, name, true)
+	local window = ok and frame and WindowByName(name)
+	if not window or window.frame ~= frame then
+		ns.Print(L.WINDOW_CREATE_FAILED)
+		return false
+	end
+	local chosen = Chat.SelectedWindows()
+	chosen[#chosen + 1] = window.name
+	ns.char.chatMirror = true
+	if ns.UI and ns.UI.Render then ns.UI.Render() end
+	return true
+end
+
 -- У вкладок Chattynator нет штатного фрейма: AddMessage вызывает его API из этого файла.
 -- Так чат, история и отладка используют один список назначений и один источник для фильтров.
 function Chat.Frames()
@@ -554,8 +593,11 @@ function Chat.TagTier(link, button)
 end
 
 function Chat.TagClick(link, _, button, frame)
-	local tier = Chat.TagTier(link, button)
+	local tier = Chat.TagTier(link)
 	if not tier then return false end
+	if button == "RightButton" then return ns.UI.OpenTagMenu(tier) end
+	if button and button ~= "LeftButton" then return false end
+	ns.UI.HideTagMenu()
 	if tier == "A" and frame and ns.ChatTab and frame == ns.ChatTab.OutputFrame() then
 		local box = ns.ChatTab.InputFor(frame)
 		if box then
