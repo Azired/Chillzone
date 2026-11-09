@@ -1,4 +1,4 @@
--- Копия общего чата в /g: без аддона её видно, с аддоном остаётся одна строка.
+-- Общий чат не отправляет копии в /g; фильтр копий прежних версий сохраняется.
 local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
 local PREFIX = "[Чиллзон] "
@@ -95,24 +95,23 @@ T.test("guildmirror: защищённый GUID не читается, класс
 	T.eq(#c.ns.db.errors, 0)
 end)
 
-T.test("guildmirror: /cz виден без аддона, с аддоном одна строка независимо от порядка доставки", function()
+T.test("guildmirror: /cz не публикуется в /g, копия старого клиента не создаёт дубль", function()
 	local w, a, b, other, plain, foreign = Build()
-	local original = w.GuildSay
 	for i, delay in ipairs({ 0, 12 }) do
-		w.GuildSay = function(self, from, text, kind)
-			self:Schedule(self.now + delay, function() original(self, from, text, kind) end, from)
-		end
 		local text = "общее сообщение " .. i
 		a:Slash("/cz", text)
+		-- Прежняя версия автора могла добавить такую копию до или после M1.
+		w:Schedule(w.now + delay, function() w:GuildSay(a, PREFIX .. text, "GUILD") end, a)
 		w:Run(30)
-		T.eq(plain.lines[i], PREFIX .. text, "без аддона читаемая копия")
+		T.eq(plain.lines[i], PREFIX .. text, "только явно смоделированная старая копия")
 		for _, c in ipairs({ a, b, other }) do
 			T.eq(c:Saw(text), 1, "с аддоном видно ровно один раз")
+			T.eq(#c.ns.Chat.History("A"), i, "старая копия не импортируется в A")
 			T.eq(#c.ns.Chat.History("G"), 0, "копия не попала в историю гильдии")
 			T.eq(#c.ns.db.errors, 0, "нет ошибок")
 		end
 	end
-	T.eq(#plain.lines, 2, "каждую строку отправил только автор")
+	T.eq(#plain.lines, 2, "новая версия сама ничего не публикует в /g")
 	T.eq(#foreign.lines, 0, "в /g другой гильдии копии не отправляются")
 end)
 
@@ -124,12 +123,11 @@ T.test("guildmirror: длинный текст и ссылка целы, обы�
 	local parts = a.ns.Codec.SplitChat(text, a.ns.Config.CHAT_PART, a.ns.Config.CHAT_PARTS)
 	T.ok(a.ns.Chat.Send("A", text))
 	w:Run(30)
-	T.eq(#plain.lines, #parts, "копия каждой части")
+	T.eq(#plain.lines, 0, "даже длинный общий текст не копируется в /g")
 	local restored = {}
-	for i, line in ipairs(plain.lines) do
-		T.ok(#line <= 255, "игровой предел строки")
-		T.eq(line, PREFIX .. parts[i], "часть без обрезания")
-		restored[#restored + 1] = line:sub(#PREFIX + 1)
+	for i, entry in ipairs(b.ns.Chat.History("A")) do
+		T.eq(entry.x, parts[i], "часть без обрезания")
+		restored[#restored + 1] = entry.x
 		T.eq(b:Saw(parts[i]), 1, "без дублей частей")
 	end
 	T.eq(table.concat(restored, " "), text, "текст и ссылка целы")
@@ -163,5 +161,22 @@ T.test("guildmirror: выключенный чат и игнор не обход
 	w:Run(10)
 	T.eq(b:Saw("скрыто игнором"), 0)
 	T.eq(#b.ns.Chat.History("G"), 0)
-	T.eq(#plain.lines, 2, "получатель без аддона видит обе копии")
+	T.eq(#plain.lines, 0, "без аддона общий чат не доставляется в /g")
+end)
+
+T.test("guildmirror: прямой общий чат не вызывает SendChatMessage", function()
+	local w, a, b, other, plain, foreign = Build()
+	local text = "ответ только в общем Чиллзоне"
+	T.ok(a.ns.Chat.Send("A", text))
+	w:Run(30)
+	for _, c in ipairs({ a, b, other }) do
+		T.eq(c:Saw(text), 1)
+		T.eq(#c.ns.Chat.History("A"), 1)
+		T.eq(#c.ns.Chat.History("G"), 0)
+	end
+	T.eq(#plain.lines, 0)
+	T.eq(#foreign.lines, 0)
+	for _, packet in ipairs(w.log) do
+		T.no(packet.dist == "GUILD" and packet.msg == PREFIX .. text, "нет читаемой копии")
+	end
 end)

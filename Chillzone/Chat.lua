@@ -103,43 +103,87 @@ local function WindowByName(name)
 	return nil
 end
 
--- Выбранная вкладка: название (nil — основное окно) и открыта ли она сейчас.
-function Chat.Window()
-	local name = ns.char and ns.char.chatWindow
-	if not name then return nil, true end
-	return name, WindowByName(name) ~= nil
+-- Список выбранных названий; пустая строка — основное окно независимо от его названия.
+-- Прежний одиночный выбор переносим даже для закрытой вкладки.
+function Chat.SelectedWindows()
+	if not ns.char then return { "" } end
+	if type(ns.char.chatWindows) ~= "table" or #ns.char.chatWindows == 0 then
+		local name = ns.char.chatWindow or ""
+		local w = WindowByName(name)
+		ns.char.chatWindows = { w and w.frame == DEFAULT_CHAT_FRAME and "" or name }
+	end
+	return ns.char.chatWindows
 end
 
-local windowWarned = false -- уже сказали, что выбранной вкладки нет
+ns.On("LOGIN", Chat.SelectedWindows)
+
+function Chat.WindowSelected(name)
+	for _, chosen in ipairs(Chat.SelectedWindows()) do
+		if U.Fold(chosen) == U.Fold(name) then return true end
+	end
+	return false
+end
+
+local windowWarned = {} -- о каких пропавших вкладках уже предупредили
 
 -- Куда писать копии строк: name — название вкладки, nil или "" — основное окно. Вкладку
 -- ищем без учёта регистра, запоминаем её название как в игре. false — такой вкладки нет.
 function Chat.SetWindow(name)
-	windowWarned = false
 	if not name or name == "" then
-		ns.char.chatWindow = false
+		ns.char.chatWindows = { "" }
+		windowWarned = {}
 		return true
 	end
 	local w = WindowByName(name)
 	if not w then return false end
-	ns.char.chatWindow = w.name
+	ns.char.chatWindows = { w.frame == DEFAULT_CHAT_FRAME and "" or w.name }
+	windowWarned = {}
 	return true
 end
 
-function Chat.Frame()
-	local name = ns.char and ns.char.chatWindow
-	if not name then return DEFAULT_CHAT_FRAME end
-	local w = WindowByName(name)
-	if w then
-		windowWarned = false
-		return w.frame
+-- Галочка в настройках добавляет или убирает вкладку, оставляя хотя бы одну.
+-- Выключение всех копий — отдельная настройка chatMirror.
+function Chat.ToggleWindow(name)
+	local w = name ~= "" and WindowByName(name)
+	if w and w.frame == DEFAULT_CHAT_FRAME then name = "" end
+	local chosen = Chat.SelectedWindows()
+	for i, value in ipairs(chosen) do
+		if U.Fold(value) == U.Fold(name) then
+			if #chosen == 1 then return false end
+			table.remove(chosen, i)
+			windowWarned[value] = nil
+			return true
+		end
 	end
-	-- Вкладку закрыли или переименовали: строки идут в основное окно, говорим об этом один раз.
-	if not windowWarned then
-		windowWarned = true
-		ns.Print(L.CHAT_WINDOW_GONE, name)
+	if name ~= "" and not w then return false end
+	chosen[#chosen + 1] = name == "" and "" or w.name
+	return true
+end
+
+function Chat.Frames()
+	local out, used, missing = {}, {}, {}
+	for _, name in ipairs(Chat.SelectedWindows()) do
+		local w = name ~= "" and WindowByName(name)
+		local f = name == "" and DEFAULT_CHAT_FRAME or (w and w.frame)
+		if f then
+			windowWarned[name] = nil
+			if not used[f] then out[#out + 1], used[f] = f, true end
+		else
+			missing[#missing + 1] = name
+		end
 	end
-	return DEFAULT_CHAT_FRAME
+	-- Пока открыта хоть одна выбранная вкладка, пишем только в выбранные.
+	-- Если пропали все, одна резервная копия идёт в основное окно.
+	if #out == 0 then
+		out[1] = DEFAULT_CHAT_FRAME
+		for _, name in ipairs(missing) do
+			if not windowWarned[name] then
+				windowWarned[name] = true
+				ns.Print(L.CHAT_WINDOW_GONE, name)
+			end
+		end
+	end
+	return out
 end
 
 -- Метка канала в чате игры: ссылка addon:Chillzone:chan:<tier>, цветом канала.
@@ -213,9 +257,9 @@ function Chat.History(channel)
 end
 
 -- Добавить строку в историю канала (не больше CHAT_HISTORY) и сообщить окну.
-function Chat.Remember(channel, guild, sender, class, text)
+function Chat.Remember(channel, guild, sender, class, text, at)
 	local list = Chat.History(channel)
-	local e = { t = ns.ServerTime(), s = U.Display(sender), g = guild, c = class, x = text }
+	local e = { t = at or ns.ServerTime(), s = U.Display(sender), g = guild, c = class, x = text }
 	list[#list + 1] = e
 	while #list > C.CHAT_HISTORY do table.remove(list, 1) end
 	ns.Fire("CHAT", channel, e)
@@ -225,8 +269,9 @@ end
 function Chat.Show(tier, guild, sender, class, text)
 	Chat.stats.shown = Chat.stats.shown + 1
 	if not ns.char or ns.char.chatMirror ~= false then
-		local f = Chat.Frame()
-		if f then f:AddMessage(Chat.Format(tier, guild, sender, class, text), Chat.Color(tier)) end
+		local stamp = (ns.char and ns.char.chatTime and date) and ("|cff999999" .. date("%H:%M", ns.ServerTime()) .. "|r ") or ""
+		local line = stamp .. Chat.Format(tier, guild, sender, class, text)
+		for _, f in ipairs(Chat.Frames()) do f:AddMessage(line, Chat.Color(tier)) end
 	end
 	Chat.Remember(tier, guild, sender, class, text)
 end
@@ -370,7 +415,6 @@ function Chat.Send(tier, text)
 				seen[ns.myKey .. "#" .. id .. "#" .. textPart] = now
 				Chat.Show(tier, guild, ns.me, class, textPart)
 				Chat.stats.sent = Chat.stats.sent + 1
-				ns.SafeCall("guild mirror", ns.GuildChat.Mirror, tier, textPart)
 			end)
 			if not ok then
 				Failed(why)
@@ -538,8 +582,8 @@ ns.Command("window", function(arg)
 		ns.Print(L.CHAT_WINDOW_MISSING, arg, table.concat(names, ", "))
 		return
 	end
-	local name = Chat.Window()
-	if name then ns.Print(L.CHAT_WINDOW_SET, name) else ns.Print(L.CHAT_WINDOW_MAIN) end
+	local name = Chat.SelectedWindows()[1]
+	if name ~= "" then ns.Print(L.CHAT_WINDOW_SET, name) else ns.Print(L.CHAT_WINDOW_MAIN) end
 end, L.HELP_WINDOW)
 
 ns.Command("ignore", function(arg)
@@ -568,10 +612,11 @@ ns.Command("history", function(arg)
 		return
 	end
 	local list = ns.store.chat[tier]
-	local f = Chat.Frame()
+	local frames = Chat.Frames()
 	for i = math.max(1, #list - 19), #list do
 		local e = list[i]
-		f:AddMessage("|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r " .. Chat.Format(tier, e.g, e.s, e.c, e.x), Chat.Color(tier))
+		local line = "|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r " .. Chat.Format(tier, e.g, e.s, e.c, e.x)
+		for _, f in ipairs(frames) do f:AddMessage(line, Chat.Color(tier)) end
 	end
 end, L.HELP_HISTORY)
 

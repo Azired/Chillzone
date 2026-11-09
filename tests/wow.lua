@@ -141,7 +141,7 @@ function World:GuildSay(from, msg, kind)
 	local event = kind == "OFFICER" and "CHAT_MSG_OFFICER" or "CHAT_MSG_GUILD"
 	local lineID = (self.guildLineID or 0) + 1
 	self.guildLineID = lineID
-	self.log[#self.log + 1] = { t = self.now, from = from:Name(), dist = kind, msg = msg }
+	self.log[#self.log + 1] = { t = self.now, from = from:Name(), dist = kind, msg = msg, native = true }
 	for _, c in ipairs(self.clients) do
 		if c.online and c.guild == from.guild and (kind ~= "OFFICER" or c.rank <= 1) then
 			local stamp = Stamp(from)
@@ -452,7 +452,8 @@ local function Env(c)
 end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
--- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API)
+-- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API),
+-- bridge ("none" — без импорта /г, "legacy" — настоящий мост v1 из PR #56).
 function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
@@ -467,9 +468,12 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		-- В 0.9 моста /г ещё не было.
-		local legacyBridge = opts.legacy and f == "GuildBridge.lua"
+		local legacyBridge = (opts.legacy or opts.bridge == "none") and f == "GuildBridge.lua"
 		if not legacyBridge and (not f:find("^libs/") or f == "libs/Ed25519.lua") then
-			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
+			if opts.bridge == "legacy" and f == "GuildBridge.lua" then
+				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.11.1/GuildBridge.lua"))
+				setfenv(chunk, c.env)("Chillzone", c.ns)
+			elseif opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)
 			else

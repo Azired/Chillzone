@@ -1,5 +1,6 @@
--- Мост /г между гильдиями союза. Штатная строка остаётся у автора, выбранный
--- связной каждой гильдии назначения публикует копию с именем автора.
+-- Обычный /г попадает в общий канал A только в окне аддона. Локальные строки
+-- видны сразу; выбранные репортёры передают их между гильдиями без копий в /г.
+-- Версия 2 отделяет этот обмен от прежнего двустороннего черновика моста.
 local ADDON, ns = ...
 
 local U, L, Codec = ns.Util, ns.L, ns.Codec
@@ -10,10 +11,9 @@ ns.GuildBridge = Bridge
 local HELLO_INTERVAL, LEASE, CHAT_TTL, SEEN_LIMIT = 8, 25, 15, 256
 local HISTORY_TTL = 30
 local ELECT_QUIET = 6
-local PUBLICATION_LIMIT, PUBLICATION_GAP = 16, 1
 local operation, generation = nil, 0
 local sessions, announced, retiredUntil, offlineReports = {}, {}, {}, {}
-local observed, published, remembered = {}, {}, {}
+local observed, remembered = {}, {}
 
 local function Valid(s, cap)
 	return type(s) == "string" and #s > 0 and #s <= cap and U.Trim(s) == s and not s:find("[|~%c]")
@@ -62,7 +62,7 @@ local function Operator()
 	if not operation then
 		generation = generation + 1
 		local nonce = table.concat({ ns.ServerTime(), U.Hash(tostring({}) .. ns.Now()), generation }, "-")
-		operation = { guild = guild, nonce = nonce, electedAt = ns.Now(), seq = 0, publications = {}, nextPost = 0 }
+		operation = { guild = guild, nonce = nonce, electedAt = ns.Now(), seq = 0 }
 	end
 	return operation
 end
@@ -131,7 +131,7 @@ local function Hello(s, closing)
 		s.nextHello = ns.Now() + HELLO_INTERVAL
 		Security.Introduce(s.peer)
 	end
-	local wire = table.concat({ "BH", c.guild, c.peerGuild, s.nonce,
+	local wire = table.concat({ "BH", "2", c.guild, c.peerGuild, s.nonce,
 		closing and "!" or s.remote or "", ns.ServerTime() }, "~")
 	local key = U.GuildKey(c.peerGuild)
 	-- Фоновые приветствия уступают срочным сообщениям и обмену сертификатами.
@@ -147,7 +147,7 @@ end
 
 ns.Comm.On("BH", function(msg, sender, dist)
 	if dist ~= "WHISPER" then return end
-	local from, to, origin, echo, sentAt = msg:match("^BH~([^~]+)~([^~]+)~([^~]+)~([^~]*)~(%d+)$")
+	local from, to, origin, echo, sentAt = msg:match("^BH~2~([^~]+)~([^~]+)~([^~]+)~([^~]*)~(%d+)$")
 	local s = Active(from)
 	if not s or not U.SameName(s.peer, sender) then return end
 	local at = Stamp(sentAt, LEASE)
@@ -179,18 +179,19 @@ local function HistoryKey(guild, origin, id)
 	return U.GuildKey(guild) .. "~" .. origin .. "~" .. id
 end
 
-local function Remember(guild, origin, id, author, text)
+local function Remember(guild, author, class, text, at)
 	local key = U.Key(author)
 	if not ns.char or not ns.char.chatOn or not key or (ns.store and ns.store.ignore[key]) then return end
-	if Once(remembered, HistoryKey(guild, origin, id)) then ns.Chat.Remember("A", guild, author, nil, text) end
+	-- Chat.Show пишет ещё и в игровые вкладки. Импорт нужен только в истории A и окне.
+	ns.Chat.Remember("A", guild, author, class, text, at)
 end
 
-local function PublishHistory(s, guild, origin, id, at, author, text)
+local function PublishHistory(s, origin, id, at, author, class, text)
 	local cert = Security.MyCertificate()
 	if not cert then return end
-	Remember(guild, origin, id, author, text)
 	Security.Introduce("GUILD")
-	local wire = table.concat({ "BT", cert.fp, s.config.peerGuild, guild, origin, id, at, author, text }, "~")
+	local wire = table.concat({ "BT", "2", cert.fp, s.config.peerGuild, origin, id, at, author,
+		Codec.CLASS_CODE[class or ""] or "", text }, "~")
 	local remote = s.remote
 	Comm.Send("GUILD", wire, {
 		prio = true, logged = true,
@@ -212,36 +213,6 @@ end
 
 local function LineId(id)
 	return #id <= 16 and id:match("^[1-9]%d*$")
-end
-
-local function NativeLine(prefix, text)
-	local budget = 255 - #prefix
-	local link = Codec.LinkAt(text, 1)
-	-- Если первая ссылка целиком не влезает, оставляем её название без разметки.
-	if link and link > budget then
-		local label = text:sub(1, link):match("|h(%b[])|h")
-		if label then text = label .. text:sub(link + 1) end
-	end
-	local parts = Codec.SplitChat(text, budget, 1)
-	return parts[1] and prefix .. parts[1] or nil
-end
-
--- Штатный /г ограничен по частоте. Очередь не переживает разрыв связи и не
--- публикует старые строки после снятия блокировки игры.
-local function CanPublish(line)
-	local s = line.session
-	return Active(s.config.peerGuild) == s and Ready(s) and s.remote == line.origin and Stamp(line.at, CHAT_TTL)
-end
-
-local function Pump(op)
-	local queue = op.publications
-	while queue[1] and not CanPublish(queue[1]) do table.remove(queue, 1) end
-	if not queue[1] or ns.Now() < op.nextPost or Comm.InLockdown() then return end
-	local line = table.remove(queue, 1)
-	op.nextPost = ns.Now() + PUBLICATION_GAP
-	if line.native then ns.SafeCall("bridge guild", ns.GuildChat.Send, "G", line.native) end
-	local s = line.session
-	PublishHistory(s, s.config.peerGuild, line.origin, line.id, line.at, line.author, line.text)
 end
 
 function Bridge.Tick()
@@ -268,7 +239,6 @@ function Bridge.Tick()
 	for key in pairs(offlineReports) do
 		if not U.IsMemberGuild(key) then offlineReports[key] = nil end
 	end
-	if op then Pump(op) end
 end
 
 local function LocalReporter(sender)
@@ -280,67 +250,65 @@ ns.Comm.On("BT", function(msg, sender, dist)
 	if dist ~= "GUILD" then return end
 	local localGuild = LocalReporter(sender)
 	if not localGuild then return end
-	local fp, peer, guild, origin, id, at, author, raw =
-		msg:match("^BT~([%w_-]+)~([^~]+)~([^~]+)~([^~]+)~(%d+)~(%d+)~([^~]+)~(.+)$")
-	if not Stamp(at, HISTORY_TTL) or not PeerGuild(localGuild, peer)
-		or not Valid(guild, 96) or not (SameGuild(guild, localGuild) or SameGuild(guild, peer))
-		or not Nonce(origin) or not LineId(id) or not Valid(author, 64) then return end
+	local fp, guild, origin, id, at, author, class, raw =
+		msg:match("^BT~2~([%w_-]+)~([^~]+)~([^~]+)~(%d+)~(%d+)~([^~]+)~([A-Z]*)~(.+)$")
+	if not Stamp(at, HISTORY_TTL) or not PeerGuild(localGuild, guild)
+		or not Nonce(origin) or not LineId(id) or not Valid(author, 64)
+		or (class ~= "" and not Codec.CLASS_FILE[class]) then return end
 	local text = Body(raw)
 	if not text then return end
 	Security.Resolve(fp, sender, sender, function(cert)
 		if SameGuild(LocalReporter(sender), localGuild) and SameGuild(cert.guild, localGuild)
-			and PeerGuild(localGuild, peer) and Stamp(at, HISTORY_TTL) then
-			Remember(guild, origin, id, author, text)
+			and PeerGuild(localGuild, guild) and Stamp(at, HISTORY_TTL)
+			and Once(remembered, HistoryKey(guild, origin, id)) then
+			Remember(guild, author, Codec.CLASS_FILE[class], text, tonumber(at))
 		end
 	end)
 end)
 
 ns.Comm.On("BM", function(msg, sender, dist)
 	if dist ~= "WHISPER" then return end
-	local from, to, origin, echo, id, stamp, author, raw =
-		msg:match("^BM~([^~]+)~([^~]+)~([^~]+)~([^~]+)~(%d+)~(%d+)~([^~]+)~(.+)$")
+	local from, to, origin, echo, id, stamp, author, class, raw =
+		msg:match("^BM~2~([^~]+)~([^~]+)~([^~]+)~([^~]+)~(%d+)~(%d+)~([^~]+)~([A-Z]*)~(.+)$")
 	local s = Active(from)
 	if not Ready(s) or not U.SameName(s.peer, sender) then return end
 	local at = Stamp(stamp, CHAT_TTL)
 	if not at or not Match(s, from, to) or origin ~= s.remote or echo ~= s.nonce
-		or not LineId(id) or not Valid(author, 64) then return end
+		or not LineId(id) or not Valid(author, 64) or (class ~= "" and not Codec.CLASS_FILE[class]) then return end
 	local text = Body(raw)
-	local op = operation
-	if not text or #op.publications >= PUBLICATION_LIMIT or not Once(published, HistoryKey(from, origin, id)) then return end
-	-- Родное ограничение /г: одна строка в 255 байт с целыми ссылками и буквами.
-	local prefix = L.GUILD_BRIDGE_PREFIX .. "[" .. s.config.peerGuild .. "] " .. author .. ": "
-	op.publications[#op.publications + 1] = {
-		session = s, origin = origin, id = id, at = at, author = author, text = text,
-		native = NativeLine(prefix, text),
-	}
-	Pump(op)
+	if not text or not Once(remembered, HistoryKey(from, origin, id)) then return end
+	Remember(from, author, Codec.CLASS_FILE[class], text, at)
+	-- Только принимающая гильдия получает BT. Исходная уже видела нативное событие.
+	PublishHistory(s, origin, id, at, author, Codec.CLASS_FILE[class], text)
 end)
 
 ns.RegisterEvent("CHAT_MSG_GUILD", function(raw, sender, ...)
 	if IsSecret(raw) or IsSecret(sender) or type(raw) ~= "string" or type(sender) ~= "string" then return end
-	local op = Operator()
-	if not op then return end
-	local line, author, text = select(9, ...), U.Display(sender), Body(raw)
+	local guild = ns.MyGuild()
+	if not ns.IsMember() or not Valid(guild, 96) then return end
+	local line, guid = select(9, ...), select(10, ...)
+	local author, text = U.Display(sender), Body(raw)
 	if not text or not Valid(author, 64) then return end
 	local at = ns.ServerTime()
 	if not IsSecret(line) and type(line) == "number" and line > 0
-		and not Once(observed, U.GuildKey(op.guild) .. "~" .. line) then return end
+		and not Once(observed, U.GuildKey(guild) .. "~" .. line) then return end
+	local class = ns.GuildChat.ClassOf(sender, guid)
+	Remember(guild, author, class, text, at)
+	-- Ни сертификат, ни выборы, ни доступность соседей не задерживают локальную строку.
+	local op = Operator()
+	if not op then return end
 	op.seq = op.seq + 1
-	local id, historySent = tostring(op.seq), false
+	local id = tostring(op.seq)
 	for _, entry in ipairs(Security.UnionGuilds()) do
 		local s = Active(entry.guild, op)
 		if Ready(s) then
 			local c, remote = s.config, s.remote
-			local wire = table.concat({ "BM", c.guild, c.peerGuild, s.nonce, remote, id, at, author, text }, "~")
+			local wire = table.concat({ "BM", "2", c.guild, c.peerGuild, s.nonce, remote, id, at, author,
+				Codec.CLASS_CODE[class or ""] or "", text }, "~")
 			local function Guard()
 				return Active(c.peerGuild) == s and Ready(s) and s.remote == remote and Stamp(at, CHAT_TTL) ~= nil
 			end
-			Comm.Send("WHISPER", wire, { target = s.peer, prio = true, logged = true, guard = Guard, done = function(ok)
-				if ok and not historySent and Guard() then
-					historySent = true
-					PublishHistory(s, c.guild, s.nonce, id, at, author, text)
-				end
-			end })
+			Comm.Send("WHISPER", wire, { target = s.peer, prio = true, logged = true, guard = Guard })
 		end
 	end
 end)
@@ -363,8 +331,10 @@ end)
 
 ns.Command("bridge", function(arg)
 	if U.Trim(arg) ~= "" then ns.Print(L.GUILD_BRIDGE_USAGE); return end
+	if not ns.IsMember() then ns.Print(L.GUILD_BRIDGE_OFF); return end
+	ns.Print(L.GUILD_BRIDGE_LOCAL)
 	local guild = Guild()
-	if not guild then ns.Print(L.GUILD_BRIDGE_OFF); return end
+	if not guild then ns.Print(L.GUILD_BRIDGE_PENDING); return end
 	if not ns.Census.IsReporter() then ns.Print(L.GUILD_BRIDGE_OPERATOR, ns.Census.ReporterName() or "-"); return end
 	local found
 	for _, entry in ipairs(Security.UnionGuilds()) do
@@ -374,5 +344,5 @@ ns.Command("bridge", function(arg)
 				entry.guild, Discover(entry.guild) or "-")
 		end
 	end
-	if not found then ns.Print(L.GUILD_BRIDGE_OFF) end
+	if not found or not Security.MyCertificate() then ns.Print(L.GUILD_BRIDGE_PENDING) end
 end, L.HELP_BRIDGE)
