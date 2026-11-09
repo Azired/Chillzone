@@ -203,10 +203,20 @@ T.test("relay: перепись сходится у всех", function()
 end)
 
 T.test("relay: реле выучено из ответа доверенного реле", function()
-	local _, c = Build({ config = RANKS })
-	local learned = c.B.ns.store.relays[Key(c.B, "Карл Великий")]
-	T.ok(learned, "Карл выучен")
-	T.eq(c.B.ns.Relay.TrustOf("Карл Великий"), "officer", "signed officer credential")
+	local w, c = Build({ config = RANKS })
+	-- Сертификаты известных реле уже разосланы гильдии. Проверяем отдельную
+	-- подсказку о новом имени: ответ доверенного реле сам по себе не даёт доверия.
+	local name = "Свежий Ретранслятор"
+	T.eq(c.B.ns.store.relays[Key(c.B, name)], nil, "до RY подсказки нет")
+	T.eq(c.B.ns.Relay.TrustOf(c.A:Name()), "officer", "отправитель RY проверен")
+	w:Deliver(c.A, "WHISPER", c.A.ns.PREFIX, c.A.ns.Codec.EncodeRelayList({ name }), c.B:Name())
+	w:Run(1)
+	local learned = c.B.ns.store.relays[Key(c.B, name)]
+	T.ok(learned, "новое реле выучено из RY")
+	T.eq(learned.name, name, "сохранено имя из ответа")
+	T.eq(learned.by, Key(c.B, c.A:Name()), "сохранён проверенный источник подсказки")
+	T.eq(c.B.ns.Relay.TrustOf(name), nil, "подсказка не заменяет сертификат")
+	T.eq(c.B.ns.Relay.TrustOf("Карл Великий"), "officer", "подписанный сертификат офицера")
 	T.eq(c.B.ns.Relay.TrustOf("Мира Тихая"), nil, "не офицер — не реле")
 end)
 
