@@ -226,7 +226,10 @@ function Chat.Show(tier, guild, sender, class, text)
 	Chat.stats.shown = Chat.stats.shown + 1
 	if not ns.char or ns.char.chatMirror ~= false then
 		local f = Chat.Frame()
-		if f then f:AddMessage(Chat.Format(tier, guild, sender, class, text), Chat.Color(tier)) end
+		if f then
+			local stamp = (ns.char and ns.char.chatTime and date) and ("|cff999999" .. date("%H:%M", ns.ServerTime()) .. "|r ") or ""
+			f:AddMessage(stamp .. Chat.Format(tier, guild, sender, class, text), Chat.Color(tier))
+		end
 	end
 	Chat.Remember(tier, guild, sender, class, text)
 end
