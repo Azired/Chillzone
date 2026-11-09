@@ -11,6 +11,7 @@ local SUITES = {
 	"test_util",
 	"test_codec",
 	"test_comm",
+	"test_debug_output",
 	"test_data",
 	"test_relay",
 	"test_chat",

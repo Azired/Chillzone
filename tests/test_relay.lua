@@ -1223,22 +1223,23 @@ T.test("relay: Q1 после /reload восполняет перепись", fun
 	T.ok(M2.ns.Data.Row("Чиллзон Север"), "Север пришёл по Q1")
 end)
 
-T.test("relay: /chillzone управляет, /чз и /cz пишут в общий чат", function()
+T.test("relay: команды выполняются, обычный текст коротких алиасов доходит в общий чат", function()
 	local w, c = Build()
 	local toggles, toggle = 0, c.B.ns.UI.Toggle
 	c.B.ns.UI.Toggle = function() toggles = toggles + 1 end
-	for _, cmd in ipairs({ "/chillzone" }) do
-		c.B:Slash(cmd, "")
+	c.B:Slash("/chillzone", "")
+	for _, cmd in ipairs({ "/chillzone", "/cz", "/чз", "/чиллзон" }) do
 		c.B:Slash(cmd, "status")
 	end
 	c.B.ns.UI.Toggle = toggle
 	T.eq(toggles, 1, "без текста — окно")
 	T.eq(c.B.ns.Chat.stats.sent, 0, "команды не ушли в чат")
-	T.ok(c.B:Saw("перепись: репортёр") >= 1, "status выполнен")
+	T.eq(c.B:Saw("перепись: репортёр"), 4, "status выполнен каждым алиасом")
 	local lines = {
 		{ c.B, "/чз", "Привет кириллицей" },
 		{ c.B, "/cz", "привет без номера" },
-		{ c.B, "/чиллзон", "status" },
+		{ c.B, "/чиллзон", "ещё одно сообщение" },
+		{ c.B, "/cz1", "status" },
 		{ c.B, "/чз1", "привет через чз1" },
 		{ c.V, "/чз2", "офицерам через чз2" },
 		{ c.G, "/чз3", "главам через чз3" },
@@ -1250,7 +1251,8 @@ T.test("relay: /chillzone управляет, /чз и /cz пишут в общ�
 	for name, cl in pairs(c) do
 		T.eq(cl:Saw("Привет кириллицей"), 1, name .. ": /чз текст")
 		T.eq(cl:Saw("привет без номера"), 1, name .. ": /cz текст")
-		T.eq(cl:Saw("status"), 1, name .. ": слово команды — текст через /чиллзон")
+		T.eq(cl:Saw("ещё одно сообщение"), 1, name .. ": /чиллзон текст")
+		T.eq(cl:Saw("status"), 1, name .. ": слово команды — текст через /cz1")
 		T.eq(cl:Saw("привет через чз1"), 1, name .. ": /чз1")
 	end
 	for _, n in ipairs({ "A", "K", "G", "V" }) do T.eq(c[n]:Saw("офицерам через чз2"), 1, n .. ": /чз2") end

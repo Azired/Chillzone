@@ -20,6 +20,15 @@ function ns.Print(msg, ...)
 	if frame then frame:AddMessage(ns.COLOR .. "Chillzone|r: " .. tostring(msg)) end
 end
 
+-- Отладка следует выбору вкладок общего чата, даже если его копии выключены.
+-- До загрузки модуля чата доступно только основное окно.
+local function DebugPrint(msg)
+	local chat = ns.Chat
+	local frames = chat and chat.Frames and chat.Frames()
+		or { chat and chat.Frame and chat.Frame() or DEFAULT_CHAT_FRAME }
+	for _, frame in ipairs(frames) do frame:AddMessage(msg) end
+end
+
 function ns.Log(fmt, ...)
 	local msg
 	if select("#", ...) > 0 then
@@ -33,7 +42,7 @@ function ns.Log(fmt, ...)
 	local log = db.log
 	log[#log + 1] = (date and date("%m-%d %H:%M:%S ") or "") .. msg
 	while #log > 300 do table.remove(log, 1) end
-	if db.settings.debug then ns.Print("|cff999999" .. msg .. "|r") end
+	if db.settings.debug then DebugPrint(ns.COLOR .. "Chillzone|r: |cff999999" .. msg .. "|r") end
 end
 
 ---------------------------------------------------------------------------
@@ -229,7 +238,7 @@ function ns.IsMember()
 end
 
 ---------------------------------------------------------------------------
--- Управление: /chillzone <команда> [аргументы]. Короткие алиасы принадлежат чату.
+-- Управление: /chillzone <команда> [аргументы]; короткие алиасы также принимают текст чата.
 ---------------------------------------------------------------------------
 local commands, order = {}, {}
 function ns.Command(name, fn, help)
@@ -272,26 +281,33 @@ end, L.HELP_STATUS)
 
 ns.Command("debug", function()
 	ns.db.settings.debug = not ns.db.settings.debug
-	ns.Print(ns.db.settings.debug and L.DEBUG_ON or L.DEBUG_OFF)
+	DebugPrint(ns.COLOR .. "Chillzone|r: " .. (ns.db.settings.debug and L.DEBUG_ON or L.DEBUG_OFF))
 end, L.HELP_DEBUG)
 
 ns.Command("log", function(arg)
 	local n = tonumber(arg) or 20
 	local log = ns.db.log
-	for i = math.max(1, #log - n + 1), #log do DEFAULT_CHAT_FRAME:AddMessage("|cff999999" .. log[i] .. "|r") end
-	for i = 1, math.min(3, #(ns.db.errors or {})) do DEFAULT_CHAT_FRAME:AddMessage("|cffff6060" .. ns.db.errors[i] .. "|r") end
+	for i = math.max(1, #log - n + 1), #log do DebugPrint("|cff999999" .. log[i] .. "|r") end
+	for i = 1, math.min(3, #(ns.db.errors or {})) do DebugPrint("|cffff6060" .. ns.db.errors[i] .. "|r") end
 end, L.HELP_LOG)
+
+-- true — команда найдена, даже если её обработчик завершился ошибкой.
+-- Короткие алиасы отправляют в чат только текст, не совпавший с командой.
+function ns.RunCommand(msg)
+	if not ns.me then return false end
+	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
+	name = U.Fold(name or "")
+	local c = commands[name]
+	if not c then return false end
+	ns.SafeCall("/chillzone " .. name, c.fn, rest)
+	return true
+end
 
 SLASH_CHILLZONE1 = "/chillzone"
 SlashCmdList.CHILLZONE = function(msg)
 	if not ns.me then return end
-	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
-	name = U.Fold(name or "")
-	if name == "" then
+	if U.Trim(msg) == "" then
 		if ns.UI and ns.UI.Toggle then return ns.UI.Toggle() end
-		name = "help"
 	end
-	local c = commands[name]
-	if not c then c = commands.help end
-	ns.SafeCall("/chillzone " .. name, c.fn, rest)
+	if not ns.RunCommand(msg) then ns.RunCommand("help") end
 end

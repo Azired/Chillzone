@@ -132,27 +132,36 @@ end
 local ITEM_H = 20
 local picker = { items = {} } -- label, button, list, empty, items
 UI.picker = picker
+local RenderList
 
 local function RenderPicker()
 	local b = picker.button
 	if not b then return end
-	local name, open = ns.Chat.Window()
-	if not name then
-		b:SetText(L.WINDOW_MAIN)
-	elseif open then
-		b:SetText(name)
-	else
-		b:SetText("|cffff6060" .. L.WINDOW_GONE:format(name) .. "|r")
+	local open, labels, missing = {}, {}, false
+	for _, w in ipairs(ns.Chat.MirrorWindows()) do open[U.Fold(w.name)] = true end
+	for _, name in ipairs(ns.Chat.SelectedWindows()) do
+		local label = name == "" and L.WINDOW_MAIN or name
+		if name ~= "" and not open[U.Fold(name)] then
+			label, missing = "|cffff6060" .. L.WINDOW_GONE:format(name) .. "|r", true
+		end
+		labels[#labels + 1] = label
 	end
+	picker.selectedText = table.concat(labels, ", ")
+	local text = #labels == 1 and labels[1] or L.WINDOW_COUNT:format(#labels)
+	if #labels > 1 and missing then text = "|cffff6060" .. text .. "|r" end
+	b:SetText(text)
 	local mirror = ns.char.chatMirror ~= false
 	b:SetEnabled(mirror)
 	picker.label:SetFontObject(mirror and "GameFontHighlight" or "GameFontDisable")
-	if not mirror then picker.list:Hide() end
+	if not mirror then
+		picker.list:Hide()
+	elseif picker.list:IsShown() then
+		RenderList()
+	end
 end
 
 local function Pick(value)
-	picker.list:Hide()
-	ns.Chat.SetWindow(value)
+	ns.Chat.ToggleWindow(value)
 	RenderPicker()
 end
 
@@ -180,25 +189,27 @@ local function PickerItem(i)
 	return it
 end
 
--- Список собирается заново при каждом открытии: вкладки могли создать, закрыть или переименовать.
-local function ToggleList()
+-- Список собирается заново при открытии и после выбора: вкладки могли создать, закрыть
+-- или переименовать. Закрытые выбранные вкладки оставляем, чтобы можно было снять галочку.
+RenderList = function()
 	local list = picker.list
-	if list:IsShown() then
-		list:Hide()
-		return
-	end
 	local entries = { { text = L.WINDOW_MAIN, value = "" } }
+	local known = { [""] = true }
 	for _, w in ipairs(ns.Chat.MirrorWindows()) do
-		if not w.frame or w.frame ~= DEFAULT_CHAT_FRAME then
-			entries[#entries + 1] = { text = w.name, value = w.name }
+		known[U.Fold(w.name)] = true
+		if w.frame ~= DEFAULT_CHAT_FRAME then entries[#entries + 1] = { text = w.name, value = w.name } end
+	end
+	local noOthers = #entries == 1
+	for _, name in ipairs(ns.Chat.SelectedWindows()) do
+		if not known[U.Fold(name)] then
+			entries[#entries + 1] = { text = "|cffff6060" .. L.WINDOW_GONE:format(name) .. "|r", value = name }
 		end
 	end
-	local chosen = U.Fold(ns.Chat.Window() or "")
 	for i, e in ipairs(entries) do
 		local it = PickerItem(i)
 		it.value = e.value
 		it.text:SetText(e.text)
-		it.check:SetShown(U.Fold(e.value) == chosen)
+		it.check:SetShown(ns.Chat.WindowSelected(e.value))
 		it:Show()
 	end
 	for i = #entries + 1, #picker.items do picker.items[i]:Hide() end
@@ -206,10 +217,18 @@ local function ToggleList()
 	local empty = picker.empty
 	empty:ClearAllPoints()
 	empty:SetPoint("TOPLEFT", list, "TOPLEFT", 10, -h)
-	empty:SetShown(#entries == 1)
-	if #entries == 1 then h = h + math.max(28, empty:GetStringHeight() or 0) + 6 end
+	empty:SetShown(noOthers)
+	if noOthers then h = h + math.max(28, empty:GetStringHeight() or 0) + 6 end
 	list:SetHeight(h)
-	list:Show()
+end
+
+local function ToggleList()
+	if picker.list:IsShown() then
+		picker.list:Hide()
+		return
+	end
+	RenderList()
+	picker.list:Show()
 end
 
 local function BuildPicker()
@@ -222,6 +241,7 @@ local function BuildPicker()
 	b:SetScript("OnClick", function() ns.SafeCall("window list", ToggleList) end)
 	SetTip(b, function(tt)
 		tt:AddLine(L.WINDOW_TITLE, 1, 0.82, 0)
+		tt:AddLine(picker.selectedText, 1, 1, 1, true)
 		tt:AddLine(L.WINDOW_TIP, 1, 1, 1, true)
 		if type(rawget(_G, "Chattynator")) == "table" then
 			tt:AddLine(L.WINDOW_CHATTYNATOR_TIP, 1, 1, 1, true)

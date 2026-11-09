@@ -60,24 +60,49 @@ local function SlashClient(rank)
 	return w, c
 end
 
-T.test("slash: управление только через /chillzone, алиасы всегда пишут в чат", function()
+T.test("slash: короткие алиасы выполняют известные команды, остальное отправляют в чат", function()
 	local _, c = SlashClient()
 	local sent = {}
 	c.ns.Chat.Send = function(tier, text) sent[#sent + 1] = { tier, text } end
-	c:Slash("/chillzone", "settings")
-	T.eq(c.ns.UI.Current(), "settings")
-	c:Slash("/chillzone", "status")
-	T.ok(c:Saw("перепись: репортёр") > 0)
 	c:Slash("/chillzone", "нетакой")
 	T.eq(#sent, 0, "неизвестная команда управления не уходит в чат")
-	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон" }) do
-		c:Slash(cmd, "settings")
-		T.same(sent[#sent], { "A", "settings" }, cmd .. " не перехватывает слово команды")
-		c:Slash(cmd, "")
-		T.eq(c.ns.UI.Current(), "settings", "пустая команда не меняет вкладку")
+	local args = {}
+	c.ns.Command("custom", function(arg) args[#args + 1] = arg end)
+	for _, cmd in ipairs({ "/chillzone", "/cz", "/чз", "/чиллзон" }) do
+		c:Slash(cmd, "  SeTtInGs  ")
+		T.eq(c.ns.UI.Current(), "settings", cmd .. " выполняет команду")
+		local before = c:Saw("перепись: репортёр")
+		c:Slash(cmd, "status")
+		T.eq(c:Saw("перепись: репортёр"), before + 1, cmd .. " выполняет status")
+		c:Slash(cmd, "custom Имя Фамилия")
+		T.eq(args[#args], "Имя Фамилия", "аргументы переданы обработчику")
 	end
-	T.eq(#sent, 3)
+	T.eq(#sent, 0, "известные команды не уходят в чат")
+	T.eq(#args, 4)
+	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон" }) do
+		for _, text in ipairs({ "привет " .. LINK, "settingsfoo текст", "нетакой" }) do
+			c:Slash(cmd, text)
+			T.same(sent[#sent], { "A", text }, cmd .. " отправляет обычный текст")
+		end
+	end
+	T.eq(#sent, 9)
 	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("slash: нумерованные каналы отправляют слова команд, ошибка команды не уходит в чат", function()
+	local _, c = SlashClient()
+	local sent = {}
+	c.ns.Chat.Send = function(tier, text) sent[#sent + 1] = { tier, text } end
+	for _, prefix in ipairs({ "/cz", "/чз" }) do
+		for i, tier in ipairs({ "A", "C", "L" }) do
+			c:Slash(prefix .. i, "status")
+			T.same(sent[#sent], { tier, "status" })
+		end
+	end
+	c.ns.Command("broken", function() error("ошибка команды") end)
+	c:Slash("/cz", "broken")
+	T.eq(#sent, 6, "ошибка не превращается в сообщение")
+	T.eq(#c.ns.db.errors, 1, "ошибка перехвачена")
 end)
 
 T.test("slash: все алиасы оставляют ввод в игровом чате до Enter", function()
@@ -90,7 +115,7 @@ T.test("slash: все алиасы оставляют ввод в игровом
 		for i = 1, 2 do
 			local game = c.env["ChatFrame" .. i .. "EditBox"]
 			game:Show(); game:SetFocus()
-			for _, text in ipairs({ cmd, cmd .. " ", cmd .. " привет " .. LINK }) do
+			for _, text in ipairs({ cmd, cmd .. " ", cmd .. " settings", cmd .. " status", cmd .. " привет " .. LINK }) do
 				game:SetText(text)
 				local changed = game.scripts.OnTextChanged
 				if changed then changed(game, true) end
@@ -128,21 +153,39 @@ T.test("slash: отмена и исправление команды не отк
 	T.eq(c.ns.UI.Current(), nil)
 end)
 
-T.test("slash: пустые команды дают подсказку без отправки и открытия окна", function()
+T.test("slash: пустые команды открывают нужный канал без отправки и подсказки", function()
 	local w, c = SlashClient()
 	local sent = 0
 	c.ns.Chat.Send = function() sent = sent + 1 end
-	for _, cmd in ipairs({ "/cz", "/чз", "/чиллзон", "/cz1", "/чз1", "/cz2", "/чз2", "/cz3", "/чз3" }) do
+	local aliases = { ["/cz"] = "A", ["/чз"] = "A", ["/чиллзон"] = "A",
+		["/cz1"] = "A", ["/чз1"] = "A", ["/cz2"] = "C", ["/чз2"] = "C", ["/cz3"] = "L", ["/чз3"] = "L" }
+	for cmd, tier in pairs(aliases) do
+		c:Slash("/chillzone", "settings")
 		for _, text in ipairs({ "", "   " }) do
-			local before = c:Saw(c.ns.L.CHAT_USAGE)
+			local before = #c.printed
 			c:Slash(cmd, text)
 			w:Run(0)
-			T.eq(c:Saw(c.ns.L.CHAT_USAGE), before + 1, cmd .. " показывает подсказку")
-			T.eq(c.ns.UI.Current(), nil, cmd .. " не открывает окно")
+			T.eq(c.ns.UI.Current(), "chat", cmd .. " открывает окно")
+			T.eq(c.ns.ChatPane.Current(), tier, cmd .. " выбирает канал")
+			T.ok(c.ns.ChatPane.frames.box:HasFocus(), cmd .. " ставит курсор в поле")
+			T.eq(#c.printed, before, cmd .. " ничего не печатает в чат")
 		end
 	end
 	T.eq(sent, 0)
 	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("slash: пустая команда сохраняет черновик и повторно не закрывает окно", function()
+	local _, c = SlashClient()
+	c:Slash("/cz", "")
+	local box = c.ns.ChatPane.frames.box
+	T.ok(box, "поле открытого окна")
+	box:SetText("черновик " .. LINK)
+	box.scripts.OnTextChanged(box, true)
+	c:Slash("/cz", "")
+	T.eq(c.ns.UI.Current(), "chat")
+	T.eq(box:GetText(), "черновик " .. LINK)
+	T.eq(c.ns.Chat.stats.sent, 0)
 end)
 
 T.test("slash: недоступный канал отклоняет отправку без открытия окна", function()
@@ -159,6 +202,9 @@ T.test("slash: недоступный канал отклоняет отправ
 	c:Slash("/cz3", "сообщение главам")
 	w:Run(0)
 	T.eq(c:Saw("можно писать только с нужным рангом"), 2)
+	c:Slash("/cz2", "")
+	c:Slash("/cz3", "   ")
+	T.eq(c:Saw("можно писать только с нужным рангом"), 4, "пустая команда тоже проверяет канал")
 	T.eq(c.ns.Chat.stats.sent, 0)
 	T.eq(c.ns.UI.Current(), nil)
 	T.eq(#c.ns.db.errors, 0)
@@ -279,6 +325,35 @@ T.test("окно: без дубля в чат игры строка только
 	T.eq(c.V:Saw("только окно"), 1, "у других дубль включён")
 end)
 
+T.test("окно: время у строк учитывается и в чате игры", function()
+	local _, c = SlashClient()
+	local tab = c:ChatWindow(3, "Чиллзон")
+	local stamp = "|cff999999" .. c.env.date("%H:%M", c.ns.ServerTime()) .. "|r "
+	for _, tier in ipairs({ "A", "C", "L" }) do
+		c.ns.UI.OpenChat(tier)
+		local messages = c.ns.ChatPane.frames.messages
+		for _, on in ipairs({ false, true, false }) do
+			c.ns.char.chatTime = on
+			c.ns.Chat.Show(tier, "Чиллзон", c:Name(), "MAGE", "проверка времени")
+			local line = c.printed[#c.printed]
+			T.eq(line:sub(1, #stamp) == stamp, on, "основное окно чата игры")
+			T.eq(messages.lines[#messages.lines]:sub(1, #stamp) == stamp, on, "окно Chillzone")
+
+			c.ns.Chat.SetWindow("Чиллзон")
+			c.ns.Chat.Show(tier, "Чиллзон", c:Name(), "MAGE", "проверка вкладки")
+			T.eq(tab.lines[#tab.lines]:sub(1, #stamp) == stamp, on, "выбранная вкладка чата игры")
+			c.ns.Chat.SetWindow(nil)
+		end
+	end
+	-- История уже добавляет время сама, поэтому не должна получать его дважды.
+	c.ns.char.chatTime = true
+	c:Slash("/chillzone", "history 1")
+	local line = c.printed[#c.printed]
+	T.eq(line:sub(1, #stamp), stamp, "у истории осталось время")
+	T.no(line:find(stamp, #stamp + 1, true), "время не дублируется")
+	T.eq(#c.ns.db.errors, 0)
+end)
+
 T.test("окно: цвет текста общего чата один для окна и чата игры", function()
 	local w, c = Build()
 	local B = c.B
@@ -342,9 +417,14 @@ T.test("окно: копии строк — во вкладке чата игр�
 	T.no(p.items[2].check:IsShown())
 	T.no(p.items[3] and p.items[3]:IsShown(), "лишних строк нет")
 	p.items[2].scripts.OnClick(p.items[2])
-	T.no(p.list:IsShown(), "выбор закрывает список")
-	T.eq(B.ns.char.chatWindow, "Чиллзон")
+	T.ok(p.list:IsShown(), "можно выбрать следующую вкладку, не открывая список снова")
+	T.ok(p.items[1].check:IsShown(), "основное окно осталось выбрано")
+	T.ok(p.items[2].check:IsShown(), "новая вкладка тоже выбрана")
+	p.items[1].scripts.OnClick(p.items[1])
+	T.same(B.ns.char.chatWindows, { "Чиллзон" })
 	T.eq(p.button:GetText(), "Чиллзон")
+	p.button.scripts.OnClick(p.button)
+	T.no(p.list:IsShown(), "повторный щелчок по кнопке закрывает список")
 
 	c.G:Slash("/cz1", "во вкладку")
 	w:Run(30)
@@ -365,24 +445,128 @@ T.test("окно: копии строк — во вкладке чата игр�
 	T.eq(p.button:GetText(), "|cffff6060«Чиллзон» закрыта|r", "кнопка говорит, что вкладки нет")
 	p.button.scripts.OnClick(p.button)
 	T.ok(p.list:IsShown())
-	T.no(p.items[1].check:IsShown() or p.items[2].check:IsShown(), "закрытая вкладка не отмечена")
+	T.no(p.items[1].check:IsShown(), "резервный вывод не меняет выбор")
+	T.ok(p.items[2].check:IsShown(), "закрытую выбранную вкладку можно снять")
+	T.eq(p.items[2].text:GetText(), "|cffff6060«Чиллзон» закрыта|r")
 	B.ns.UI.Toggle("kingdom")
 	T.no(p.list:IsShown(), "список закрыт вместе с настройками")
 
 	-- Команда: регистр не важен, опечатка перечисляет открытые вкладки, пусто — основное окно.
 	B:ChatWindow(3, "Чиллзон")
 	B:Slash("/chillzone", "window ЧИЛЛЗОН")
-	T.eq(B.ns.char.chatWindow, "Чиллзон", "название — как у вкладки")
+	T.same(B.ns.char.chatWindows, { "Чиллзон" }, "название — как у вкладки")
 	B:Slash("/chillzone", "window Торговля")
 	T.eq(B:Saw("нет вкладки чата «Торговля». Открыты: «Общий», «Чиллзон»"), 1)
-	T.eq(B.ns.char.chatWindow, "Чиллзон", "опечатка не сбрасывает выбор")
+	T.same(B.ns.char.chatWindows, { "Чиллзон" }, "опечатка не сбрасывает выбор")
 	B:Slash("/chillzone", "window")
-	T.eq(B.ns.char.chatWindow, false)
+	T.same(B.ns.char.chatWindows, { "" })
 	c.G:Slash("/cz1", "снова в основном")
 	w:Run(30)
 	T.eq(B:Saw("снова в основном"), 1)
 	T.eq(B:Saw("вкладки чата «Чиллзон» нет"), 1, "в основном окне не предупреждаем")
 	Errors(c)
+end)
+
+T.test("окно: несколько вкладок получают строки и историю без дублей", function()
+	local _, c = SlashClient()
+	local chat = c.ns.Chat
+	local first = c:ChatWindow(3, "Чиллзон")
+	local second = c:ChatWindow(4, "Союз")
+	c.ns.UI.Toggle("settings")
+	local p = c.ns.UI.picker
+	p.button.scripts.OnClick(p.button)
+	p.items[2].scripts.OnClick(p.items[2])
+	p.items[3].scripts.OnClick(p.items[3])
+	T.same(c.ns.char.chatWindows, { "", "Чиллзон", "Союз" })
+	T.eq(p.button:GetText(), "Выбрано вкладок: 3")
+	chat.Show("A", c.guild, c:Name(), c.class, "во все вкладки")
+	T.eq(c:Saw("во все вкладки"), 1)
+	T.eq(Has(first.lines, "во все вкладки"), 1)
+	T.eq(Has(second.lines, "во все вкладки"), 1)
+	T.eq(HistoryHas(c, "A", "во все вкладки"), 1, "история не размножается")
+	c:Slash("/chillzone", "history 1")
+	T.eq(c:Saw("во все вкладки"), 2)
+	T.eq(Has(first.lines, "во все вкладки"), 2)
+	T.eq(Has(second.lines, "во все вкладки"), 2)
+
+	-- Основное окно по собственному названию не создаёт второй копии.
+	T.ok(chat.SetWindow("ОБЩИЙ"))
+	T.same(c.ns.char.chatWindows, { "" })
+	c.ns.UI.Render()
+	T.ok(p.items[1].check:IsShown(), "открытый список обновляется после изменения выбора командой")
+	T.no(p.items[2].check:IsShown() or p.items[3].check:IsShown())
+	T.no(chat.ToggleWindow(""), "последняя вкладка остаётся выбрана")
+	T.ok(chat.ToggleWindow("ЧИЛЛЗОН"))
+	T.ok(chat.ToggleWindow("Союз"))
+	T.ok(chat.ToggleWindow(""))
+	T.no(chat.ToggleWindow("нет такой вкладки"))
+	T.same(c.ns.char.chatWindows, { "Чиллзон", "Союз" })
+
+	-- Одна вкладка закрыта: пишем в оставшуюся, не добавляя основное окно.
+	c:ChatWindow(3, "Чиллзон", true)
+	chat.Show("A", c.guild, c:Name(), c.class, "в оставшуюся")
+	T.eq(Has(first.lines, "в оставшуюся"), 0)
+	T.eq(Has(second.lines, "в оставшуюся"), 1)
+	T.eq(c:Saw("в оставшуюся"), 0)
+	-- Переименовали и последнюю: одна резервная копия и по одному предупреждению.
+	c:ChatWindow(4, "Другое")
+	chat.Show("A", c.guild, c:Name(), c.class, "резервная копия")
+	chat.Show("A", c.guild, c:Name(), c.class, "ещё резервная")
+	T.eq(c:Saw("резервная копия"), 1)
+	T.eq(c:Saw("ещё резервная"), 1)
+	T.eq(c:Saw("вкладки чата «Чиллзон» нет"), 1)
+	T.eq(c:Saw("вкладки чата «Союз» нет"), 1)
+	c:ChatWindow(3, "Чиллзон")
+	chat.Show("A", c.guild, c:Name(), c.class, "вкладка вернулась")
+	T.eq(Has(first.lines, "вкладка вернулась"), 1)
+	T.eq(c:Saw("вкладка вернулась"), 0)
+
+	-- Закрытую вкладку можно убрать из выбора прямо в списке.
+	c.ns.UI.Render()
+	if p.list:IsShown() then p.button.scripts.OnClick(p.button) end
+	p.button.scripts.OnClick(p.button)
+	T.eq(p.items[4].text:GetText(), "|cffff6060«Союз» закрыта|r")
+	p.items[4].scripts.OnClick(p.items[4])
+	T.same(c.ns.char.chatWindows, { "Чиллзон" })
+	T.ok(p.list:IsShown())
+	T.no(p.items[4]:IsShown())
+	c.ns.char.chatMirror = false
+	c.ns.UI.Render()
+	T.no(p.list:IsShown(), "отключение копий закрывает список")
+	chat.Show("A", c.guild, c:Name(), c.class, "копии выключены")
+	T.eq(Has(first.lines, "копии выключены"), 0)
+	T.eq(HistoryHas(c, "A", "копии выключены"), 1)
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("окно: прежняя вкладка переносится в список, выбор переживает перезагрузку", function()
+	local w, c = SlashClient()
+	local db, key = c.ns.db, c.ns.myKey
+	c:Logout()
+	db.chars[key].chatWindows = nil
+	db.chars[key].chatWindow = "Старая вкладка"
+	local function Login()
+		return w:Client({ first = c.first, surname = c.surname, guild = c.guild, db = db })
+	end
+	c = Login()
+	T.same(c.ns.char.chatWindows, { "Старая вкладка" }, "сохраняется даже пока вкладка не открыта")
+	c:ChatWindow(3, "Старая вкладка")
+	T.ok(c.ns.Chat.ToggleWindow(""))
+	c:Logout()
+	c = Login()
+	T.same(c.ns.char.chatWindows, { "Старая вкладка", "" }, "весь выбор сохранён")
+	c:Logout()
+	db.chars[key].chatWindows = nil
+	db.chars[key].chatWindow = false
+	c = Login()
+	T.same(c.ns.char.chatWindows, { "" }, "прежнее основное окно тоже перенесено")
+	c:Logout()
+	db.chars[key].chatWindows = nil
+	db.chars[key].chatWindow = "Общий"
+	c = Login()
+	T.same(c.ns.char.chatWindows, { "" }, "основное окно по названию тоже переносится в основную галочку")
+	T.no(c.ns.Chat.ToggleWindow("Общий"), "последнюю галочку нельзя снять и по названию окна")
+	T.same(c.ns.char.chatWindows, { "" }, "повторная галочка основного окна не добавляет дубликат")
 end)
 
 T.test("окно: люди справа", function()

@@ -95,6 +95,15 @@ function Chat.Windows()
 	return out
 end
 
+local function SendToChattynator(target, ...)
+	-- Chattynator определяет источник строки по вызвавшему файлу.
+	target.send(target.window, target.tab, ...)
+end
+
+local function AddToChattynator(target, ...)
+	ns.SafeCall("chattynator mirror", SendToChattynator, target, ...)
+end
+
 function Chat.MirrorWindows()
 	local addon = rawget(_G, "Chattynator")
 	if type(addon) ~= "table" then return Chat.Windows() end
@@ -110,7 +119,7 @@ function Chat.MirrorWindows()
 			-- Специальная вкладка Chillzone получает строки прямо из истории.
 			if U.Fold(name) ~= U.Fold(L.CHAT_TAB_NAME) then
 				out[#out + 1] = { name = name, key = key, window = windowIndex, tab = tabIndex,
-					send = api.AddMessageToWindowAndTab }
+					send = api.AddMessageToWindowAndTab, AddMessage = AddToChattynator }
 			end
 		end
 	end
@@ -126,57 +135,90 @@ local function WindowByName(name)
 	return nil
 end
 
--- Выбранная вкладка: название (nil — основное окно) и открыта ли она сейчас.
-function Chat.Window()
-	local name = ns.char and ns.char.chatWindow
-	if not name then return nil, true end
-	return name, WindowByName(name) ~= nil
+-- Список выбранных названий; пустая строка — основное окно независимо от его названия.
+-- Прежний одиночный выбор переносим даже для закрытой вкладки.
+function Chat.SelectedWindows()
+	if not ns.char then return { "" } end
+	if type(ns.char.chatWindows) ~= "table" or #ns.char.chatWindows == 0 then
+		local name = ns.char.chatWindow or ""
+		local w = WindowByName(name)
+		ns.char.chatWindows = { w and (w.frame == DEFAULT_CHAT_FRAME and "" or w.name) or name }
+	end
+	return ns.char.chatWindows
 end
 
-local windowWarned = false -- уже сказали, что выбранной вкладки нет
+ns.On("LOGIN", Chat.SelectedWindows)
+
+function Chat.WindowSelected(name)
+	for _, chosen in ipairs(Chat.SelectedWindows()) do
+		if U.Fold(chosen) == U.Fold(name) then return true end
+	end
+	return false
+end
+
+local windowWarned = {} -- о каких пропавших вкладках уже предупредили
 
 -- Куда писать копии строк: name — название вкладки, nil или "" — основное окно. Вкладку
 -- ищем без учёта регистра, запоминаем её название как в игре. false — такой вкладки нет.
 function Chat.SetWindow(name)
-	windowWarned = false
 	if not name or name == "" then
-		ns.char.chatWindow = false
+		ns.char.chatWindows = { "" }
+		windowWarned = {}
 		return true
 	end
 	local w = WindowByName(name)
 	if not w then return false end
-	ns.char.chatWindow = w.name
+	ns.char.chatWindows = { w.frame == DEFAULT_CHAT_FRAME and "" or w.name }
+	windowWarned = {}
 	return true
 end
 
-local function MirrorTarget()
-	local name = ns.char and ns.char.chatWindow
-	if name then
-		local w = WindowByName(name)
-		if w then
-			windowWarned = false
-			return w
-		end
-		-- Вкладку закрыли или переименовали: строки идут в основное окно, предупреждаем один раз.
-		if not windowWarned then
-			windowWarned = true
-			ns.Print(L.CHAT_WINDOW_GONE, name)
+-- Галочка в настройках добавляет или убирает вкладку, оставляя хотя бы одну.
+-- Выключение всех копий — отдельная настройка chatMirror.
+function Chat.ToggleWindow(name)
+	local w = name ~= "" and WindowByName(name)
+	if w then name = w.frame == DEFAULT_CHAT_FRAME and "" or w.name end
+	local chosen = Chat.SelectedWindows()
+	for i, value in ipairs(chosen) do
+		if U.Fold(value) == U.Fold(name) then
+			if #chosen == 1 then return false end
+			table.remove(chosen, i)
+			windowWarned[value] = nil
+			return true
 		end
 	end
-	if DEFAULT_CHAT_FRAME then return { frame = DEFAULT_CHAT_FRAME } end
+	if name ~= "" and not w then return false end
+	chosen[#chosen + 1] = name == "" and "" or w.name
+	return true
 end
 
-local function SendToChattynator(target, ...)
-	-- Chattynator определяет источник строки по вызвавшему файлу.
-	target.send(target.window, target.tab, ...)
-end
-
-local function AddMirror(target, ...)
-	if target.frame then
-		target.frame:AddMessage(...)
-	else
-		ns.SafeCall("chattynator mirror", SendToChattynator, target, ...)
+-- У вкладок Chattynator нет штатного фрейма: AddMessage вызывает его API из этого файла.
+-- Так чат, история и отладка используют один список назначений и один источник для фильтров.
+function Chat.Frames()
+	local out, used, missing = {}, {}, {}
+	for _, name in ipairs(Chat.SelectedWindows()) do
+		local w = name ~= "" and WindowByName(name)
+		local f = name == "" and DEFAULT_CHAT_FRAME or (w and (w.frame or w))
+		if f then
+			windowWarned[name] = nil
+			local key = w and not w.frame and (w.window .. ":" .. w.tab) or f
+			if not used[key] then out[#out + 1], used[key] = f, true end
+		else
+			missing[#missing + 1] = name
+		end
 	end
+	-- Пока открыта хоть одна выбранная вкладка, пишем только в выбранные.
+	-- Если пропали все, одна резервная копия идёт в основное окно.
+	if #out == 0 then
+		out[1] = DEFAULT_CHAT_FRAME
+		for _, name in ipairs(missing) do
+			if not windowWarned[name] then
+				windowWarned[name] = true
+				ns.Print(L.CHAT_WINDOW_GONE, name)
+			end
+		end
+	end
+	return out
 end
 
 -- Метка канала в чате игры: ссылка addon:Chillzone:chan:<tier>, цветом канала.
@@ -264,15 +306,15 @@ end
 function Chat.Show(tier, guild, sender, class, text)
 	Chat.stats.shown = Chat.stats.shown + 1
 	local tab = ns.ChatTab and ns.ChatTab.OutputFrame()
-	local mirror
-	if not ns.char or ns.char.chatMirror ~= false then
-		mirror = MirrorTarget()
-	end
-	if tab or mirror then
-		local line = Chat.Format(tier, guild, sender, class, text)
+	local frames = (not ns.char or ns.char.chatMirror ~= false) and Chat.Frames() or {}
+	if tab or #frames > 0 then
+		local stamp = (ns.char and ns.char.chatTime and date) and ("|cff999999" .. date("%H:%M", ns.ServerTime()) .. "|r ") or ""
+		local line = stamp .. Chat.Format(tier, guild, sender, class, text)
 		local r, g, b = Chat.Color(tier)
 		if tab then tab:AddMessage(line, r, g, b) end
-		if mirror and (not tab or mirror.frame ~= tab) then AddMirror(mirror, line, r, g, b) end
+		for _, f in ipairs(frames) do
+			if f ~= tab then f:AddMessage(line, r, g, b) end
+		end
 	end
 	Chat.Remember(tier, guild, sender, class, text)
 end
@@ -473,22 +515,31 @@ function Chat.Submit(channel, text)
 	return Chat.Send(channel, text)
 end
 
--- /cz и кириллические алиасы всегда принадлежат чату, включая слова settings/status.
--- Ввод остаётся в игровом поле; сообщение отправляется только после Enter.
+-- Нумерованные алиасы отправляют любой текст в выбранный канал.
+-- Ввод остаётся в игровом поле; разбор выполняется только после Enter.
 for i, tier in ipairs({ "A", "C", "L" }) do
 	_G["SLASH_CHILLZONE" .. tier .. "1"] = "/cz" .. i
 	_G["SLASH_CHILLZONE" .. tier .. "2"] = "/чз" .. i
 	SlashCmdList["CHILLZONE" .. tier] = function(msg)
 		if U.Trim(msg) == "" then
-			ns.Print(L.CHAT_USAGE)
+			if Chat.MyLevel() < Chat.TIER_LEVEL[tier] then
+				ns.Print(L.CHAT_NO_RIGHTS, L["TIER_" .. tier])
+				return
+			end
+			ns.SafeCall("/cz" .. i, ns.UI.OpenChat, tier, true)
 			return
 		end
 		ns.SafeCall("/cz" .. i, Chat.Send, tier, msg or "")
 	end
 end
-_G.SLASH_CHILLZONEA3 = "/cz"
-_G.SLASH_CHILLZONEA4 = "/чз"
-_G.SLASH_CHILLZONEA5 = "/чиллзон"
+-- Короткие алиасы: известная команда выполняется, остальной текст уходит всем.
+_G.SLASH_CHILLZONECHAT1 = "/cz"
+_G.SLASH_CHILLZONECHAT2 = "/чз"
+_G.SLASH_CHILLZONECHAT3 = "/чиллзон"
+SlashCmdList.CHILLZONECHAT = function(msg)
+	if not ns.me then return end
+	if not ns.RunCommand(msg) then SlashCmdList.CHILLZONEA(msg) end
+end
 
 ---------------------------------------------------------------------------
 -- Клик по метке канала в чате игры. Ссылки addon: игра на Forever отдаёт своему
@@ -588,8 +639,8 @@ ns.Command("window", function(arg)
 		ns.Print(L.CHAT_WINDOW_MISSING, arg, table.concat(names, ", "))
 		return
 	end
-	local name = Chat.Window()
-	if name then ns.Print(L.CHAT_WINDOW_SET, name) else ns.Print(L.CHAT_WINDOW_MAIN) end
+	local name = Chat.SelectedWindows()[1]
+	if name ~= "" then ns.Print(L.CHAT_WINDOW_SET, name) else ns.Print(L.CHAT_WINDOW_MAIN) end
 end, L.HELP_WINDOW)
 
 ns.Command("ignore", function(arg)
@@ -618,12 +669,11 @@ ns.Command("history", function(arg)
 		return
 	end
 	local list = ns.store.chat[tier]
-	local target = MirrorTarget()
-	if not target then return end
+	local frames = Chat.Frames()
 	for i = math.max(1, #list - 19), #list do
 		local e = list[i]
-		local prefix = "|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r "
-		AddMirror(target, prefix .. Chat.Format(tier, e.g, e.s, e.c, e.x), Chat.Color(tier))
+		local line = "|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r " .. Chat.Format(tier, e.g, e.s, e.c, e.x)
+		for _, f in ipairs(frames) do f:AddMessage(line, Chat.Color(tier)) end
 	end
 end, L.HELP_HISTORY)
 

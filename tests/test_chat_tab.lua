@@ -93,6 +93,7 @@ T.test("chat tab: копия союза идёт в выбранную вкла�
 	local h, ns, env = BuildChattynator()
 	local native = h.client:ChatWindow(4, "Гильдия")
 	ns.char.chatWindow = "Гильдия" -- Сохранённый выбор из штатного чата.
+	ns.char.chatWindows = nil
 	ns.char.chatMirror = true
 	env.GUILD = "Гильдия"
 	local tabs = { { "GENERAL", ns.L.CHAT_TAB_NAME }, { "GUILD" } }
@@ -114,7 +115,7 @@ T.test("chat tab: копия союза идёт в выбранную вкла�
 	T.same(h.messages.lines, { line })
 	T.eq(#ns.Chat.History("A"), 1)
 	T.ok(ns.Chat.SetWindow("GUILD"))
-	T.eq(ns.Chat.Window(), "Гильдия")
+	T.same(ns.Chat.SelectedWindows(), { "Гильдия" })
 	T.no(ns.Chat.SetWindow(ns.L.CHAT_TAB_NAME), "специальная вкладка получает строки отдельно")
 
 	ns.char.chatMirror = false
@@ -129,6 +130,84 @@ T.test("chat tab: копия союза идёт в выбранную вкла�
 	T.eq(h.client:Saw("Вкладка закрыта"), 1, "при закрытии вкладки копия идёт в основное окно")
 	T.eq(#native.lines, 0)
 	T.eq(#h.messages.lines, 3)
+end)
+
+T.test("chat tab: несколько вкладок Chattynator получают чат, историю и отладку", function()
+	local h, ns, env = BuildChattynator()
+	env.GUILD = "Гильдия"
+	local tabs = { { "GENERAL", "GUILD", ns.L.CHAT_TAB_NAME }, { "Торговля" } }
+	local delivered = {}
+	local api = env.Chattynator.API
+	api.GetWindowsAndTabs = function() return tabs end
+	api.AddMessageToWindowAndTab = function(window, tab, line)
+		T.ok(debug.getinfo(2, "S").source:find("Chillzone/Chat.lua", 1, true), "источник для фильтров Chattynator — Chillzone")
+		delivered[#delivered + 1] = { window, tab, line }
+	end
+	T.ok(ns.Chat.SetWindow("Гильдия"))
+	T.ok(ns.Chat.ToggleWindow("Торговля"))
+	ns.UI.Toggle("settings")
+	local p = ns.UI.picker
+	T.eq(p.button:GetText(), "Выбрано вкладок: 2")
+	p.button.scripts.OnClick(p.button)
+	T.eq(p.items[3].text:GetText(), "Гильдия")
+	T.ok(p.items[3].check:IsShown())
+	T.eq(p.items[4].text:GetText(), "Торговля")
+	T.ok(p.items[4].check:IsShown())
+	T.no(p.items[5] and p.items[5]:IsShown(), "специальная вкладка не дублируется в списке")
+	T.ok(ns.Chat.ToggleWindow("GUILD"), "ключ Chattynator снимает выбранную вкладку")
+	T.same(ns.Chat.SelectedWindows(), { "Торговля" })
+	T.ok(ns.Chat.ToggleWindow("GUILD"))
+	T.same(ns.Chat.SelectedWindows(), { "Торговля", "Гильдия" })
+	ns.char.chatTime = true
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Во все выбранные")
+	local line = "|cff999999" .. env.date("%H:%M", ns.ServerTime()) .. "|r "
+		.. ns.Chat.Format("A", "Чиллзон", "Автор Чата", "MAGE", "Во все выбранные")
+	T.same(delivered, { { 2, 1, line }, { 1, 2, line } })
+	T.eq(h.client:Saw("Во все выбранные"), 0)
+	h.client:Slash("/chillzone", "history 1")
+	T.same(delivered[3], delivered[1])
+	T.same(delivered[4], delivered[2])
+	ns.char.chatMirror = false
+	ns.db.settings.debug = true
+	ns.Log("Журнал союза")
+	T.eq(delivered[5][1], 2)
+	T.eq(delivered[6][1], 1)
+	T.ok(delivered[5][3]:find("Журнал союза", 1, true))
+	ns.db.settings.debug = false
+	ns.db.errors = { "Сохранённая ошибка" }
+	h.client:Slash("/chillzone", "log 1")
+	T.ok(delivered[#delivered - 1][3]:find("Сохранённая ошибка", 1, true))
+	T.ok(delivered[#delivered][3]:find("Сохранённая ошибка", 1, true))
+	ns.db.errors = {}
+
+	ns.char.chatMirror = true
+	tabs[2] = nil
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Оставшаяся вкладка")
+	T.eq(delivered[#delivered][1], 1)
+	T.eq(h.client:Saw("Оставшаяся вкладка"), 0)
+	ns.UI.Render()
+	T.eq(p.items[4].text:GetText(), "|cffff6060«Торговля» закрыта|r")
+	p.items[4].scripts.OnClick(p.items[4])
+	T.same(ns.Chat.SelectedWindows(), { "Гильдия" })
+	T.no(p.items[4]:IsShown())
+	T.eq(#ns.db.errors, 0)
+end)
+
+T.test("chat tab: время видно в специальной вкладке Chattynator и её истории", function()
+	local h, ns, env = BuildChattynator()
+	ns.char.chatMirror = false
+	ns.char.chatTime = true
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Из истории")
+	h:Mount(1)
+	local prefix = "|cff999999" .. env.date("%H:%M", ns.ServerTime()) .. "|r "
+	T.eq(h.messages.lines[1]:sub(1, #prefix), prefix)
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Новая строка")
+	T.eq(h.messages.lines[2]:sub(1, #prefix), prefix)
+	ns.char.chatTime = false
+	ns.Fire("SETTINGS")
+	T.no(h.messages.lines[1]:sub(1, #prefix) == prefix)
+	T.no(h.messages.lines[2]:sub(1, #prefix) == prefix)
+	T.eq(#ns.db.errors, 0)
 end)
 
 T.test("chat tab: метка союза фокусирует ввод в штатной вкладке", function()
@@ -411,10 +490,11 @@ T.test("chat tab: открытие вкладки не меняет настро
 	h.client:ChatWindow(4, "Гильдия")
 	T.ok(ns.Chat.SetWindow("Гильдия"))
 	ns.char.chatMirror = false
+	ns.char.chatTime = true
 	T.ok(ns.ChatTab.Open())
 	h:Tick()
 	T.eq(h.opened, 1)
-	T.eq(ns.char.chatWindow, "Гильдия")
+	T.same(ns.Chat.SelectedWindows(), { "Гильдия" })
 	T.eq(ns.char.chatTab, ns.L.CHAT_TAB_NAME)
 	T.eq(ns.char.chatMirror, false)
 	T.ok(h.box and h.box:IsShown())
@@ -423,6 +503,8 @@ T.test("chat tab: открытие вкладки не меняет настро
 
 	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Проверка новой вкладки")
 	T.eq(#h.tab.lines, 1, "строка видна во вкладке союза при выключенном дублировании")
+	local prefix = "|cff999999" .. env.date("%H:%M", ns.ServerTime()) .. "|r "
+	T.eq(h.tab.lines[1]:sub(1, #prefix), prefix)
 	T.ok(h.tab.lines[1]:find("Проверка новой вкладки", 1, true))
 	T.eq(#env.ChatFrame4.lines, 0)
 	T.eq(h.client:Saw("Проверка новой вкладки"), 0)
