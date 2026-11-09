@@ -435,6 +435,11 @@ T.test("relay: смена репортёра — чат гильдии не те
 	end
 	w:Run(15); Line(1)
 	w:Run(15); Line(2)
+	-- Кандидатом Алла становится, когда получит сертификат и объявит готовность в H1.
+	for _ = 1, 30 do
+		if c.B.ns.Census.Reporter() == alla then break end
+		w:Run(1)
+	end
 	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия уже выбрала Аллу; членство=" .. tostring(Al.ns.IsMember())
 		.. "; сертификат=" .. tostring(Al.ns.Security.MyCertificate() ~= nil) .. "; ошибки=" .. table.concat(Al.ns.db.errors, "; "))
 	T.no(Al.ns.Census.IsReporter(), "Алла после входа ещё молчит")
@@ -484,8 +489,12 @@ T.test("relay: офицер без сертификата не прерывае�
 	T.eq(c.B:Saw("Строка до входа офицера"), 1)
 
 	local alla = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 1 })
+	-- Состав подтвердить некому, а без него Алла не шлёт H1 и флаг n не дойдёт до Бориса.
+	alla.ns.store.security.union[alla.ns.Util.GuildKey(guild)] = { active = true }
 	w:Run(config.REPORTER_HANDOVER + config.LOGIN_QUIET)
+	T.ok(alla.ns.IsMember(), "Алла в составе объединения")
 	T.no(alla.ns.Security.MyCertificate(), "издателя нет, Алла ждёт сертификат")
+	T.ok(c.B.ns.Census.Peers()[Key(c.B, alla:Name())].unready, "Борис знает, что Алла не готова")
 	c.G:Slash("/cz1", "Строка в ожидании сертификата")
 	w:Run(30)
 	T.eq(c.B:Saw("Строка в ожидании сертификата"), 1, "доставка сохраняется и после окна передачи")
