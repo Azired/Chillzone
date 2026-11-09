@@ -101,12 +101,13 @@ local function Issue(name, public, active, manual)
     local list = Store()[U.GuildKey(guild)] or {}
     local old, now = list[key], ns.ServerTime()
     local revision = (old and old.root == root.public and old.revision or 0) + 1
+    local scope = ns.Roster.RankOf(name) == 0 and "leader" or "issuer"
     local body = Pack("ISSUER", { ns.group, ns.faction, guild, U.Display(name), public,
-        now, now + C.AUTH_ISSUER_TTL, active and "1" or "0", revision, root.public,
-        ns.Roster.RankOf(name) == 0 and "leader" or "issuer" })
+        now, now + C.AUTH_ISSUER_TTL, active and "1" or "0", revision, root.public, scope })
     local function Guard()
         return IsRoot() and ns.MyGuild() == guild and S.MyRoot() == root
-            and (not active or ns.Roster.IsOfficerRank(ns.Roster.RankOf(name)))
+            and (not active or (ns.Roster.IsOfficerRank(ns.Roster.RankOf(name))
+                and scope == (ns.Roster.RankOf(name) == 0 and "leader" or "issuer")))
     end
     pending[key] = true
     local queued = S.SignControl(body, Guard, function(sig)

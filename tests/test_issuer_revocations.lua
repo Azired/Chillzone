@@ -181,3 +181,37 @@ T.test("issuer-revoke: старое хранилище без таблицы о�
     T.ok(v.ns.Issuers.Current(grant.raw), "первый доступ инициализирует новое хранилище")
     Errors(w)
 end)
+
+T.test("issuer-revoke: корень не выдаёт право главы после смены звания во время подписи", function()
+    local w, _, p, v, o = Build()
+    for i, row in ipairs(w.guilds[p.guild].members) do
+        if row.full then table.remove(w.guilds[p.guild].members, i); break end
+    end
+    p = w:Client({ first = p.first, surname = p.surname, guild = p.guild, rank = p.rank, db = p.ns.db })
+    w:Run(30)
+    local Ed, sign, send = p.ns.Ed25519, p.ns.Ed25519.Sign, p.ns.Comm.Send
+    local changed, published = false, false
+    Ed.Sign = function(seed, body, pk)
+        local sig = sign(seed, body, pk)
+        local fields = p.ns.Security.Control.Unpack(body, "ISSUER", 11, 700)
+        if fields and fields[4] == o:Name() and fields[11] == "leader" then
+            o.rank, v.rank, changed = 1, 0, true
+            p.ns.Roster.Scan()
+        end
+        return sig
+    end
+    p.ns.Comm.Send = function(dist, msg, opts)
+        local encoded = msg:match("^KD~([%w_-]+)$")
+        local d = encoded and p.ns.Issuers.Read(Ed.FromB64(encoded))
+        if d and d.name == o:Name() and d.scope == "leader" then published = true end
+        return send(dist, msg, opts)
+    end
+    o.rank, v.rank = 0, 1
+    p.ns.Roster.Scan()
+    T.ok(p.ns.Issuers.Grant(o:Name(), o.ns.Security.PublicKey()), "начата выдача по свежему званию главы")
+    w:Run(2)
+    Ed.Sign, p.ns.Comm.Send = sign, send
+    T.ok(changed, "звание изменилось после настоящей подписи корня")
+    T.no(published, "отменённый допуск главы не поставлен в сеть")
+    Errors(w)
+end)
