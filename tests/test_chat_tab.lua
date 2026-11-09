@@ -48,6 +48,7 @@ local function Build()
 		return f
 	end
 	env.UIParent = env.UIParent or create("Frame")
+	env.UIParent:Show()
 	env.GameTooltip = { Hide = function() end }
 	env.GENERAL_CHAT_DOCK = { IsVisible = function() return true end }
 	env.FCFDock_GetSelectedWindow = function() return h.selected end
@@ -82,6 +83,7 @@ local function BuildChattynator()
 		function window.GetID() return windowID end
 		local holder = env.CreateFrame("Frame", nil, window)
 		self.install(holder)
+		T.eq(#ns.db.errors, 0, ns.db.errors[1])
 		return holder
 	end
 	return h, ns, env
@@ -147,6 +149,35 @@ T.test("chat tab: специальная вкладка Chattynator показы
 	Show()
 	T.eq(messages[5], native[#native])
 	T.eq(#ns.db.errors, 0)
+end)
+
+T.test("chat tab: Chattynator обновляет историю при изменении доступа к союзу", function()
+	local h, ns = BuildChattynator()
+	local member = true
+	ns.IsMember = function() return member end
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Строка истории")
+	h:Mount(1)
+	local messages = h.messages
+	local line = messages.lines[1]
+	T.ok(line and line:find("Строка истории", 1, true))
+	local scrolls = 0
+	function messages.ScrollToBottom() scrolls = scrolls + 1 end
+
+	ns.Fire("UNION")
+	T.same(messages.lines, { line })
+	T.eq(scrolls, 0, "продление решения не сбрасывает прокрутку")
+
+	member = false
+	ns.Fire("UNION")
+	T.same(messages.lines, { ns.L.CHAT_TAB_NOT_MEMBER })
+	T.eq(scrolls, 1, "история скрыта сразу")
+	ns.Fire("UNION")
+	T.eq(scrolls, 1)
+
+	member = true
+	ns.Fire("UNION")
+	T.same(messages.lines, { line })
+	T.eq(scrolls, 2, "история возвращается сразу")
 end)
 
 T.test("chat tab: ввод в Chattynator отправляет в союз и возвращает штатную строку", function()
@@ -377,6 +408,7 @@ T.test("chat tab: строки идут в две открытые вкладк�
 	local guildTab = h.client:ChatWindow(4, "Гильдия")
 	T.ok(ns.Chat.SetWindow("Гильдия"))
 	ns.char.chatMirror = true
+	ns.db.settings.chatColor = "ffb347"
 	T.ok(ns.ChatTab.Open())
 	h.selected = guildTab
 	h.tab:Hide()
@@ -388,6 +420,8 @@ T.test("chat tab: строки идут в две открытые вкладк�
 	T.eq(#h.tab.lines, 1)
 	T.eq(#guildTab.lines, 1)
 	T.eq(h.tab.lines[1], guildTab.lines[1])
+	T.same(h.tab.color, { 1, 179 / 255, 71 / 255 }, "вкладка союза использует выбранный цвет")
+	T.same(guildTab.color, h.tab.color, "копия использует тот же цвет")
 	T.eq(#history, before + 1)
 
 	T.ok(ns.Chat.SetWindow(ns.L.CHAT_TAB_NAME))

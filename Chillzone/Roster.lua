@@ -10,6 +10,7 @@ ns.Roster = Roster
 
 Roster.byKey = {} -- [Key] = rankIndex
 Roster.rankNames = {} -- [Key] = название звания
+Roster.online = {} -- [Key] = в игре ли по последнему чтению ростера
 Roster.members = {} -- строки ростера: { name, key, rank, rankName, level, class, zone, online, days }
 Roster.report = nil -- последний отчёт о своей гильдии
 Roster.guild = nil
@@ -47,6 +48,15 @@ function Roster.Fresh()
 	local guild = ns.MyGuild()
 	return guild ~= nil and Roster.guild == guild and Roster.scannedAt ~= nil
 		and ns.Now() - Roster.scannedAt <= C.AUTH_ROSTER_TTL
+end
+
+-- Вышел ли согильдиец из игры после привета, услышанного в heardAt: свежий ростер прочитан
+-- заметно позже привета и показывает его вне игры. Привет новее чтения важнее ростера: тот
+-- мог не успеть узнать о входе, а снять с выборов живого репортёра хуже, чем подождать
+-- следующего чтения.
+function Roster.LeftGame(key, heardAt)
+	if Roster.online[key] ~= false or not Roster.Fresh() then return false end
+	return Roster.scannedAt - heardAt > C.ROSTER_LAG
 end
 
 ---------------------------------------------------------------------------
@@ -170,7 +180,7 @@ function Roster.Scan()
 	if not numTotal or numTotal == 0 then return end
 	lastScan = ns.Now()
 	rankOfficer = {} -- права званий могли поменяться
-	local rows, byKey, rankNames = {}, {}, {}
+	local rows, byKey, rankNames, onlineByKey = {}, {}, {}, {}
 	for i = 1, numTotal do
 		local name, rankName, rankIndex, level, _, zone, _, _, isOnline, _, classFile = GetGuildRosterInfo(i)
 		if name then
@@ -180,6 +190,7 @@ function Roster.Scan()
 				byKey[key] = rankIndex
 				rankNames[key] = rankName
 				local online = isOnline and true or false
+				onlineByKey[key] = online
 				rows[#rows + 1] = {
 					name = U.Normal(name), key = key, rank = rankIndex, rankName = rankName,
 					officer = Roster.IsOfficerRank(rankIndex),
@@ -192,6 +203,7 @@ function Roster.Scan()
 		end
 	end
 	Roster.byKey, Roster.rankNames, Roster.members, Roster.guild = byKey, rankNames, rows, guild
+	Roster.online = onlineByKey
 	Roster.scannedAt = ns.Now()
 	local r = Roster.Build(guild, rows, numOnline, ns.faction, ns.ServerTime())
 	if ns.Census then r.users = ns.Census.Users() end
@@ -227,6 +239,7 @@ ns.RegisterEvent("PLAYER_GUILD_UPDATE", function(unit)
 		guildChangeQueued = false
 		if not ns.MyGuild() then
 			Roster.byKey, Roster.rankNames, Roster.members, Roster.report, Roster.guild = {}, {}, {}, nil, nil
+			Roster.online = {}
 		end
 		rankOfficer = {}
 		Roster.RequestScan(true)

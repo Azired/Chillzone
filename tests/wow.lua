@@ -180,6 +180,7 @@ local function NewFrame(c, name)
 		end
 	end
 	function methods.IsShown(self) return self.shown end
+	function methods.IsVisible(self) return self.shown end
 	function methods.Show(self)
 		if self.shown then return end
 		self.shown = true
@@ -201,7 +202,11 @@ local function NewFrame(c, name)
 	function methods.HasFocus(self) return c.focus == self end
 	function methods.SetChecked(self, on) self.checked = on and true or false end
 	function methods.GetChecked(self) return self.checked end
-	function methods.AddMessage(self, t) self.lines[#self.lines + 1] = t end
+	function methods.SetEnabled(self, on) self.enabled = on and true or false end
+	function methods.AddMessage(self, t, r, g, b)
+		self.lines[#self.lines + 1] = t
+		self.color = { r, g, b }
+	end
 	function methods.Clear(self) self.lines = {} end
 	function methods.AtBottom() return true end
 	return setmetatable(f, { __index = function(_, k) return methods[k] or NOOP end })
@@ -235,6 +240,7 @@ local function Env(c)
 		end,
 	}
 	env.CreateFrame = function(_, name) return NewFrame(c, name) end
+	env.GameTooltip = NewFrame(c, "GameTooltip")
 	env.UnitFullName = function(unit) if unit == "player" then return c.first, c.surname end end
 	env.GetNormalizedRealmName = function() return c.realm end
 	env.GetRealmName = function() return c.realm end
@@ -243,7 +249,9 @@ local function Env(c)
 	env.UnitLevel = function() return c.level end
 	env.issecretvalue = function() return false end
 	env.GetMaxPlayerLevel = function() return 60 end
-	c.invites, c.whoQueries = {}, {}
+	c.invites, c.partyInvites, c.whoQueries = {}, {}, {}
+	env.InviteUnit = function(name) c.partyInvites[#c.partyInvites + 1] = name end
+	env.IsMouseButtonDown = function(button) return c.mouseDown == button end
 	env.CanGuildInvite = function()
 		if c.canInvite ~= nil then return c.canInvite end
 		return c.guild ~= nil and c.rank <= 1
@@ -378,7 +386,6 @@ local function Env(c)
 			if o:Guid() == guid then return CLASS_LOCAL[o.class], o.class end
 		end
 	end
-	env.ChatFrameUtil = { InsertLink = function() return false end }
 	env.hooksecurefunc = function(name, fn, callback)
 		if type(name) == "table" then
 			local original = name[fn]
@@ -411,9 +418,15 @@ local function Env(c)
 	env.InCombatLockdown = function() return c.combat == true end
 	env.IsShiftKeyDown = function() return c.shift == true end
 	env.ChatFrame_RemoveChannel = function() end
-	env.ChatFrame_AddMessageEventFilter = function(event, fn)
+	local function AddChatFilter(event, fn)
 		c.filters[event] = c.filters[event] or {}
 		table.insert(c.filters[event], fn)
+	end
+	env.ChatFrameUtil = { InsertLink = function() return false end }
+	if c.chatFilterAPI == "modern" then
+		env.ChatFrameUtil.AddMessageEventFilter = AddChatFilter
+	else
+		env.ChatFrame_AddMessageEventFilter = AddChatFilter
 	end
 	env.ChatFrame1EditBox = NewFrame(c, "ChatFrame1EditBox")
 	env.ChatFrame2EditBox = NewFrame(c, "ChatFrame2EditBox")
@@ -438,12 +451,13 @@ local function Env(c)
 end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
--- поверх Config.lua)
+-- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API)
 function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
 		level = opts.level or 60, zone = opts.zone or "Штормград", online = true,
+		chatFilterAPI = opts.chatFilterAPI,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
 	}, Client)
@@ -452,7 +466,12 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		if not f:find("^libs/") or f == "libs/Ed25519.lua" then
-			T.load({ f }, c.env, c.ns)
+			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
+				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
+				setfenv(chunk, c.env)("Chillzone", c.ns)
+			else
+				T.load({ f }, c.env, c.ns)
+			end
 			if f == "Config.lua" then
 				for k, v in pairs(opts.config or {}) do c.ns.Config[k] = v end
 			end

@@ -7,8 +7,10 @@ ns.ChattynatorTab = ChattynatorTab
 
 local panels, active, registered = {}, nil, nil
 
-local function CanRead()
-	return ns.char and ns.char.chatOn and ns.IsMember()
+local function ReadWarning()
+	if not ns.IsMember() then return L.CHAT_TAB_NOT_MEMBER end
+	if not ns.char or not ns.char.chatOn then return L.CHAT_TAB_DISABLED end
+	return false
 end
 
 local function ReplaceEmotes(body, addon, messages)
@@ -58,21 +60,21 @@ local function AddLine(messages, entry)
 	messages:AddMessage(line, Chat.Color("A"))
 end
 
-local function Render(panel)
+local function Render(panel, warning)
 	local messages = panel.messages
 	messages:Clear()
-	if CanRead() then
-		for _, entry in ipairs(Chat.History("A")) do AddLine(messages, entry) end
+	if warning then
+		messages:AddMessage(warning)
 	else
-		messages:AddMessage(ns.IsMember() and L.CHAT_TAB_DISABLED or L.CHAT_TAB_NOT_MEMBER)
+		for _, entry in ipairs(Chat.History("A")) do AddLine(messages, entry) end
 	end
 	messages:ScrollToBottom()
-	panel.dirty = false
+	panel.dirty, panel.readWarning = false, warning
 end
 
 local function SelectPanel(panel)
 	if not panel:IsVisible() then return end
-	if panel.dirty then Render(panel) end
+	if panel.dirty then Render(panel, ReadWarning()) end
 	if active ~= panel then
 		active = panel
 		ns.Fire("CHATTYNATOR_TAB")
@@ -141,20 +143,26 @@ function ChattynatorTab.Register()
 	return ok
 end
 
-local function Refresh()
+local function Refresh(onlyChanged)
+	local warning = ReadWarning()
 	for _, panel in pairs(panels) do
-		if panel:IsVisible() then Render(panel) else panel.dirty = true end
+		if not onlyChanged or panel.readWarning ~= warning then
+			if panel:IsVisible() then Render(panel, warning) else panel.dirty = true end
+		end
 	end
 end
 
 ns.On("CHAT", function(channel, entry)
 	if channel ~= "A" then return end
+	local warning = ReadWarning()
 	for _, panel in pairs(panels) do
-		if panel:IsVisible() and CanRead() then AddLine(panel.messages, entry) else panel.dirty = true end
+		if panel:IsVisible() and not warning then AddLine(panel.messages, entry) else panel.dirty = true end
 	end
 end)
-ns.On("SETTINGS", Refresh)
-ns.On("GUILD_CHANGED", Refresh)
+ns.On("SETTINGS", function() Refresh() end)
+ns.On("GUILD_CHANGED", function() Refresh() end)
+-- Продление решения о составе союза не должно сбрасывать прокрутку открытой вкладки.
+ns.On("UNION", function() Refresh(true) end)
 ns.On("LOGIN", function()
 	ChattynatorTab.Register()
 	Refresh()

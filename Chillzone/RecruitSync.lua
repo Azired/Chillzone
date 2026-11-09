@@ -228,7 +228,7 @@ local function Reset()
 	activeGuild, wasOfficer, lastQuery, epoch = nil, false, -math.huge, epoch + 1
 end
 ns.On("GUILD_CHANGED", Reset)
-ns.On("ROSTER", function()
+local function RefreshOfficers()
 	local guild = ns.MyGuild()
 	if activeGuild and activeGuild ~= guild then Reset() end
 	activeGuild = guild
@@ -251,7 +251,9 @@ ns.On("ROSTER", function()
 		if not knownOfficers[key] then Snapshot(to) end
 	end)
 	knownOfficers = current
-end)
+end
+ns.On("ROSTER", RefreshOfficers)
+ns.On("UNION", RefreshOfficers)
 ns.On("LOGIN", function()
 	ns.Every(1.2, "заявки: передача очереди", Sync.Pump, true)
 	ns.Every(120, "заявки: сверка очереди", Sync.RequestSync)

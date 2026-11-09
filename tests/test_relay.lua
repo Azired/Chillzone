@@ -29,8 +29,8 @@ local function Build(opts)
 	if not opts.run or opts.run > 30 then
 		w:Run(30)
 		w:Init(c.A, c.V, c.G)
-		w:Pair(c.V, c.A)
-		w:Pair(c.G, c.A)
+		w:Pair(c.V, c.K)
+		w:Pair(c.G, c.K)
 	end
 	w:Run(opts.run or 400)
 	if not opts.run or opts.run > 30 then
@@ -44,6 +44,12 @@ end
 
 local function Key(c, name) return c.ns.Util.Key(name) end
 
+-- Выход из игры как на сервере: строка ростера остаётся, но уже вне игры.
+local function Quit(w, cl)
+	cl:Logout()
+	w:AddOffline(cl.guild, cl:Name() .. "-" .. cl.realm, cl.rank, cl.level, cl.class, 0)
+end
+
 -- Настоящие ростер и перепись, но без фоновых таймеров: проверяем точные границы
 -- REPORT_EVERY / REPORT_IDLE и не смешиваем отправку отчёта с доставкой по сети.
 local function CensusReports(withVeteran)
@@ -54,8 +60,9 @@ local function CensusReports(withVeteran)
 	end
 	local c = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0 })
 	local reports = {}
-	-- Только расписание: подпись здесь завершается синхронно. Настоящие подписи
-	-- и проверка сертификатов покрываются сетевыми и adversarial-тестами.
+	-- Только расписание: считаем репортёра сертифицированным, подпись завершаем синхронно.
+	-- Настоящие подписи и выдача сертификатов проверяются в сетевых тестах.
+	c.ns.Security.MyCertificate = function() return {} end
 	c.ns.Security.Seal = function(raw, done) done(raw); return true end
 	c.ns.Relay.Out = function(mode, raw)
 		T.eq(mode, "L", "режим переписи")
@@ -162,6 +169,8 @@ end)
 
 T.test("relay: согласие делиться зонами переключает репортёра", function()
 	local w, c = Build()
+	for _, cl in pairs(c) do cl:Slash("/chillzone", "zones off") end
+	w:Run(200)
 	c.V:Slash("/chillzone", "zones on")
 	w:Run(200)
 	T.eq(c.B.ns.Census.Reporter(), Key(c.B, "Вера Верная"), "у Бориса")
@@ -208,6 +217,7 @@ T.test("relay: без проверки звания любой участник 
 	T.eq(c.B.ns.Relay.TrustOf("Мира Тихая"), "member", "member credential verified independently of gossip")
 	-- Рядовой Севера с зонами — единственный, кто делится зонами, поэтому репортёр он.
 	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3 })
+	c.B:Slash("/chillzone", "zones off")
 	Ak:Slash("/chillzone", "zones on")
 	w:Run(200)
 	T.eq(Ak.ns.Census.Reporter(), Key(Ak, "Вера Верная"), "zone sharing does not preempt an officer")
@@ -239,13 +249,74 @@ end)
 
 T.test("relay: реле пишет само — без шёпота RL", function()
 	local w, c = Build()
+	w:Run(c.A.ns.Config.RELAY_SETTLE) -- сразу после входа реле шлёт своё и через других
 	local text = "слово реле"
+	local before = #w.log
 	c.A:Slash("/cz1", text)
 	w:Run(30)
-	for _, e in ipairs(w.log) do
+	for i = before + 1, #w.log do
+		local e = w.log[i]
 		T.no(e.from == "Арагорн Светлый" and e.dist == "WHISPER" and e.msg:find("^RL~"), "реле не шепчет RL себе")
 	end
 	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит") end
+end)
+
+T.test("relay: вопрос сразу после ответа не делает живое реле офлайн", function()
+	local w, c = Build()
+	local B = c.B
+	local e = B.ns.Relay.Known()[Key(B, c.A:Name())]
+	T.ok(e, "Борис знает реле")
+	w:Run(10)
+	e.asked, e.down = nil, nil
+	B.ns.Relay.PingAll()
+	T.ok(e.asked, "вопрос задан")
+	for _ = 1, 100 do
+		w:Run(0.1)
+		if not e.asked then break end
+	end
+	T.no(e.asked, "реле ответило")
+	B.ns.Relay.PingAll()
+	w:Run(B.ns.Config.RELAY_TIMEOUT + 2)
+	T.no(e.down, "реле живо, хотя второй вопрос пришёлся на его паузу")
+	B.ns.Relay.PingAll()
+	T.ok(e.asked, "после паузы реле снова спрашивают")
+end)
+
+T.test("relay: регистрация уходит, даже если реле только что подтвердилось", function()
+	local w, c = Build()
+	local V = c.V
+	local gk = V.ns.Util.GuildKey("Чиллзон Север")
+	local e = V.ns.Relay.Known()[Key(V, c.A:Name())]
+	T.ok(e, "Вера знает реле")
+	T.ok(V.ns.Census.IsReporter(), "Вера — репортёр")
+	-- Сертификат реле обновляет verified так же, как ответ: продлевать аренду это не мешает.
+	local ttl = c.A.ns.Relay.REG_TTL
+	for _ = 1, ttl * 2 do
+		e.verified = w.now
+		w:Run(1)
+	end
+	local held = c.A.ns.Relay.Reporters()[gk]
+	T.ok(held and held.key == Key(c.A, V:Name()), "аренда у Веры")
+	T.ok(w.now - held.t <= ttl, "аренда продлевается")
+	T.no(e.asked, "ответа на паузе реле не ждём")
+	T.no(e.down, "живое реле не считается офлайн")
+	T.eq(#V.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("relay: зоны включаются один раз, дальше решает игрок", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	local fresh = w:Client({ first = "Новый", surname = "Игрок", guild = "Чиллзон", rank = 3 })
+	local db = { chars = { [Key(fresh, "Старый Игрок")] = { shareZones = false } } }
+	local old = w:Client({ first = "Старый", surname = "Игрок", guild = "Чиллзон", rank = 3, db = db })
+	w:Run(1)
+	T.eq(fresh.ns.char.shareZones, true, "новый персонаж")
+	T.eq(old.ns.char.shareZones, true, "заходивший раньше персонаж")
+	old:Slash("/chillzone", "zones off")
+	old:Logout()
+	local back = w:Client({ first = "Старый", surname = "Игрок", guild = "Чиллзон", rank = 3, db = db })
+	w:Run(1)
+	T.eq(back.ns.char.shareZones, false, "отказ после включения сохраняется")
 end)
 
 T.test("relay: уровни чата — офицеры и главы", function()
@@ -318,6 +389,8 @@ T.test("census: новый репортёр сохраняет прежнего 
 	local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
 	local census, C = A.ns.Census, A.ns.Config
 	local vera, betta = Key(A, V:Name()), Key(A, B:Name())
+	A.ns.store.security.union[A.ns.Util.GuildKey(A.guild)] = { active = true }
+	A.ns.Security.MyCertificate = function() return {} end -- проверяем только окно передачи
 	A.ns.Roster.Scan()
 	census.Peers()[vera] = { t = w.now, name = V:Name() }
 	census.Track()
@@ -351,6 +424,8 @@ T.test("census: новый репортёр узнаёт прежнего пос
 	local V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
 	local census, C = A.ns.Census, A.ns.Config
 	local vera = Key(A, V:Name())
+	A.ns.store.security.union[A.ns.Util.GuildKey(A.guild)] = { active = true }
+	A.ns.Security.MyCertificate = function() return {} end -- проверяем только окно передачи
 	A.ns.Roster.Scan()
 	w.now = C.LOGIN_QUIET
 	census.Track()
@@ -390,7 +465,13 @@ T.test("relay: смена репортёра — чат гильдии не те
 	end
 	w:Run(15); Line(1)
 	w:Run(15); Line(2)
-	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия уже выбрала Аллу")
+	-- Кандидатом Алла становится, когда получит сертификат и объявит готовность в H1.
+	for _ = 1, 30 do
+		if c.B.ns.Census.Reporter() == alla then break end
+		w:Run(1)
+	end
+	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия уже выбрала Аллу; членство=" .. tostring(Al.ns.IsMember())
+		.. "; сертификат=" .. tostring(Al.ns.Security.MyCertificate() ~= nil) .. "; ошибки=" .. table.concat(Al.ns.db.errors, "; "))
 	T.no(Al.ns.Census.IsReporter(), "Алла после входа ещё молчит")
 	-- Рядовой Севера пробует перехватить аренду, пока она передаётся: назвать себя
 	-- преемником (RU) и зарегистрироваться (RR).
@@ -421,6 +502,93 @@ T.test("relay: смена репортёра — чат гильдии не те
 	T.eq(Holders()[Key(c.A, "Борис Быстрый")], nil, "рядовой аренду не перехватил")
 	for name, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, name .. ": без ошибок") end
 	T.eq(#Al.ns.db.errors, 0, "Алла: без ошибок")
+end)
+
+T.test("relay: офицер без сертификата не прерывает доставку чата", function()
+	local w, c = Build()
+	local guild = "Чиллзон Север"
+	local config = c.B.ns.Config
+	local boris = Key(c.B, c.B:Name())
+	-- Вера — единственный издатель. После её выхода аренду держит сертифицированный ветеран.
+	c.V:Logout()
+	w:Run(config.PEER_WINDOW + config.LOGIN_QUIET)
+	T.ok(c.B.ns.Security.MyCertificate(), "у Бориса есть сертификат")
+	T.ok(c.B.ns.Census.IsReporter(), "Борис стал репортёром")
+	c.G:Slash("/cz1", "Строка до входа офицера")
+	w:Run(30)
+	T.eq(c.B:Saw("Строка до входа офицера"), 1)
+
+	local alla = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 1 })
+	-- Состав подтвердить некому, а без него Алла не шлёт H1 и флаг n не дойдёт до Бориса.
+	alla.ns.store.security.union[alla.ns.Util.GuildKey(guild)] = { active = true }
+	w:Run(config.REPORTER_HANDOVER + config.LOGIN_QUIET)
+	T.ok(alla.ns.IsMember(), "Алла в составе объединения")
+	T.no(alla.ns.Security.MyCertificate(), "издателя нет, Алла ждёт сертификат")
+	T.ok(c.B.ns.Census.Peers()[Key(c.B, alla:Name())].unready, "Борис знает, что Алла не готова")
+	c.G:Slash("/cz1", "Строка в ожидании сертификата")
+	w:Run(30)
+	T.eq(c.B:Saw("Строка в ожидании сертификата"), 1, "доставка сохраняется и после окна передачи")
+	T.eq(c.B.ns.Census.Reporter(), boris, "Борис сохраняет роль репортёра")
+	T.eq(alla.ns.Census.Reporter(), boris, "Алла тоже выбирает Бориса")
+
+	w:Client({ first = c.V.first, surname = c.V.surname, realm = c.V.realm, guild = guild, rank = c.V.rank, db = c.V.ns.db })
+	w:Run(config.REPORTER_HANDOVER + config.LOGIN_QUIET + 30)
+	T.ok(alla.ns.Security.MyCertificate(), "вернувшийся издатель выдал сертификат")
+	T.ok(alla.ns.Census.IsReporter(), "Алла принимает роль репортёра")
+	T.eq(c.B.ns.Census.Reporter(), Key(c.B, alla:Name()), "Борис выбирает Аллу после выдачи")
+	c.G:Slash("/cz1", "Строка после передачи роли")
+	w:Run(30)
+	T.eq(c.B:Saw("Строка после передачи роли"), 1)
+	T.eq(alla:Saw("Строка после передачи роли"), 1)
+end)
+
+T.test("census: ростер снимает с выборов только того, кто молчит с момента чтения", function()
+	local w = Wow.World()
+	local guild = "Чиллзон Север"
+	w:Guild(guild)
+	local A = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 1 })
+	local V = w:Client({ first = "Вера", surname = "Верная", guild = guild, rank = 1 })
+	local census, roster, C = V.ns.Census, V.ns.Roster, V.ns.Config
+	local alla, vera = Key(V, A:Name()), V.ns.myKey
+	V.ns.Security.MyCertificate = function() return {} end -- проверяем только выбор
+	Quit(w, A)
+	w.now = 1000
+	roster.Scan()
+	local heard = w.now + 1
+	census.Peers()[alla] = { t = heard, name = A:Name(), z = true }
+	w.now = heard + 4
+	T.eq(census.Reporter(), alla, "привет новее ростера: тот мог не успеть узнать о входе")
+	w.now = heard + C.ROSTER_LAG
+	roster.Scan()
+	T.eq(census.Reporter(), alla, "привет в пределах отставания ростера")
+	w.now = heard + C.ROSTER_LAG + 1
+	roster.Scan()
+	T.eq(census.Reporter(), vera, "ростер прочитан позже и показывает её вне игры")
+	w.now = roster.scannedAt + C.AUTH_ROSTER_TTL + 1
+	T.ok(w.now - heard <= C.PEER_WINDOW, "окно приветов ещё не кончилось")
+	T.eq(census.Reporter(), alla, "без свежего ростера остаётся только окно приветов")
+	T.eq(#V.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("relay: вышедшего репортёра сменяет тот, кого ростер видит в игре, раньше конца окна приветов", function()
+	local w, c = Build()
+	local guild = "Чиллзон Север"
+	local config = c.B.ns.Config
+	local Ya = w:Client({ first = "Яна", surname = "Ясная", guild = guild, rank = 3 })
+	w:Run(200)
+	T.eq(Ya.ns.Census.Reporter(), Key(Ya, "Вера Верная"), "до выхода репортёр — Вера")
+	Quit(w, c.V)
+	-- Минута до чтения ростера и запас на регистрацию у реле, пока истекает аренда Веры.
+	local waited = config.SCAN_EVERY + 45
+	T.ok(waited + 20 < config.PEER_WINDOW - 30, "сценарий заканчивается заметно раньше PEER_WINDOW")
+	w:Run(waited)
+	T.ok(c.B.ns.Census.IsReporter(), "Борис стал репортёром")
+	T.eq(Ya.ns.Census.Reporter(), Key(Ya, "Борис Быстрый"), "Яна выбирает Бориса")
+	c.G:Slash("/cz1", "строка после выхода репортёра")
+	w:Run(20)
+	T.eq(c.B:Saw("строка после выхода репортёра"), 1, "репортёр видит строку")
+	T.eq(Ya:Saw("строка после выхода репортёра"), 1, "рядовая видит строку через нового репортёра")
+	T.eq(#Ya.ns.db.errors, 0, "без ошибок")
 end)
 
 T.test("relay: RG от рядового отклоняется — и чат, и отчёт", function()
@@ -662,11 +830,24 @@ T.test("relay: участник главной вне тройки реле пи
 	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0 })
 	w:Run(30)
 	w:Init(c.A, c.V, c.G)
-	w:Pair(c.V, c.A)
-	w:Pair(c.G, c.A)
+	w:Pair(c.V, c.K)
+	w:Pair(c.G, c.K)
+	-- Здесь проверяется доставка вне тройки, а не обнаружение: после знакомства с главой
+	-- репортёры получают настоящие сертификаты всех трёх более ранних кандидатов.
+	for _, target in ipairs({ c.V, c.G }) do
+		for _, source in ipairs({ c.A, c.O1, c.O2 }) do
+			c.A.ns.Security.Introduce(target:Name(), source.ns.Security.MyCertificate().raw)
+		end
+	end
 	w:Run(400)
 	T.no(c.M.ns.Relay.Serving(), "у Миры репортёры не регистрируются")
-	T.no(c.K.ns.Relay.Serving(), "у Карла тоже")
+	local candidates = {}
+	for _, cl in ipairs({ c.V, c.G }) do
+		for _, e in ipairs(cl.ns.Relay.Candidates()) do
+			candidates[#candidates + 1] = cl:Name() .. ": " .. e.name .. "=" .. tostring(cl.ns.Relay.TrustOf(e.name))
+		end
+	end
+	T.no(c.K.ns.Relay.Serving(), "у Карла тоже: " .. table.concat(candidates, "; "))
 	c.M:Slash("/cz1", "рядовая главной пишет всем")
 	w:Run(5)
 	c.K:Slash("/cz1", "глава вне тройки пишет всем")
@@ -676,6 +857,310 @@ T.test("relay: участник главной вне тройки реле пи
 		T.eq(c[n]:Saw("глава вне тройки пишет всем"), 1, n .. " видит строку Карла")
 	end
 	for n, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, n .. ": без ошибок") end
+end)
+
+-- Новичок главной гильдии, как в первые минуты после установки: из реле он слышал только
+-- рядовую Миру, а корень Арагорна ещё не спрашивал.
+local function Newcomer()
+	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 7)
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	w:Guild("Чиллзон Север")
+	local c = {}
+	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1 })
+	c.O1 = w:Client({ first = "Богдан", surname = "Бравый", guild = "Чиллзон", rank = 1 })
+	c.O2 = w:Client({ first = "Виктор", surname = "Верный", guild = "Чиллзон", rank = 1 })
+	c.K = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, class = "PALADIN" })
+	c.M = w:Client({ first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3, class = "PRIEST" })
+	c.N = w:Client({ first = "Новичок", surname = "Главный", guild = "Чиллзон", rank = 3 })
+	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	w:Run(30)
+	w:Init(c.A, c.V)
+	w:Pair(c.V, c.K)
+	for _, source in ipairs({ c.A, c.O1, c.O2 }) do
+		c.A.ns.Security.Introduce(c.V:Name(), source.ns.Security.MyCertificate().raw)
+	end
+	w:Run(400)
+	local N, U = c.N.ns, c.N.ns.Util
+	local mira, root = U.Key(c.M:Name()), U.Key(c.A:Name())
+	local certificates = N.Security.Certificates
+	N.Security.Certificates = function(guild)
+		local out = {}
+		for _, cert in ipairs(certificates(guild)) do
+			if U.Key(cert.name) == mira then out[#out + 1] = cert end
+		end
+		return out
+	end
+	N.Census.Peers = function() return {} end
+	N.Relay.Invalidate()
+	N.Relay.Candidates()
+	local now = N.Now()
+	for _, e in pairs(N.Relay.Known()) do e.verified, e.asked, e.down = nil, nil, nil end
+	N.Relay.Known()[mira].verified = now
+	T.eq(N.Relay.Pick().key, mira, "из подтверждённых у новичка только Мира")
+	T.no(c.M.ns.Relay.Serving(), "у Миры нет аренд чужих гильдий")
+	return w, c, root
+end
+
+T.test("relay: новичок главной спрашивает офицера раньше, чем писать через рядового", function()
+	local w, c, root = Newcomer()
+	c.N:Slash("/cz1", "первая строка новичка")
+	w:Run(30)
+	T.eq(c.V:Saw("первая строка новичка"), 1, "строка дошла до другой гильдии")
+	T.eq(c.A:Saw("первая строка новичка"), 1, "своя гильдия видит один раз")
+	T.ok(c.N.ns.Relay.Known()[root].verified, "офицер подтверждён")
+	T.eq(c.N.ns.Relay.HoldSize(), 0, "очередь разобрана")
+	for n, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, n .. ": без ошибок") end
+end)
+
+T.test("relay: офицер не в игре — очередь новичка не ждёт таймера", function()
+	local w, c, root = Newcomer()
+	c.A:Logout()
+	c.N:Slash("/cz1", "офицера нет в игре")
+	w:Run(5)
+	T.ok(c.N.ns.Relay.Known()[root].down, "офицер помечен недоступным")
+	T.eq(c.N.ns.Relay.HoldSize(), 0, "строка не осталась в очереди")
+	for n, cl in pairs(c) do
+		if n ~= "A" then T.eq(#cl.ns.db.errors, 0, n .. ": без ошибок") end
+	end
+end)
+
+-- Главная гильдия и две подключённые: main — участники главной (root — глава, он же корень),
+-- Север и Орден знают сертификаты общей тройки реле top. Юг подключается позже и знает только корень.
+local function PartialNetwork(main, top)
+	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 7)
+	local w = Wow.World()
+	for _, g in ipairs({ "Чиллзон", "Чиллзон Север", "Орден Чиллзона", "Чиллзон Юг" }) do w:Guild(g) end
+	local c = {}
+	for id, m in pairs(main) do
+		c[id] = w:Client({ first = m[1], surname = m[2], guild = "Чиллзон", rank = m[3] })
+	end
+	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2 })
+	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0 })
+	w:Run(30)
+	w:Init(c.root, c.V, c.G)
+	w:Pair(c.V, c.root)
+	w:Pair(c.G, c.root)
+	for _, target in ipairs({ c.V, c.G }) do
+		for _, id in ipairs(top) do
+			c.root.ns.Security.Introduce(target:Name(), c[id].ns.Security.MyCertificate().raw)
+		end
+	end
+	w:Run(200)
+	return w, c
+end
+
+local function ConnectSouth(w, c)
+	c.J = w:Client({ first = "Юрий", surname = "Южный", guild = "Чиллзон Юг", rank = 0 })
+	w:Run(30)
+	w:Init(c.J)
+	w:Pair(c.J, c.root)
+end
+
+-- Живая аренда гильдии guild у реле cl или nil.
+local function Lease(cl, guild)
+	local held = cl.ns.Relay.Reporters()[cl.ns.Util.GuildKey(guild)]
+	return held and cl.ns.Now() - held.t <= cl.ns.Relay.REG_TTL and held or nil
+end
+
+local function NoErrors(c)
+	for name, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, name .. ": ошибки " .. table.concat(cl.ns.db.errors, " | ")) end
+end
+
+-- Рядовые с меньшими ключами идут раньше офицера, пока сертификат офицера неизвестен.
+local RANK_AND_FILE = {
+	root = { "Карл", "Великий", 0 }, O = { "Олег", "Старший", 1 },
+	R1 = { "Вадим", "Рядовой", 3 }, R2 = { "Галина", "Рядовая", 3 },
+	R3 = { "Дарья", "Рядовая", 3 }, R4 = { "Евгений", "Рядовой", 3 },
+}
+
+T.test("relay: реле вне тройки с арендой одной гильдии пишет всем гильдиям", function()
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "O", "R1" })
+	ConnectSouth(w, c)
+	for _ = 1, 200 do
+		if Lease(c.R2, "Чиллзон Юг") then break end
+		w:Run(1)
+	end
+	T.ok(Lease(c.R2, "Чиллзон Юг"), "Юг зарегистрировался у Галины")
+	T.eq(Lease(c.R2, "Чиллзон Север"), nil, "Север у Галины не зарегистрирован")
+	T.eq(Lease(c.R2, "Орден Чиллзона"), nil, "Орден у Галины не зарегистрирован")
+	T.ok(c.R2.ns.Relay.Serving(), "Галина считает, что обслуживает гильдии")
+	local text = "рядовая с арендой одной гильдии"
+	c.R2:Slash("/cz1", text)
+	w:Run(30)
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+end)
+
+T.test("relay: перезашедшее реле из тройки пишет всем, пока аренды неполные", function()
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "O", "R1" })
+	-- Перезаход без паузы: репортёры не успевают заметить, что реле выходило.
+	local db = c.O.ns.db
+	c.O:Logout()
+	c.O = w:Client({ first = "Олег", surname = "Старший", guild = "Чиллзон", rank = 1, db = db })
+	local back, have, miss = c.O, "Чиллзон Север", "Орден Чиллзона"
+	-- Пока реле не прочитало ростер, RR теряются, и следующий придёт через REG_EVERY.
+	for _ = 1, 60 do
+		if Lease(back, have) or Lease(back, miss) then break end
+		w:Run(1)
+	end
+	if not Lease(back, have) then have, miss = miss, have end
+	T.ok(Lease(back, have), "одна из гильдий уже зарегистрировалась")
+	-- Вторая гильдия ещё не успела: её репортёр сам недавно зашёл.
+	back.ns.Relay.Reporters()[back.ns.Util.GuildKey(miss)] = nil
+	T.ok(back.ns.Relay.Serving(), "реле обслуживает гильдию")
+	T.ok(back.ns.Relay.InTop(), "реле в общей тройке")
+	local text = "сразу после перезахода"
+	back:Slash("/cz1", text)
+	w:Run(30)
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+
+	-- Когда все вернулись, лишний путь через тройку закрывается.
+	w:Run(back.ns.Config.RELAY_SETTLE)
+	T.ok(Lease(back, "Чиллзон Север") and Lease(back, "Орден Чиллзона"), "аренды обеих гильдий")
+	local picks, pick = 0, back.ns.Relay.Pick
+	back.ns.Relay.Pick = function()
+		picks = picks + 1
+		return pick()
+	end
+	text = "реле давно в игре"
+	back:Slash("/cz1", text)
+	w:Run(30)
+	T.eq(picks, 0, "через других реле строка не идёт")
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+end)
+
+T.test("relay: вернувшееся реле пишет и тем, кто ещё считает его офлайн", function()
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "O", "R1" })
+	local db = c.O.ns.db
+	c.O:Logout()
+	c.O = w:Client({ first = "Олег", surname = "Старший", guild = "Чиллзон", rank = 1, db = db })
+	local back, have, miss = c.O, "Чиллзон Север", "Орден Чиллзона"
+	for _ = 1, 60 do
+		if Lease(back, have) or Lease(back, miss) then break end
+		w:Run(1)
+	end
+	if not Lease(back, have) then have, miss = miss, have end
+	T.ok(Lease(back, have), "одна из гильдий уже зарегистрировалась")
+	-- Вторая гильдия заметила выход и до конца RELAY_DOWN у этого реле не регистрируется. Состояние
+	-- ставится каждую секунду: ответ на RR, уже идущий к её репортёру, снял бы отметку «офлайн».
+	local down, key, gk = back.ns.Config.RELAY_DOWN, back.ns.Util.Key(back:Name()), back.ns.Util.GuildKey(miss)
+	local function Away()
+		for _, cl in pairs(c) do
+			local e = cl.guild == miss and cl.ns.Relay.Known()[key]
+			if e then e.down, e.asked, e.verified = w.now + down, nil, nil end
+		end
+		back.ns.Relay.Reporters()[gk] = nil
+	end
+	for _ = 1, down / 2 do
+		Away()
+		w:Run(1)
+	end
+	Away()
+	T.ok(Lease(back, have), "первая гильдия держит аренду")
+	T.eq(Lease(back, miss), nil, "вторая гильдия так и не зарегистрировалась")
+	T.ok(back.ns.Relay.Serving(), "реле обслуживает гильдию")
+	T.ok(back.ns.Relay.InTop(), "реле в общей тройке")
+	local text = "реле вернулось несколько минут назад"
+	back:Slash("/cz1", text)
+	w:Run(30)
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+end)
+
+T.test("relay: новая гильдия узнаёт общую тройку от реле вне её", function()
+	local w, c = PartialNetwork(RANK_AND_FILE, { "root", "O", "R1" })
+	ConnectSouth(w, c)
+	w:Run(180)
+	T.ok(Lease(c.O, "Чиллзон Юг"), "Юг зарегистрировался у офицера: тройка та же, что у всех")
+	T.eq(Lease(c.R2, "Чиллзон Юг"), nil, "у рядовой вне тройки аренда Юга истекла")
+	local text = "офицер пишет после подключения Юга"
+	c.O:Slash("/cz1", text)
+	w:Run(30)
+	for name, cl in pairs(c) do T.eq(cl:Saw(text), 1, name .. " видит один раз") end
+	NoErrors(c)
+end)
+
+T.test("relay: отчёты доходят до гильдии, зарегистрированной только вне общей тройки", function()
+	-- Корень — глава с большим ключом, в общую тройку офицеров не входит. Рядовые с малыми ключами
+	-- идут у Юга сразу за корнем, поэтому никого из общей тройки Юг сначала не спрашивает.
+	local w, c = PartialNetwork({
+		root = { "Ярослав", "Старший", 0 }, O1 = { "Богдан", "Бравый", 1 },
+		O2 = { "Виктор", "Верный", 1 }, O3 = { "Глафира", "Гордая", 1 },
+		R1 = { "Адам", "Рядовой", 3 }, R2 = { "Алина", "Рядовая", 3 },
+	}, { "O1", "O2", "O3" })
+	ConnectSouth(w, c)
+	w:Run(180)
+	-- Отчёт длинный и идёт кусками в общей очереди: ждём приход, а не фиксированную паузу.
+	local function Fresh(reader, reporter, guild)
+		w:Run(65)
+		reporter.ns.Roster.Scan()
+		local st = reporter.ns.Roster.report.st
+		reporter.ns.Census.MaybeReport(true)
+		local row
+		for _ = 1, 120 do
+			row = reader.ns.Data.Row(guild)
+			if row and row.r and row.r.st >= st then break end
+			w:Run(1)
+		end
+		T.ok(row and row.r, reader:Name() .. " знает " .. guild)
+		T.ok(row.r.st >= st, reader:Name() .. " получил свежий отчёт " .. guild .. ": " .. row.r.st .. " против " .. st)
+	end
+	Fresh(c.J, c.V, "Чиллзон Север")
+	Fresh(c.J, c.G, "Орден Чиллзона")
+	Fresh(c.V, c.J, "Чиллзон Юг")
+	for _, id in ipairs({ "O1", "O2", "O3" }) do
+		T.ok(Lease(c[id], "Чиллзон Юг"), id .. ": Юг зарегистрирован у общей тройки")
+	end
+	NoErrors(c)
+end)
+
+T.test("relay: старый отчёт от реле не вытесняет новый из очереди гильдии", function()
+	local w, c = Build()
+	local reporter = c.V.ns.Census.IsReporter() and c.V or c.B
+	local member = reporter == c.V and c.B or c.V
+	T.ok(reporter.ns.Census.IsReporter(), "у Севера есть репортёр")
+	local guild, comm = "Орден Чиллзона", reporter.ns.Comm
+	local function Until(check)
+		for _ = 1, 30 do
+			if check() then return true end
+			w:Run(1)
+		end
+		return check()
+	end
+	local function HasReport(cl, st)
+		return function()
+			local row = cl.ns.Data.Row(guild)
+			return row and row.r.st >= st
+		end
+	end
+	local old = c.G.ns.Census.lastRaw
+	T.ok(old, "у Ордена уже есть отчёт")
+	-- Перезашедшее реле отдаёт отчёт позже, чем истекает защита от повторов.
+	w:Run(reporter.ns.Config.RELAY_DEDUPE + 30)
+
+	-- Очередь репортёра стоит, как при всплеске трафика: новый отчёт ждёт отправки гильдии.
+	local free = comm.InLockdown
+	comm.InLockdown = function() return true end
+	c.G.ns.Roster.Scan()
+	local st = c.G.ns.Roster.report.st
+	c.G.ns.Census.MaybeReport(true)
+	T.ok(Until(HasReport(reporter, st)), "репортёр получил новый отчёт")
+
+	c.A.ns.Comm.Send("WHISPER", c.A.ns.Codec.EncodeRM("RM", "L", "Глеб Гордый", old), { target = reporter:Name() })
+	T.ok(Until(function()
+		for _, line in ipairs(reporter.ns.db.log) do
+			if line:find("старее", 1, true) then return true end
+		end
+		return false
+	end), "репортёр отклонил старый отчёт")
+
+	comm.InLockdown = free
+	T.ok(Until(HasReport(member, st)), "участник получил новый отчёт")
+	NoErrors(c)
 end)
 
 T.test("relay: реле вышло из игры — сообщение уходит через другое", function()
@@ -703,6 +1188,28 @@ T.test("relay: реле вышло из игры — сообщение уход
 		if fn(nil, "CHAT_MSG_SYSTEM", ("No player named '%s' is currently playing."):format(pick.name)) then hidden = true end
 	end
 	T.no(hidden, "через 60 с строка уже не скрывается")
+end)
+
+T.test("relay: ошибка Forever снимает аренду репортёра и остаётся скрытой", function()
+	local _, c = Build()
+	local gk = c.A.ns.Util.GuildKey("Чиллзон Север")
+	local relay
+	for _, cl in pairs(c) do
+		local held = cl.ns.Relay.Reporters()[gk]
+		if held and held.key == Key(cl, c.V:Name()) then relay = cl; break end
+	end
+	T.ok(relay, "есть реле с арендой Веры")
+	local text = ('Персонаж по имени "%s" в игре не найден.'):format(c.V:Name())
+	relay.ns.Comm.SendNow("WHISPER", "ZZ~test", c.V:Name())
+	relay:Fire("CHAT_MSG_SYSTEM", text)
+	T.eq(relay.ns.Relay.Reporters()[gk], nil, "аренда снята сразу")
+	for _ = 1, 2 do
+		local hidden = false
+		for _, filter in ipairs(relay.filters.CHAT_MSG_SYSTEM or {}) do
+			if filter(nil, "CHAT_MSG_SYSTEM", text) then hidden = true end
+		end
+		T.ok(hidden, "строка скрыта и после снятия аренды, в каждом окне")
+	end
 end)
 
 T.test("relay: Q1 после /reload восполняет перепись", function()

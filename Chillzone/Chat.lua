@@ -22,10 +22,9 @@ Chat.TAG_LINK = "addon:Chillzone:chan:"
 -- Каналы окна по порядку: чат гильдии, офицеры гильдии, затем три уровня «Чиллзон».
 Chat.ORDER = { "G", "O", "A", "C", "L" }
 Chat.GUILD_CHANNELS = { G = true, O = true }
-local RGB = {
-	G = { 0.25, 1, 0.25 }, O = { 0.25, 0.75, 0.25 },
-	A = { 0.5, 0.83, 0.76 }, C = { 0.44, 0.66, 1 }, L = { 1, 0.7, 0.28 },
-}
+local RGB = { G = { 0.25, 1, 0.25 }, O = { 0.25, 0.75, 0.25 } }
+-- Цвета текста общего чата на выбор в настройках. Первый — по умолчанию, как у метки [Чиллзон].
+Chat.COLORS = { "7fd4c1", "ffffff", "ffe066", "ffb347", "ff8080", "ff8fd0", "c79bff", "6fa8ff", "6fe0ff", "8fe36f" }
 Chat.stats = { sent = 0, shown = 0, dupes = 0, refused = 0, limited = 0 }
 -- Почему своя строка не подписана (Security.Seal): что сказать игроку.
 local SEAL_FAILED = {
@@ -164,12 +163,25 @@ function Chat.Format(tier, guild, sender, class, text, formatBody)
 	return Chat.Tag(tier) .. " |cff999999<" .. g .. ">|r |Hplayer:" .. (U.TellName(sender) or "?") .. "|h[" .. name .. "]|h: " .. body
 end
 
--- Цвет строк канала: чат гильдии и офицеров — как в игре, уровни «Чиллзон» — свои.
+-- Цвет текста общего чата, rrggbb: выбранный в настройках или первый из Chat.COLORS.
+function Chat.TextColor()
+	local hex = ns.db and ns.db.settings and ns.db.settings.chatColor
+	if type(hex) == "string" and hex:match("^%x%x%x%x%x%x$") then return hex end
+	return Chat.COLORS[1]
+end
+
+function Chat.HexToRGB(hex)
+	return tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255, tonumber(hex:sub(5, 6), 16) / 255
+end
+
+-- Цвет строк канала: чат гильдии и офицеров — как в игре, уровни «Чиллзон» — общий, из настроек.
+-- Окно и копия в чате игры берут его здесь, поэтому совпадают.
 function Chat.Color(channel)
-	local info = Chat.GUILD_CHANNELS[channel] and rawget(_G, "ChatTypeInfo")
+	if not Chat.GUILD_CHANNELS[channel] then return Chat.HexToRGB(Chat.TextColor()) end
+	local info = rawget(_G, "ChatTypeInfo")
 	local t = type(info) == "table" and info[channel == "O" and "OFFICER" or "GUILD"]
 	if type(t) == "table" and t.r then return t.r, t.g, t.b end
-	local c = RGB[channel] or RGB.A
+	local c = RGB[channel]
 	return c[1], c[2], c[3]
 end
 
@@ -221,8 +233,9 @@ function Chat.Show(tier, guild, sender, class, text)
 	end
 	if tab or mirror then
 		local line = Chat.Format(tier, guild, sender, class, text)
-		if tab then tab:AddMessage(line) end
-		if mirror and mirror ~= tab then mirror:AddMessage(line) end
+		local r, g, b = Chat.Color(tier)
+		if tab then tab:AddMessage(line, r, g, b) end
+		if mirror and mirror ~= tab then mirror:AddMessage(line, r, g, b) end
 	end
 	Chat.Remember(tier, guild, sender, class, text)
 end
@@ -558,7 +571,7 @@ ns.Command("history", function(arg)
 	local f = Chat.Frame()
 	for i = math.max(1, #list - 19), #list do
 		local e = list[i]
-		f:AddMessage("|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r " .. Chat.Format(tier, e.g, e.s, e.c, e.x))
+		f:AddMessage("|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r " .. Chat.Format(tier, e.g, e.s, e.c, e.x), Chat.Color(tier))
 	end
 end, L.HELP_HISTORY)
 

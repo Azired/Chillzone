@@ -2,6 +2,32 @@
 local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
 
+-- Набор проверяется в уже подключённую гильдию; протокол допуска — в test_union. Гильдия
+-- подключена с самого входа, до первого w:Run: иначе перепись и подсказки J2 стартуют позже
+-- и успевают к первому поиску не при каждом seed таймеров.
+local function Connected(clients, guild)
+	for _, cl in ipairs(clients) do
+		cl.ns.store.security.union[cl.ns.Util.GuildKey(guild)] = { guild = guild, active = true }
+	end
+end
+
+-- Новичок в чужой гильдии тоже объявляет свой ключ (K1) в ней. Первое объявление уходит в
+-- первые секунды после входа, в зависимости от seed таймеров, и занимает очередь отправки:
+-- если совпадёт с поиском, J1 и ответы J2 сдвинутся. Поиск начинаем после него.
+local function Announced(w, client)
+	local function Said()
+		for _, e in ipairs(w.log) do
+			if e.from == client:Name() and e.msg:find("^K1~") then return true end
+		end
+	end
+	for _ = 1, 30 do
+		if Said() then break end
+		w:Run(1)
+	end
+	assert(Said(), client:Name() .. ": нет объявления ключа")
+	w:Run(2)
+end
+
 local function Build()
 	local w = Wow.World()
 	w:Guild("Чиллзон")
@@ -13,7 +39,9 @@ local function Build()
 	c.K = w:Client({ first = "Король", surname = "Чиллзона", guild = "Чиллзон", rank = 0 })
 	c.R = w:Client({ first = "Новый", surname = "Игрок", guild = "Другая гильдия", level = 27 })
 	c.H = w:Client({ first = "Враг", surname = "Ордынский", guild = "Чиллзон Север", faction = "Horde" })
+	Connected({ c.O, c.M, c.K, c.R }, "Чиллзон Север")
 	w:Run(8)
+	Announced(w, c.R)
 	return w, c
 end
 
@@ -25,6 +53,12 @@ end
 local function Request(w, c, target)
 	Search(w, c)
 	local contact = c.R.ns.Recruit.NextContact(target or "Чиллзон Север")
+	-- /who отвечает раньше адресного J2: дождаться офицера через реальную очередь.
+	for _ = 1, 10 do
+		if contact then break end
+		w:Run(1)
+		contact = c.R.ns.Recruit.NextContact(target or "Чиллзон Север")
+	end
 	T.ok(contact)
 	T.ok(c.R.ns.Recruit.Ask(contact, "Привет! Хочу вступить."))
 	w:Run(5)
@@ -236,8 +270,10 @@ local function FullMain(officers)
 	c.O = w:Client({ first = "Ольга", surname = "Северная", guild = "Чиллзон Север", rank = 0 })
 	c.M = w:Client({ first = "Миша", surname = "Северный", guild = "Чиллзон Север", rank = 3 })
 	c.R = w:Client({ first = "Новый", surname = "Игрок", guild = "Другая гильдия", level = 27 })
+	Connected({ c.K, c.KO, c.O, c.M, c.R }, "Чиллзон Север")
 	w:Run(8)
-	local answer = ("J2~y~~0~Чиллзон=0=%s;Чиллзон Север=40=%s"):format(c.KO:Name(), officers or "")
+	Announced(w, c.R)
+	local answer =("J2~y~~0~Чиллзон=0=%s;Чиллзон Север=40=%s"):format(c.KO:Name(), officers or "")
 	for _, m in ipairs({ c.K, c.KO }) do m.ns.Recruit.RouteAnswer = function() return answer end end
 	c.R.whoRows = function(query, rows)
 		if query ~= 'g-"Чиллзон"' then return rows end
@@ -460,10 +496,13 @@ T.test("заявки: поиск ограничивает частоту, про
 	Errors(c)
 end)
 
-T.test("заявки: поиск находит гильдию из EXTRA_GUILDS следующим запросом", function()
+T.test("заявки: поиск находит подключённую гильдию следующим запросом", function()
 	local w, c = Build()
 	w:Guild("Запомни Навсегда")
 	c.Z = w:Client({ first = "Зоя", surname = "Навсегдашняя", guild = "Запомни Навсегда", rank = 0 })
+	for _, cl in ipairs({ c.R, c.Z }) do
+		cl.ns.store.security.union[cl.ns.Util.GuildKey(c.Z.guild)] = { guild = c.Z.guild, active = true }
+	end
 	w:Run(8)
 	T.ok(c.R.ns.Who.Search())
 	w:Run(11)

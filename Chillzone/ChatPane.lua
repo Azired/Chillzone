@@ -40,8 +40,8 @@ local ROLE_ICON = {
 	officer = "Interface\\GroupFrame\\UI-Group-AssistantIcon",
 	active = "Interface\\GossipFrame\\GossipGossipIcon",
 }
--- Отметка «есть аддон» в списке людей — значок Chillzone, как у кнопки у миникарты.
-local ADDON_ICON = "Interface\\Icons\\Spell_Nature_Tranquility"
+-- Отметка «есть аддон» в списке людей — значок Chillzone, как у кнопки у миникарты. Он уже круглый.
+local ADDON_ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
 local ADDON_SIZE = 12
 local TEXT_RIGHT, TEXT_RIGHT_ADDON = -24, -24 - ADDON_SIZE - 2
 
@@ -256,7 +256,6 @@ local function PeopleRow(i)
 	r.addon:SetSize(ADDON_SIZE, ADDON_SIZE)
 	r.addon:SetPoint("RIGHT", TEXT_RIGHT + 2, 0)
 	r.addon:SetTexture(ADDON_ICON)
-	if r.addon.SetMask then pcall(r.addon.SetMask, r.addon, "Interface\\CharacterFrame\\TempPortraitAlphaMask") end
 	r.addon:Hide()
 	r:SetScript("OnEnter", function(self)
 		if not self.person then return end
@@ -264,8 +263,11 @@ local function PeopleRow(i)
 		GameTooltip:Show()
 	end)
 	r:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	r:SetScript("OnClick", function(self)
-		if self.person then ns.SafeCall("person click", ChatPane.WhisperTo, self.person.name) end
+	r:RegisterForClicks("RightButtonUp")
+	r:SetScript("OnClick", function(self, button)
+		if button == "RightButton" and self.person then
+			ns.SafeCall("person menu", ChatPane.OpenPersonMenu, self, self.person)
+		end
 	end)
 	rows[i] = r
 	return r
@@ -394,6 +396,102 @@ end
 
 function ChatPane.FocusedInput()
 	if shown and box and box:HasFocus() then return box end
+end
+
+function ChatPane.InviteToGroup(person)
+	if type(person) ~= "table" or not Views.CanInvite(person) then return false end
+	local invite = C_PartyInfo and C_PartyInfo.InviteUnit or InviteUnit
+	if type(invite) ~= "function" then
+		ns.Print(L.PARTY_INVITE_UNAVAILABLE)
+		return false
+	end
+	invite(U.TellName(person.name) or person.name)
+	return true
+end
+
+---------------------------------------------------------------------------
+-- Меню человека: шёпот или приглашение в группу. Не UIDropDownMenu: его общие глобалы на
+-- Forever дают taint, из-за этого игра может заблокировать следующий /cast (см. шапку файла).
+---------------------------------------------------------------------------
+local MENU_W, MENU_ITEM = 170, 20
+local personMenu
+
+local function MenuButton(parent, row, onClick)
+	local b = CreateFrame("Button", nil, parent)
+	b:SetHeight(MENU_ITEM)
+	b:SetPoint("TOPLEFT", parent, "TOPLEFT", 6, -6 - row * MENU_ITEM)
+	b:SetPoint("RIGHT", parent, "RIGHT", -6, 0)
+	b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	b.text:SetPoint("LEFT", 4, 0)
+	b.text:SetPoint("RIGHT", -4, 0)
+	b.text:SetJustifyH("LEFT")
+	b.text:SetWordWrap(false)
+	b.hl = b:CreateTexture(nil, "HIGHLIGHT")
+	b.hl:SetAllPoints()
+	b.hl:SetColorTexture(1, 1, 1, 0.1)
+	b:SetScript("OnClick", onClick)
+	return b
+end
+
+-- Закрывается щелчком мимо и вместе с окном: своё окошко игра сама не закрывает.
+local function WatchPersonMenu(m)
+	local outside = (IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton")) and not m:IsMouseOver()
+	if outside or not (m.owner and m.owner:IsVisible()) then m:Hide() end
+end
+
+function ChatPane.PersonMenu()
+	if personMenu then return personMenu end
+	local m = CreateFrame("Frame", nil, UIParent)
+	m:SetSize(MENU_W, 12 + 3 * MENU_ITEM)
+	m:SetFrameStrata("DIALOG")
+	m:SetClampedToScreen(true)
+	m:EnableMouse(true)
+	local edge = m:CreateTexture(nil, "BACKGROUND", nil, -1)
+	edge:SetPoint("TOPLEFT", -1, 1)
+	edge:SetPoint("BOTTOMRIGHT", 1, -1)
+	edge:SetColorTexture(0.5, 0.5, 0.5, 0.9)
+	local bg = m:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0.06, 0.06, 0.06, 0.96)
+	m.title = m:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	m.title:SetHeight(MENU_ITEM)
+	m.title:SetPoint("TOPLEFT", 10, -6)
+	m.title:SetPoint("RIGHT", -10, 0)
+	m.title:SetJustifyH("LEFT")
+	m.title:SetWordWrap(false)
+	m.whisper = MenuButton(m, 1, function()
+		m:Hide()
+		ns.SafeCall("menu whisper", m.onWhisper, m.person.name)
+	end)
+	m.whisper.text:SetText(L.MENU_WHISPER)
+	m.invite = MenuButton(m, 2, function()
+		m:Hide()
+		ns.SafeCall("menu invite", ChatPane.InviteToGroup, m.person)
+	end)
+	m.invite.text:SetText(L.MENU_INVITE)
+	m:SetScript("OnUpdate", WatchPersonMenu)
+	m:Hide()
+	personMenu = m
+	return m
+end
+
+-- owner — строка списка, whisper — чем открыть шёпот (карточка переписи сначала открывает чат).
+function ChatPane.OpenPersonMenu(owner, person, whisper)
+	local m = ChatPane.PersonMenu()
+	if m:IsShown() and m.owner == owner then
+		m:Hide()
+		return
+	end
+	GameTooltip:Hide()
+	m.owner, m.person, m.onWhisper = owner, person, whisper or ChatPane.WhisperTo
+	m.title:SetText(Views.Name(person.name, person.class))
+	local can = Views.CanInvite(person)
+	m.invite:SetEnabled(can)
+	m.invite.hl:SetShown(can)
+	m.invite.text:SetFontObject(can and "GameFontHighlightSmall" or "GameFontDisableSmall")
+	m:ClearAllPoints()
+	m:SetPoint("TOPRIGHT", owner, "BOTTOMRIGHT", 0, -2)
+	m:Show()
 end
 
 function ChatPane.Focus()

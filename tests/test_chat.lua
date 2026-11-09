@@ -23,8 +23,8 @@ local function Build(opts)
 	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, class = "HUNTER" })
 	w:Run(30)
 	w:Init(c.A, c.V, c.G)
-	w:Pair(c.V, c.A)
-	w:Pair(c.G, c.A)
+	w:Pair(c.V, c.K)
+	w:Pair(c.G, c.K)
 	w:Run(opts.run or 400)
 	c.B.ns.Relay.PingAll(); w:Run(45)
 	return w, c
@@ -279,6 +279,49 @@ T.test("окно: без дубля в чат игры строка только
 	T.eq(c.V:Saw("только окно"), 1, "у других дубль включён")
 end)
 
+T.test("окно: цвет текста общего чата один для окна и чата игры", function()
+	local w, c = Build()
+	local B = c.B
+	local tab = B:ChatWindow(3, "Чиллзон")
+	B.ns.Chat.SetWindow("Чиллзон")
+	B.ns.UI.OpenChat("A")
+	local messages = B.ns.ChatPane.frames.messages
+	local function Hex(color)
+		return string.format("%02x%02x%02x", math.floor(color[1] * 255 + 0.5), math.floor(color[2] * 255 + 0.5), math.floor(color[3] * 255 + 0.5))
+	end
+
+	c.G:Slash("/cz1", "цвет по умолчанию")
+	w:Run(30)
+	T.eq(Hex(tab.color), "7fd4c1", "копия в чате игры")
+	T.eq(Hex(messages.color), "7fd4c1", "окно Chillzone")
+
+	B.ns.UI.Toggle("settings")
+	local swatches = B.ns.UI.swatches
+	local pick = swatches[3]
+	T.ok(swatches[1].ring:IsShown(), "отмечен цвет по умолчанию")
+	T.no(pick.ring:IsShown())
+	pick.scripts.OnClick(pick)
+	T.eq(B.ns.db.settings.chatColor, pick.hex, "выбор сохранён")
+	T.ok(pick.ring:IsShown(), "отмечен выбранный")
+	T.no(swatches[1].ring:IsShown(), "прежняя отметка снята")
+	T.eq(Hex(messages.color), pick.hex, "окно перекрашено сразу")
+
+	c.G:Slash("/cz1", "новый цвет")
+	w:Run(30)
+	T.eq(Hex(tab.color), pick.hex, "новая строка в чате игры")
+	T.eq(Hex({ B.ns.Chat.Color("L") }), pick.hex, "цвет один на все уровни")
+
+	tab.color = nil
+	B:Slash("/chillzone", "history 1")
+	T.eq(Hex(tab.color), pick.hex, "история в чате игры тем же цветом")
+
+	T.eq(table.concat({ B.ns.Chat.Color("G") }, ","), "0.25,1,0.25", "чат гильдии настройка не трогает")
+
+	B.ns.db.settings.chatColor = "мусор"
+	T.eq(B.ns.Chat.TextColor(), B.ns.Chat.COLORS[1], "испорченное значение заменяется цветом по умолчанию")
+	Errors(c)
+end)
+
 T.test("окно: копии строк — во вкладке чата игры, выбор в настройках", function()
 	local w, c = Build()
 	local B = c.B
@@ -382,6 +425,87 @@ T.test("окно: люди справа", function()
 	Errors(c)
 end)
 
+T.test("окно: правый щелчок в списке людей открывает меню шёпота и приглашения", function()
+	local _, c = Build()
+	local B = c.B
+	B.ns.UI.OpenChat("G")
+	B.ns.ChatPane.RenderPeople()
+	local row = {}
+	for _, r in ipairs(B.ns.ChatPane.frames.rows) do
+		if r:IsShown() and r.person then row[r.person.name] = r end
+	end
+	local vera, me = row["Вера Верная"], row["Борис Быстрый"]
+	T.ok(vera and vera.person.online, "Вера в списке и в игре")
+	local click, menu, box = vera:GetScript("OnClick"), B.ns.ChatPane.PersonMenu(), B.ns.ChatPane.frames.box
+	local function Press(item) item:GetScript("OnClick")(item) end
+	local function Watch() menu:GetScript("OnUpdate")(menu) end
+	box:SetText("")
+	-- Левый щелчок больше ничего не делает.
+	click(vera, "LeftButton")
+	T.eq(box:GetText(), "", "левый щелчок не открывает шёпот")
+	T.no(menu:IsShown(), "левый щелчок не открывает меню")
+	-- Правый открывает меню; повторный закрывает.
+	click(vera, "RightButton")
+	T.ok(menu:IsShown(), "меню открыто")
+	T.ok(menu.title:GetText():find("Вера Верная", 1, true), "в заголовке имя")
+	click(vera, "RightButton")
+	T.no(menu:IsShown(), "повторный щелчок закрывает")
+	-- Приглашение и шёпот.
+	click(vera, "RightButton")
+	T.eq(menu.invite.enabled, true, "приглашение доступно")
+	Press(menu.invite)
+	T.same(B.partyInvites, { "Вера Верная" }, "приглашение по имени без реалма")
+	T.no(menu:IsShown(), "меню закрылось после выбора")
+	click(vera, "RightButton")
+	Press(menu.whisper)
+	T.eq(box:GetText(), "/w Вера Верная ", "шёпот в поле окна")
+	T.eq(#B.partyInvites, 1, "шёпот не приглашает")
+	-- Себя и того, кто не в игре, не приглашаем.
+	click(me, "RightButton")
+	T.eq(menu.invite.enabled, false, "себя пригласить нельзя")
+	Press(menu.invite)
+	T.no(B.ns.ChatPane.InviteToGroup({ name = "Тихий Друид", online = false }), "не в игре")
+	T.eq(#B.partyInvites, 1, "других приглашений нет")
+	-- Щелчок мимо и закрытие окна убирают меню, щелчок по самому меню — нет.
+	click(vera, "RightButton")
+	Watch()
+	T.ok(menu:IsShown(), "кнопка мыши не нажата")
+	B.mouseDown = "RightButton"
+	menu.IsMouseOver = function() return true end
+	Watch()
+	T.ok(menu:IsShown(), "щелчок по самому меню")
+	menu.IsMouseOver = function() return false end
+	Watch()
+	T.no(menu:IsShown(), "щелчок мимо закрывает")
+	B.mouseDown = nil
+	click(vera, "RightButton")
+	vera:Hide()
+	Watch()
+	T.no(menu:IsShown(), "строка скрыта — меню закрыто")
+	vera:Show()
+	-- Подсказка предлагает приглашение только там, где оно сработает.
+	local lines = {}
+	local tt = setmetatable({ AddLine = function(_, t) lines[#lines + 1] = t end }, { __index = function() return function() end end })
+	local function tip(p)
+		lines = {}
+		B.ns.Views.PersonTip(tt, p)
+		return table.concat(lines, "\n")
+	end
+	T.ok(tip(vera.person):find(B.ns.L.TIP_MENU_INVITE, 1, true), "подсказка у Веры")
+	local own = tip(me.person)
+	T.no(own:find(B.ns.L.TIP_MENU_INVITE, 1, true), "у себя приглашения нет")
+	T.ok(own:find(B.ns.L.TIP_MENU_WHISPER, 1, true), "у себя только шёпот")
+	-- Новое API клиента важнее старого; без обоих приглашение не падает.
+	local used
+	B.env.C_PartyInfo = { InviteUnit = function(name) used = name end }
+	T.ok(B.ns.ChatPane.InviteToGroup(vera.person), "через C_PartyInfo")
+	T.eq(used, "Вера Верная", "имя без реалма")
+	T.eq(#B.partyInvites, 1, "старое API не вызвано")
+	B.env.C_PartyInfo, B.env.InviteUnit = nil, nil
+	T.no(B.ns.ChatPane.InviteToGroup(vera.person), "API нет")
+	Errors(c)
+end)
+
 T.test("окно: отметка аддона в списке людей", function()
 	local w, c = Build()
 	w:AddOnline("Чиллзон Север", "Без Аддона-CAMWOWUS2Realm7PvE", 3, 30, "MAGE")
@@ -438,6 +562,11 @@ T.test("окно: «аддона нет» — только после минут
 	w:AddOnline("Чиллзон Север", "Без Аддона-CAMWOWUS2Realm7PvE", 3, 30, "MAGE")
 	local v = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
 	local b = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2 })
+	-- Проверяем приветы в уже подключённой гильдии, отдельно от протокола допуска.
+	for _, client in ipairs({ v, b }) do
+		client.ns.store.security.union[client.ns.Util.GuildKey(client.guild)] = { guild = client.guild, active = true }
+	end
+	v.ns.Roster.Scan() -- в симуляторе Борис добавлен после первого чтения ростера Веры
 	w:Run(20)
 	local key = v.ns.Util.Key
 	T.eq(v.ns.Census.Addon(key("Без Аддона")), nil, "сразу после входа — неизвестно")
@@ -602,7 +731,7 @@ T.test("окно: чат гильдии «Чиллзон» и общий кан�
 	T.eq(f.scope:GetText(), "чат гильдии", "подпись в шапке")
 	A.ns.ChatPane.Select("A")
 	T.eq(f.prompt:GetText(), "Чиллзон:", "поле ввода общего канала")
-	T.eq(f.scope:GetText(), "все гильдии «Чиллзон», /cz1", "шапка общего канала — с командой")
+	T.eq(f.scope:GetText(), "все гильдии объединения, /cz1", "шапка общего канала — с командой")
 	A.ns.ChatPane.Select("O")
 	T.eq(f.title:GetText(), "Офицеры гильдии", "в шапке — полное название")
 	Errors(c)
@@ -709,11 +838,16 @@ T.test("перепись: список гильдий и карточка выб
 	end
 	T.ok(#card.classes > 0, "в игре есть классы")
 	T.eq(items, #card.classes, "строк подписи — сколько классов в игре")
-	-- Руководство: глава первой, щелчок — шёпот в окне чата.
+	-- Руководство: глава первой, левый щелчок ничего не делает, «Шёпот» из меню — в окне чата.
 	local first = f.people[1]
 	T.ok(first:IsShown() and first.person.name == "Вера Верная" and first.person.role == "leader", "глава первой")
-	first.scripts.OnClick(first)
-	T.eq(B.ns.UI.Current(), "chat", "щелчок по имени открывает чат")
+	first.scripts.OnClick(first, "LeftButton")
+	T.eq(B.ns.UI.Current(), "census", "левый щелчок остаётся в переписи")
+	first.scripts.OnClick(first, "RightButton")
+	local menu = B.ns.ChatPane.PersonMenu()
+	T.ok(menu:IsShown(), "правый щелчок открывает меню")
+	menu.whisper.scripts.OnClick(menu.whisper)
+	T.eq(B.ns.UI.Current(), "chat", "«Шёпот» открывает чат")
 	T.eq(B.ns.ChatPane.frames.box:GetText(), "/w Вера Верная ", "и шёпот в поле")
 	-- Другая гильдия: главная.
 	B.ns.UI.Toggle("census")
