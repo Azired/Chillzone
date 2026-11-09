@@ -188,8 +188,10 @@ local function ToggleList()
 		return
 	end
 	local entries = { { text = L.WINDOW_MAIN, value = "" } }
-	for _, w in ipairs(ns.Chat.Windows()) do
-		if w.frame ~= DEFAULT_CHAT_FRAME then entries[#entries + 1] = { text = w.name, value = w.name } end
+	for _, w in ipairs(ns.Chat.MirrorWindows()) do
+		if not w.frame or w.frame ~= DEFAULT_CHAT_FRAME then
+			entries[#entries + 1] = { text = w.name, value = w.name }
+		end
 	end
 	local chosen = U.Fold(ns.Chat.Window() or "")
 	for i, e in ipairs(entries) do
@@ -221,6 +223,9 @@ local function BuildPicker()
 	SetTip(b, function(tt)
 		tt:AddLine(L.WINDOW_TITLE, 1, 0.82, 0)
 		tt:AddLine(L.WINDOW_TIP, 1, 1, 1, true)
+		if type(rawget(_G, "Chattynator")) == "table" then
+			tt:AddLine(L.WINDOW_CHATTYNATOR_TIP, 1, 1, 1, true)
+		end
 	end)
 	local list = CreateFrame("Frame", nil, settings)
 	list:SetPoint("TOPLEFT", b, "BOTTOMLEFT", 0, -2)

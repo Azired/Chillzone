@@ -95,10 +95,33 @@ function Chat.Windows()
 	return out
 end
 
+function Chat.MirrorWindows()
+	local addon = rawget(_G, "Chattynator")
+	if type(addon) ~= "table" then return Chat.Windows() end
+	local api, out = addon.API, {}
+	if type(api) ~= "table" or type(api.GetWindowsAndTabs) ~= "function"
+		or type(api.AddMessageToWindowAndTab) ~= "function" then return out end
+	local ok, windows = pcall(api.GetWindowsAndTabs)
+	if not ok or type(windows) ~= "table" then return out end
+	for windowIndex, tabs in ipairs(windows) do
+		for tabIndex, key in ipairs(tabs) do
+			local label = rawget(_G, key)
+			local name = type(label) == "string" and label or key
+			-- Специальная вкладка Chillzone получает строки прямо из истории.
+			if U.Fold(name) ~= U.Fold(L.CHAT_TAB_NAME) then
+				out[#out + 1] = { name = name, key = key, window = windowIndex, tab = tabIndex,
+					send = api.AddMessageToWindowAndTab }
+			end
+		end
+	end
+	return out
+end
+
 local function WindowByName(name)
 	if type(name) ~= "string" or name == "" then return nil end
-	for _, w in ipairs(Chat.Windows()) do
-		if U.Fold(w.name) == U.Fold(name) then return w end
+	local folded = U.Fold(name)
+	for _, w in ipairs(Chat.MirrorWindows()) do
+		if U.Fold(w.name) == folded or (w.key and U.Fold(w.key) == folded) then return w end
 	end
 	return nil
 end
@@ -126,20 +149,34 @@ function Chat.SetWindow(name)
 	return true
 end
 
-function Chat.Frame()
+local function MirrorTarget()
 	local name = ns.char and ns.char.chatWindow
-	if not name then return DEFAULT_CHAT_FRAME end
-	local w = WindowByName(name)
-	if w then
-		windowWarned = false
-		return w.frame
+	if name then
+		local w = WindowByName(name)
+		if w then
+			windowWarned = false
+			return w
+		end
+		-- Вкладку закрыли или переименовали: строки идут в основное окно, предупреждаем один раз.
+		if not windowWarned then
+			windowWarned = true
+			ns.Print(L.CHAT_WINDOW_GONE, name)
+		end
 	end
-	-- Вкладку закрыли или переименовали: строки идут в основное окно, говорим об этом один раз.
-	if not windowWarned then
-		windowWarned = true
-		ns.Print(L.CHAT_WINDOW_GONE, name)
+	if DEFAULT_CHAT_FRAME then return { frame = DEFAULT_CHAT_FRAME } end
+end
+
+local function SendToChattynator(target, ...)
+	-- Chattynator определяет источник строки по вызвавшему файлу.
+	target.send(target.window, target.tab, ...)
+end
+
+local function AddMirror(target, ...)
+	if target.frame then
+		target.frame:AddMessage(...)
+	else
+		ns.SafeCall("chattynator mirror", SendToChattynator, target, ...)
 	end
-	return DEFAULT_CHAT_FRAME
 end
 
 -- Метка канала в чате игры: ссылка addon:Chillzone:chan:<tier>, цветом канала.
@@ -229,13 +266,13 @@ function Chat.Show(tier, guild, sender, class, text)
 	local tab = ns.ChatTab and ns.ChatTab.OutputFrame()
 	local mirror
 	if not ns.char or ns.char.chatMirror ~= false then
-		mirror = Chat.Frame()
+		mirror = MirrorTarget()
 	end
 	if tab or mirror then
 		local line = Chat.Format(tier, guild, sender, class, text)
 		local r, g, b = Chat.Color(tier)
 		if tab then tab:AddMessage(line, r, g, b) end
-		if mirror and mirror ~= tab then mirror:AddMessage(line, r, g, b) end
+		if mirror and (not tab or mirror.frame ~= tab) then AddMirror(mirror, line, r, g, b) end
 	end
 	Chat.Remember(tier, guild, sender, class, text)
 end
@@ -456,13 +493,26 @@ _G.SLASH_CHILLZONEA5 = "/чиллзон"
 ---------------------------------------------------------------------------
 -- Клик по метке канала в чате игры. Ссылки addon: игра на Forever отдаёт своему
 -- обработчику, который ничего не делает (проверено Olympus, Channels.lua 1.2.1); мы
--- ловим клик пост-хуком SetItemRef и открываем своё окно — поле ввода игры не трогаем.
+-- ловим клик пост-хуком SetItemRef. Фокус получает только поле Chillzone.
 ---------------------------------------------------------------------------
-function Chat.TagClick(link, _, button)
-	if type(link) ~= "string" or link:sub(1, #Chat.TAG_LINK) ~= Chat.TAG_LINK then return false end
-	if button and button ~= "LeftButton" then return false end
+function Chat.TagTier(link, button)
+	if type(link) ~= "string" or link:sub(1, #Chat.TAG_LINK) ~= Chat.TAG_LINK then return end
+	if button and button ~= "LeftButton" then return end
 	local tier = link:sub(#Chat.TAG_LINK + 1)
-	if not Chat.TIER_LEVEL[tier] or not (ns.UI and ns.UI.OpenChat) then return false end
+	if Chat.TIER_LEVEL[tier] then return tier end
+end
+
+function Chat.TagClick(link, _, button, frame)
+	local tier = Chat.TagTier(link, button)
+	if not tier then return false end
+	if tier == "A" and frame and ns.ChatTab and frame == ns.ChatTab.OutputFrame() then
+		local box = ns.ChatTab.InputFor(frame)
+		if box then
+			box:SetFocus()
+			return true
+		end
+	end
+	if not (ns.UI and ns.UI.OpenChat) then return false end
 	ns.UI.OpenChat(tier, true)
 	return true
 end
@@ -470,8 +520,8 @@ end
 ns.On("LOGIN", function()
 	local hook = rawget(_G, "hooksecurefunc")
 	if type(hook) ~= "function" then return end
-	pcall(hook, "SetItemRef", function(link, text, button)
-		ns.SafeCall("tag click", Chat.TagClick, link, text, button)
+	pcall(hook, "SetItemRef", function(link, text, button, frame)
+		ns.SafeCall("tag click", Chat.TagClick, link, text, button, frame)
 	end)
 end)
 
@@ -534,7 +584,7 @@ ns.Command("window", function(arg)
 	arg = U.Trim(arg)
 	if not Chat.SetWindow(arg) then
 		local names = {}
-		for _, w in ipairs(Chat.Windows()) do names[#names + 1] = "«" .. w.name .. "»" end
+		for _, w in ipairs(Chat.MirrorWindows()) do names[#names + 1] = "«" .. w.name .. "»" end
 		ns.Print(L.CHAT_WINDOW_MISSING, arg, table.concat(names, ", "))
 		return
 	end
@@ -568,10 +618,12 @@ ns.Command("history", function(arg)
 		return
 	end
 	local list = ns.store.chat[tier]
-	local f = Chat.Frame()
+	local target = MirrorTarget()
+	if not target then return end
 	for i = math.max(1, #list - 19), #list do
 		local e = list[i]
-		f:AddMessage("|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r " .. Chat.Format(tier, e.g, e.s, e.c, e.x), Chat.Color(tier))
+		local prefix = "|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r "
+		AddMirror(target, prefix .. Chat.Format(tier, e.g, e.s, e.c, e.x), Chat.Color(tier))
 	end
 end, L.HELP_HISTORY)
 

@@ -89,6 +89,86 @@ local function BuildChattynator()
 	return h, ns, env
 end
 
+T.test("chat tab: копия союза идёт в выбранную вкладку Chattynator", function()
+	local h, ns, env = BuildChattynator()
+	local native = h.client:ChatWindow(4, "Гильдия")
+	ns.char.chatWindow = "Гильдия" -- Сохранённый выбор из штатного чата.
+	ns.char.chatMirror = true
+	env.GUILD = "Гильдия"
+	local tabs = { { "GENERAL", ns.L.CHAT_TAB_NAME }, { "GUILD" } }
+	local delivered = {}
+	local api = env.Chattynator.API
+	api.GetWindowsAndTabs = function() return tabs end
+	api.AddMessageToWindowAndTab = function(window, tab, line, r, g, b)
+		delivered[#delivered + 1] = { window, tab, line, r, g, b }
+	end
+	h:Mount(1)
+	local function Show(message)
+		ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", message)
+	end
+	Show("Копия союза")
+	local line = ns.Chat.Format("A", "Чиллзон", "Автор Чата", "MAGE", "Копия союза")
+	T.same(delivered, { { 2, 1, line, ns.Chat.Color("A") } })
+	T.eq(#native.lines, 0)
+	T.eq(h.client:Saw("Копия союза"), 0)
+	T.same(h.messages.lines, { line })
+	T.eq(#ns.Chat.History("A"), 1)
+	T.ok(ns.Chat.SetWindow("GUILD"))
+	T.eq(ns.Chat.Window(), "Гильдия")
+	T.no(ns.Chat.SetWindow(ns.L.CHAT_TAB_NAME), "специальная вкладка получает строки отдельно")
+
+	ns.char.chatMirror = false
+	Show("Только специальная вкладка")
+	T.eq(#delivered, 1)
+	T.eq(#h.messages.lines, 2)
+
+	ns.char.chatMirror = true
+	tabs[2] = nil
+	Show("Вкладка закрыта")
+	T.eq(#delivered, 1)
+	T.eq(h.client:Saw("Вкладка закрыта"), 1, "при закрытии вкладки копия идёт в основное окно")
+	T.eq(#native.lines, 0)
+	T.eq(#h.messages.lines, 3)
+end)
+
+T.test("chat tab: метка союза фокусирует ввод в штатной вкладке", function()
+	local h, ns = Build()
+	ns.ChatTab.Open()
+	h:Tick()
+	local box = h.box
+	box:SetText("Черновик союза")
+	h.client:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "RightButton", h.tab)
+	T.no(box:HasFocus())
+	h.client:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "LeftButton", h.tab)
+	T.ok(box:HasFocus())
+	T.eq(box:GetText(), "Черновик союза")
+	T.no(ns.UI.Current(), "окно аддона не открывается поверх вкладки")
+
+	local tier, focused
+	ns.UI.OpenChat = function(channel, focus) tier, focused = channel, focus end
+	box:ClearFocus()
+	h.client:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. "C", "[Чиллзон]", "LeftButton", h.tab)
+	T.eq(tier, "C", "закрытый канал открывается в своём окне")
+	T.ok(focused)
+	T.no(box:HasFocus())
+end)
+
+T.test("chat tab: метка союза фокусирует ввод в Chattynator", function()
+	local h, ns = BuildChattynator()
+	h:Mount(1)
+	h:Tick()
+	local box, messages = h.box, h.messages
+	local click = messages.scripts.OnHyperlinkClick
+	box:SetText("Черновик союза")
+	click(messages, ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "RightButton")
+	click(messages, ns.Chat.TAG_LINK .. "AA", "[Чиллзон]", "LeftButton")
+	T.no(box:HasFocus())
+	click(messages, ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "LeftButton")
+	T.ok(box:HasFocus())
+	T.eq(box:GetText(), "Черновик союза")
+	T.no(ns.UI.Current(), "окно аддона не открывается поверх вкладки")
+end)
+
 T.test("chat tab: специальная вкладка Chattynator показывает историю и новые строки со смайлами", function()
 	local h, ns, env = BuildChattynator()
 	T.ok(ns.ChattynatorTab.Available())
@@ -182,8 +262,7 @@ end)
 
 T.test("chat tab: ввод в Chattynator отправляет в союз и возвращает штатную строку", function()
 	local h, ns, env = BuildChattynator()
-	h.client:ChatWindow(4, "Гильдия")
-	T.ok(ns.Chat.SetWindow("Гильдия"))
+	ns.char.chatWindow = "Гильдия"
 	ns.char.chatMirror = false
 	ns.ChatTab.Open()
 	local native = env.ChatFrame1EditBox
